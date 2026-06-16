@@ -13,6 +13,8 @@ router = Router()
 @router.message(CommandStart())
 async def start(message: Message) -> None:
     repo.upsert_chat(message.chat.id, message.chat.title or message.chat.full_name or "", message.chat.type)
+    if message.from_user:
+        repo.clear_setup_session(message.chat.id, message.from_user.id)
     if message.chat.type == "private":
         await message.answer(
             "Производственный учёт\n\nУчёт пока пустой. Начните с настройки или подключите рабочую группу.",

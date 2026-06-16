@@ -98,7 +98,3 @@ async def try_handle_account_command(message: Message) -> bool:
 
     return False
 
-
-@router.message()
-async def account_router_message(message: Message) -> None:
-    await try_handle_account_command(message)

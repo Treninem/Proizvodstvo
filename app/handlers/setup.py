@@ -25,6 +25,35 @@ def _chat_title(message: Message) -> str:
     return message.chat.title or message.chat.full_name or ""
 
 
+async def _safe_delete_message(message) -> None:
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+
+async def _delete_saved_prompt(bot, chat_id: int, data: dict) -> None:
+    prompt_id = data.get("prompt_message_id")
+    if not prompt_id:
+        return
+    try:
+        await bot.delete_message(chat_id, int(prompt_id))
+    except Exception:
+        pass
+
+
+async def _send_step_message(message: Message, text: str, reply_markup=None):
+    await _safe_delete_message(message)
+    return await message.answer(text, reply_markup=reply_markup)
+
+
+def _with_prompt(data: dict | None, message_id: int | None) -> dict:
+    payload = dict(data or {})
+    if message_id:
+        payload["prompt_message_id"] = int(message_id)
+    return payload
+
+
 @router.callback_query(F.data.startswith("setup:"))
 async def setup_section(callback: CallbackQuery) -> None:
     section = callback.data.split(":", 1)[1]
@@ -71,13 +100,13 @@ async def wizard_callback(callback: CallbackQuery) -> None:
         return
 
     if data == "wizard:area":
-        repo.set_setup_session(chat_id, user_id, "await_area_name", {})
+        repo.set_setup_session(chat_id, user_id, "await_area_name", {"prompt_message_id": callback.message.message_id})
         await callback.message.edit_text("Введите название участка.\n\nУчасток нужен для учёта сырья и счётчиков. Название можно написать любое. После сохранения бот предложит добавить сокращения.", reply_markup=cancel_keyboard())
         await callback.answer()
         return
 
     if data == "wizard:job":
-        repo.set_setup_session(chat_id, user_id, "await_job_name", {})
+        repo.set_setup_session(chat_id, user_id, "await_job_name", {"prompt_message_id": callback.message.message_id})
         await callback.message.edit_text("Введите название должности.\n\nПосле названия бот покажет список прав. Отметьте галочками, что будет разрешено этой должности.", reply_markup=cancel_keyboard())
         await callback.answer()
         return
@@ -85,7 +114,7 @@ async def wizard_callback(callback: CallbackQuery) -> None:
     if data.startswith("wizard:entity:"):
         entity_type = data.rsplit(":", 1)[1]
         label = ENTITY_LABELS.get(entity_type, "Позиция")
-        repo.set_setup_session(chat_id, user_id, "await_entity_name", {"entity_type": entity_type})
+        repo.set_setup_session(chat_id, user_id, "await_entity_name", {"entity_type": entity_type, "prompt_message_id": callback.message.message_id})
         await callback.message.edit_text(f"Введите название.\n\nТип: {label}\nНазвание можно написать любое. После сохранения можно добавить сокращения и рабочие названия.", reply_markup=cancel_keyboard())
         await callback.answer()
         return
@@ -159,7 +188,7 @@ async def meter_area_callback(callback: CallbackQuery) -> None:
     if callback.data == "meterarea:save":
         meter_id = int(data.get("meter_id", 0))
         repo.bind_meter_to_areas(chat_id, meter_id, sorted(selected))
-        repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": "meter", "target_id": meter_id})
+        repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": "meter", "target_id": meter_id, "prompt_message_id": callback.message.message_id})
         names = repo.list_meter_area_names(meter_id)
         text = "Счётчик привязан."
         text += "\nУчастки: " + ", ".join(names) if names else "\nУчастки не выбраны."
@@ -172,7 +201,7 @@ async def meter_area_callback(callback: CallbackQuery) -> None:
 
     if callback.data == "meterarea:skip":
         meter_id = int(data.get("meter_id", 0))
-        repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": "meter", "target_id": meter_id})
+        repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": "meter", "target_id": meter_id, "prompt_message_id": callback.message.message_id})
         await callback.message.edit_text(
             "Счётчик создан без привязки. Его можно привязать к участкам позже.\n\nДобавьте сокращения через запятую или с новой строки. Можно пропустить.",
             reply_markup=skip_alias_keyboard(),
@@ -214,7 +243,7 @@ async def stock_item_area_callback(callback: CallbackQuery) -> None:
     if callback.data == "stockarea:save":
         stock_item_id = int(data.get("stock_item_id", 0))
         repo.bind_stock_item_to_areas(chat_id, stock_item_id, sorted(selected))
-        repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": "stock_item", "target_id": stock_item_id})
+        repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": "stock_item", "target_id": stock_item_id, "prompt_message_id": callback.message.message_id})
         names = repo.list_stock_item_area_names(stock_item_id)
         text = "Складская позиция привязана."
         text += "\nУчастки: " + ", ".join(names) if names else "\nПозиция оставлена общей."
@@ -228,7 +257,7 @@ async def stock_item_area_callback(callback: CallbackQuery) -> None:
     if callback.data == "stockarea:skip":
         stock_item_id = int(data.get("stock_item_id", 0))
         repo.bind_stock_item_to_areas(chat_id, stock_item_id, [])
-        repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": "stock_item", "target_id": stock_item_id})
+        repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": "stock_item", "target_id": stock_item_id, "prompt_message_id": callback.message.message_id})
         await callback.message.edit_text(
             "Складская позиция оставлена общей для этого учёта.\n\nДобавьте сокращения через запятую или с новой строки. Можно пропустить.",
             reply_markup=skip_alias_keyboard(),
@@ -240,46 +269,44 @@ async def stock_item_area_callback(callback: CallbackQuery) -> None:
 async def try_handle_wizard_message(message: Message) -> bool:
     if not message.text or not message.from_user:
         return False
-    if not await can_manage_accounting(message.bot, message.chat, message.from_user):
-        return False
     chat_id = message.chat.id
     user_id = message.from_user.id
     session = repo.get_setup_session(chat_id, user_id)
     if not session:
         return False
-
     text = message.text.strip()
     state = session["state"]
     data = session["data"]
     repo.upsert_chat(chat_id, _chat_title(message), message.chat.type, connected=None)
+    await _delete_saved_prompt(message.bot, chat_id, data)
 
     if text.lower() in {"отмена", "стоп"}:
         repo.clear_setup_session(chat_id, user_id)
-        await message.answer("Отменено.", reply_markup=setup_menu())
+        await _send_step_message(message, "Отменено.", reply_markup=setup_menu())
         return True
 
     if state == "await_area_name":
         if repo.count_active_areas(chat_id) >= 999:
             repo.clear_setup_session(chat_id, user_id)
-            await message.answer("Достигнут предел: 999 участков.", reply_markup=setup_menu())
+            await _send_step_message(message, "Достигнут предел: 999 участков.", reply_markup=setup_menu())
             return True
         ok, msg = repo.create_area(chat_id, text)
         if not ok:
-            await message.answer(msg)
+            await _send_step_message(message, msg)
             return True
         from ..services.matcher import confident_match
         match, _ = confident_match(chat_id, text, allowed_types={"area"})
         if match:
-            repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": "area", "target_id": match.target_id})
-            await message.answer(msg + "\n\nДобавьте сокращения через запятую или с новой строки. Бот будет понимать эти варианты при вводе данных. Можно пропустить.", reply_markup=skip_alias_keyboard())
+            sent = await _send_step_message(message, msg + "\n\nДобавьте сокращения через запятую или с новой строки. Бот будет понимать эти варианты при вводе данных. Можно пропустить.", reply_markup=skip_alias_keyboard())
+            repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": "area", "target_id": match.target_id, "prompt_message_id": sent.message_id})
         else:
             repo.clear_setup_session(chat_id, user_id)
-            await message.answer(msg, reply_markup=setup_menu())
+            await _send_step_message(message, msg, reply_markup=setup_menu())
         return True
 
     if state == "await_job_name":
-        repo.set_setup_session(chat_id, user_id, "choose_job_permissions", {"name": text, "permissions": {}})
-        await message.answer(f"Должность: {text}\n\nОтметьте, что разрешено. Потом нажмите «Сохранить должность».", reply_markup=permission_keyboard({}))
+        sent = await _send_step_message(message, f"Должность: {text}\n\nОтметьте, что разрешено. Потом нажмите «Сохранить должность».", reply_markup=permission_keyboard({}))
+        repo.set_setup_session(chat_id, user_id, "choose_job_permissions", {"name": text, "permissions": {}, "prompt_message_id": sent.message_id})
         return True
 
     if state == "await_entity_name":
@@ -287,45 +314,45 @@ async def try_handle_wizard_message(message: Message) -> bool:
         unit = "кг" if entity_type == "material" else ("кВт⋅ч" if entity_type == "meter" else "шт")
         ok, msg = repo.create_entity(chat_id, entity_type, text, unit)
         if not ok:
-            await message.answer(msg)
+            await _send_step_message(message, msg)
             return True
         from ..services.matcher import confident_match
         match, _ = confident_match(chat_id, text, allowed_types={entity_type})
         if match and entity_type == "meter":
             areas = repo.list_areas(chat_id)
-            repo.set_setup_session(chat_id, user_id, "choose_meter_areas", {"meter_id": match.target_id, "area_ids": []})
             if areas:
-                await message.answer(msg + "\n\nВыберите участки для счётчика. Можно выбрать один или несколько. Если участок будет понятен из сообщения или группы, бот сам выберет закреплённый прибор.", reply_markup=meter_area_keyboard([(a.id, a.name) for a in areas], set()))
+                sent = await _send_step_message(message, msg + "\n\nВыберите участки для счётчика. Можно выбрать один или несколько. Если участок будет понятен из сообщения или группы, бот сам выберет закреплённый прибор.", reply_markup=meter_area_keyboard([(a.id, a.name) for a in areas], set()))
+                repo.set_setup_session(chat_id, user_id, "choose_meter_areas", {"meter_id": match.target_id, "area_ids": [], "prompt_message_id": sent.message_id})
             else:
-                repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": "meter", "target_id": match.target_id})
-                await message.answer(msg + "\n\nУчастков пока нет. Счётчик можно привязать позже. Добавьте сокращения через запятую или с новой строки. Можно пропустить.", reply_markup=skip_alias_keyboard())
+                sent = await _send_step_message(message, msg + "\n\nУчастков пока нет. Счётчик можно привязать позже. Добавьте сокращения через запятую или с новой строки. Можно пропустить.", reply_markup=skip_alias_keyboard())
+                repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": "meter", "target_id": match.target_id, "prompt_message_id": sent.message_id})
         elif match and entity_type == "stock_item":
             areas = repo.list_areas(chat_id)
-            repo.set_setup_session(chat_id, user_id, "choose_stock_item_areas", {"stock_item_id": match.target_id, "area_ids": []})
             if areas:
-                await message.answer(msg + "\n\nПривязать складскую позицию к участкам? Можно выбрать один, несколько или оставить общей для всего учёта.", reply_markup=stock_item_area_keyboard([(a.id, a.name) for a in areas], set()))
+                sent = await _send_step_message(message, msg + "\n\nПривязать складскую позицию к участкам? Можно выбрать один, несколько или оставить общей для всего учёта.", reply_markup=stock_item_area_keyboard([(a.id, a.name) for a in areas], set()))
+                repo.set_setup_session(chat_id, user_id, "choose_stock_item_areas", {"stock_item_id": match.target_id, "area_ids": [], "prompt_message_id": sent.message_id})
             else:
-                repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": "stock_item", "target_id": match.target_id})
-                await message.answer(msg + "\n\nУчастков пока нет. Позиция будет общей. Добавьте сокращения через запятую или с новой строки. Можно пропустить.", reply_markup=skip_alias_keyboard())
+                sent = await _send_step_message(message, msg + "\n\nУчастков пока нет. Позиция будет общей. Добавьте сокращения через запятую или с новой строки. Можно пропустить.", reply_markup=skip_alias_keyboard())
+                repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": "stock_item", "target_id": match.target_id, "prompt_message_id": sent.message_id})
         elif match:
-            repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": match.target_type, "target_id": match.target_id})
-            await message.answer(msg + "\n\nДобавьте сокращения через запятую или с новой строки. Бот будет понимать эти варианты при вводе данных. Можно пропустить.", reply_markup=skip_alias_keyboard())
+            sent = await _send_step_message(message, msg + "\n\nДобавьте сокращения через запятую или с новой строки. Бот будет понимать эти варианты при вводе данных. Можно пропустить.", reply_markup=skip_alias_keyboard())
+            repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": match.target_type, "target_id": match.target_id, "prompt_message_id": sent.message_id})
         else:
             repo.clear_setup_session(chat_id, user_id)
-            await message.answer(msg, reply_markup=setup_menu())
+            await _send_step_message(message, msg, reply_markup=setup_menu())
         return True
 
     if state == "await_aliases":
         if text.lower() in {"пропустить", "нет", "не надо"}:
             repo.clear_setup_session(chat_id, user_id)
-            await message.answer("Сохранено. Выберите следующий пункт.", reply_markup=setup_menu())
+            await _send_step_message(message, "Сохранено. Выберите следующий пункт.", reply_markup=setup_menu())
             return True
         added, conflicts = repo.add_aliases(chat_id, data["target_type"], int(data["target_id"]), text)
         repo.clear_setup_session(chat_id, user_id)
         answer = f"Сокращения сохранены: {added}"
         if conflicts:
             answer += "\nНе добавлены занятые названия: " + ", ".join(conflicts)
-        await message.answer(answer, reply_markup=setup_menu())
+        await _send_step_message(message, answer, reply_markup=setup_menu())
         return True
 
     return False
