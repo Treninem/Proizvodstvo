@@ -197,37 +197,91 @@ def raw_operation_rows(chat_id: int, period: PeriodFilter, limit: int = 5000) ->
     return [dict(r) for r in rows]
 
 
-def build_text_report(chat_id: int, request_text: str) -> str:
+
+def build_stock_text(chat_id: int) -> str:
+    rows = inventory_rows(chat_id)
+    if not rows:
+        return "Склад пока пустой."
+    lines = ["Склад"]
+    current = None
+    for row in rows[:80]:
+        title = ENTITY_LABELS.get(row.get("entity_type") or "", row.get("entity_type") or "Позиции")
+        if title != current:
+            current = title
+            lines.append(f"\n{title}:")
+        name = row.get("entity_name") or "Позиция"
+        area = f" · {row['area_name']}" if row.get("area_name") else ""
+        qty = float(row.get("quantity") or 0)
+        lines.append(f"• {name} — {qty:g} {row.get('unit') or ''}{area}")
+    if len(rows) > 80:
+        lines.append(f"\nЕщё строк: {len(rows) - 80}")
+    return "\n".join(lines)
+
+def build_text_report(chat_id: int, request_text: str, user_id: int | None = None) -> str:
+    from . import repository as repo
+
     period = _date_bounds_for_text(request_text)
     if period.error:
         return period.error
-    ops = operation_rows(chat_id, period)
-    inv = inventory_rows(chat_id)
+    prefs = repo.get_export_preferences(chat_id, user_id)
     lines: list[str] = [f"Отчёт {period.title}"]
-    if not ops:
-        lines.append("\nДвижения за период пока нет.")
-    else:
-        current = None
-        for row in ops:
-            title = OPERATION_LABELS.get(row.get("operation_type") or "", "Запись")
-            if title != current:
-                current = title
-                lines.append(f"\n{title}:")
-            name = row.get("entity_name") or ENTITY_LABELS.get(row.get("entity_type") or "", "Позиция")
-            area = f" · {row['area_name']}" if row.get("area_name") else ""
-            qty = float(row.get("total_quantity") or 0)
-            lines.append(f"• {name} — {qty:g} {row.get('unit') or ''}{area}")
-    if inv:
-        lines.append("\nОстатки склада:")
-        for row in inv[:25]:
-            name = row.get("entity_name") or ENTITY_LABELS.get(row.get("entity_type") or "", "Позиция")
-            area = f" · {row['area_name']}" if row.get("area_name") else ""
-            qty = float(row.get("quantity") or 0)
-            lines.append(f"• {name} — {qty:g} {row.get('unit') or ''}{area}")
-        if len(inv) > 25:
-            lines.append(f"• Ещё строк: {len(inv) - 25}")
-    else:
-        lines.append("\nСклад пока пустой.")
+
+    if prefs.get("period_totals"):
+        ops = operation_rows(chat_id, period)
+        if not ops:
+            lines.append("\nДвижения за период пока нет.")
+        else:
+            current = None
+            for row in ops:
+                title = OPERATION_LABELS.get(row.get("operation_type") or "", "Запись")
+                if title != current:
+                    current = title
+                    lines.append(f"\n{title}:")
+                name = row.get("entity_name") or ENTITY_LABELS.get(row.get("entity_type") or "", "Позиция")
+                area = f" · {row['area_name']}" if row.get("area_name") else ""
+                qty = float(row.get("total_quantity") or 0)
+                lines.append(f"• {name} — {qty:g} {row.get('unit') or ''}{area}")
+
+    if prefs.get("daily_matrix"):
+        labels, matrix = movement_matrix_rows(chat_id, period)
+        if labels and matrix:
+            lines.append("\nПо датам:")
+            shown = labels[-10:]
+            for label in shown:
+                total = sum(float(row["values"].get(label) or 0) for row in matrix)
+                lines.append(f"• {label}: {total:g}")
+            if len(labels) > len(shown):
+                lines.append("• Полная таблица доступна в скачанном отчёте.")
+
+    if prefs.get("capacity"):
+        lines.append("\n" + build_all_assembly_capacity_report(chat_id))
+
+    if prefs.get("inventory"):
+        inv = inventory_rows(chat_id)
+        if inv:
+            lines.append("\nОстатки склада:")
+            for row in inv[:25]:
+                name = row.get("entity_name") or ENTITY_LABELS.get(row.get("entity_type") or "", "Позиция")
+                area = f" · {row['area_name']}" if row.get("area_name") else ""
+                qty = float(row.get("quantity") or 0)
+                lines.append(f"• {name} — {qty:g} {row.get('unit') or ''}{area}")
+            if len(inv) > 25:
+                lines.append(f"• Ещё строк: {len(inv) - 25}")
+        else:
+            lines.append("\nСклад пока пустой.")
+
+    if prefs.get("journal"):
+        journal = raw_operation_rows(chat_id, period, limit=10)
+        if journal:
+            lines.append("\nПоследние записи:")
+            for row in journal:
+                title = OPERATION_LABELS.get(row.get("operation_type") or "", "Запись")
+                name = row.get("entity_name") or ENTITY_LABELS.get(row.get("entity_type") or "", "Позиция")
+                qty = float(row.get("quantity") or 0)
+                lines.append(f"• {row.get('created_at') or ''} · {title}: {name} — {qty:g} {row.get('unit') or ''}")
+
+    if len(lines) == 1:
+        lines.append("\nВыберите хотя бы один раздел.")
     return "\n".join(lines)
 
 
@@ -717,7 +771,7 @@ def create_xlsx_report(chat_id: int, request_text: str = "отчёт", user_id: 
     if first_sheet:
         ws = wb.active
         ws.title = "Отчёт"
-        ws.append(["Файл пустой", "В настройках файла не выбран ни один раздел."])
+        ws.append(["Файл пустой", "Не выбран ни один раздел."])
         _style_sheet(ws)
     filename = f"uchet_{_safe_name(period.title)}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
     path = reports_dir() / filename
@@ -957,8 +1011,7 @@ def create_txt_report(chat_id: int, request_text: str = "отчёт", user_id: i
     period = _period_for_export(request_text)
     filename = f"uchet_{_safe_name(period.title)}_{datetime.now():%Y%m%d_%H%M%S}.txt"
     path = reports_dir() / filename
-    text = build_text_report(chat_id, request_text)
-    text += "\n\n" + build_all_assembly_capacity_report(chat_id)
+    text = build_text_report(chat_id, request_text, user_id=user_id)
     path.write_text(text, encoding="utf-8")
     return path
 
@@ -1019,8 +1072,8 @@ td:nth-child(4), td:nth-child(5), td:nth-child(6), td:nth-child(7) {{ text-align
 </head>
 <body>
 <h1>Производственный отчёт {html.escape(period.title)}</h1>
-<p>Файл открывается в браузере на телефоне, планшете и компьютере.</p>
-{''.join(sections) if sections else '<p>В настройках файла не выбран ни один раздел.</p>'}
+<p>Открывается в браузере на телефоне, планшете и компьютере.</p>
+{''.join(sections) if sections else '<p>Не выбран ни один раздел.</p>'}
 </body>
 </html>"""
     path.write_text(doc, encoding="utf-8")

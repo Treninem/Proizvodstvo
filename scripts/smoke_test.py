@@ -137,7 +137,7 @@ def main() -> None:
     all_capacity_report = reporting.build_assembly_capacity_report(chat_id, "сколько можно собрать все")
     assert "Расчёт сборки" in all_capacity_report and "Изделие 1" in all_capacity_report, all_capacity_report
 
-    # Отчёты и файлы для печати.
+    # Отчёты и файлы.
     accounting.apply_operations(chat_id, chat_id, 777, [op.to_dict() for op in ops2], "Привезли")
     accounting.apply_operations(chat_id, chat_id, 777, [op.to_dict() for op in ops3], "Приход Позиция склада 1 12")
     text_report = reporting.build_text_report(chat_id, "отчёт за сегодня")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ._safe import safe_edit_text
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -112,23 +113,23 @@ async def owner_callbacks(callback: CallbackQuery) -> None:
         return
     action = callback.data.split(":", 1)[1]
     if action == "panel":
-        await callback.message.edit_text(_format_panel(), reply_markup=_owner_menu())
+        await safe_edit_text(callback.message, _format_panel(), reply_markup=_owner_menu())
         await callback.answer()
         return
     if action == "chats":
         chats = repo.owner_list_chats(limit=20)
         if not chats:
-            await callback.message.edit_text("Чатов пока нет.", reply_markup=_owner_menu())
+            await safe_edit_text(callback.message, "Чатов пока нет.", reply_markup=_owner_menu())
         else:
-            await callback.message.edit_text("Все чаты\n\nВыберите чат для просмотра.", reply_markup=_chats_keyboard())
+            await safe_edit_text(callback.message, "Все чаты\n\nВыберите чат для просмотра.", reply_markup=_chats_keyboard())
         await callback.answer()
         return
     if action == "accounts":
         accounts = repo.owner_list_accounts(limit=50)
         if not accounts:
-            await callback.message.edit_text("Учётов пока нет.", reply_markup=_owner_menu())
+            await safe_edit_text(callback.message, "Учётов пока нет.", reply_markup=_owner_menu())
         else:
-            await callback.message.edit_text("Все учёты\n\nВыберите учёт для просмотра.", reply_markup=_accounts_keyboard())
+            await safe_edit_text(callback.message, "Все учёты\n\nВыберите учёт для просмотра.", reply_markup=_accounts_keyboard())
         await callback.answer()
         return
     if action.startswith("account:"):
@@ -139,15 +140,15 @@ async def owner_callbacks(callback: CallbackQuery) -> None:
             await callback.answer("Учёт не найден.", show_alert=True)
             return
         report = repo.owner_account_report(account_id)
-        await callback.message.edit_text(report, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="owner:accounts")]]))
+        await safe_edit_text(callback.message, report, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="owner:accounts")]]))
         await callback.answer()
         return
     if action == "stats":
-        await callback.message.edit_text(_format_stats(), reply_markup=_owner_menu())
+        await safe_edit_text(callback.message, _format_stats(), reply_markup=_owner_menu())
         await callback.answer()
         return
     if action == "db":
-        await callback.message.edit_text(_format_db_status(), reply_markup=_owner_menu())
+        await safe_edit_text(callback.message, _format_db_status(), reply_markup=_owner_menu())
         await callback.answer()
         return
     if action.startswith("chat:"):
@@ -158,7 +159,7 @@ async def owner_callbacks(callback: CallbackQuery) -> None:
             await callback.answer("Чат не найден.", show_alert=True)
             return
         report = repo.owner_chat_report(chat_id)
-        await callback.message.edit_text(report, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="owner:chats")]]))
+        await safe_edit_text(callback.message, report, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="owner:chats")]]))
         await callback.answer()
         return
     await callback.answer()

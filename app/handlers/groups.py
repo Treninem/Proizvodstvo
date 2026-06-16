@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ._safe import safe_edit_text
 import re
 
 from aiogram import F, Router
@@ -62,7 +63,7 @@ async def area_bind(callback: CallbackQuery) -> None:
     raw = callback.data.split(":", 1)[1]
     if raw == "none":
         repo.bind_chat_to_area(callback.message.chat.id, None)
-        await callback.message.edit_text("Группа подключена без участка. Для сырья и электричества бот будет уточнять участок.")
+        await safe_edit_text(callback.message, "Группа подключена без участка. Для сырья и электричества бот будет уточнять участок.")
         await callback.answer()
         return
     try:
@@ -75,5 +76,5 @@ async def area_bind(callback: CallbackQuery) -> None:
         await callback.answer("Участок не найден.", show_alert=True)
         return
     repo.bind_chat_to_area(callback.message.chat.id, area_id)
-    await callback.message.edit_text(f"Группа подключена и привязана: {area.name}")
+    await safe_edit_text(callback.message, f"Группа подключена и привязана: {area.name}")
     await callback.answer()

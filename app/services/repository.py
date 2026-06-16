@@ -1008,9 +1008,39 @@ def set_export_preference(chat_id: int, user_id: int, section_key: str, enabled:
     )
 
 
+def set_export_preferences(chat_id: int, user_id: int, prefs: dict[str, bool]) -> None:
+    scope_chat_id = resolve_scope_chat_id(chat_id)
+    current = default_export_preferences()
+    for key in current:
+        current[key] = bool(prefs.get(key, False))
+    db.execute(
+        """
+        INSERT INTO export_preferences(
+            chat_id,user_id,include_inventory,include_period_totals,include_daily_matrix,include_capacity,include_journal,updated_at
+        ) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+        ON CONFLICT(chat_id,user_id) DO UPDATE SET
+            include_inventory=excluded.include_inventory,
+            include_period_totals=excluded.include_period_totals,
+            include_daily_matrix=excluded.include_daily_matrix,
+            include_capacity=excluded.include_capacity,
+            include_journal=excluded.include_journal,
+            updated_at=CURRENT_TIMESTAMP
+        """,
+        (
+            scope_chat_id,
+            user_id,
+            1 if current["inventory"] else 0,
+            1 if current["period_totals"] else 0,
+            1 if current["daily_matrix"] else 0,
+            1 if current["capacity"] else 0,
+            1 if current["journal"] else 0,
+        ),
+    )
+
+
 def format_export_preferences(chat_id: int, user_id: int | None) -> str:
     prefs = get_export_preferences(chat_id, user_id)
-    lines = ["Настройка файла", "", "Отметьте, какие листы и таблицы включать в Excel/PDF:"]
+    lines = ["Разделы отчёта", "", "Отметьте, что включить:"]
     for key, label in EXPORT_SECTION_KEYS.items():
         mark = "✅" if prefs.get(key) else "⬜"
         lines.append(f"{mark} {label}")

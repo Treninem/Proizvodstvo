@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ._safe import safe_edit_text
 import re
 
 from aiogram import F, Router
@@ -9,6 +10,7 @@ from ..access import can_manage_accounting
 from ..keyboards import (
     ENTITY_LABELS,
     cancel_keyboard,
+    component_alias_keyboard,
     meter_area_keyboard,
     permission_keyboard,
     setup_menu,
@@ -73,7 +75,7 @@ async def setup_section(callback: CallbackQuery) -> None:
         "materials": "Сырьё\n\nСырьё можно учитывать по участкам.",
         "meters": "Счётчики\n\nСчётчик можно привязать к одному или нескольким участкам.",
     }
-    await callback.message.edit_text(texts.get(section, "Настройка учёта"), reply_markup=setup_menu())
+    await safe_edit_text(callback.message, texts.get(section, "Настройка учёта"), reply_markup=setup_menu())
     await callback.answer()
 
 
@@ -89,25 +91,31 @@ async def wizard_callback(callback: CallbackQuery) -> None:
 
     if data == "wizard:cancel":
         repo.clear_setup_session(chat_id, user_id)
-        await callback.message.edit_text("Отменено.", reply_markup=setup_menu())
+        await safe_edit_text(callback.message, "Отменено.", reply_markup=setup_menu())
         await callback.answer()
         return
 
     if data == "wizard:skip_aliases":
         repo.clear_setup_session(chat_id, user_id)
-        await callback.message.edit_text("Сохранено. Выберите следующий пункт.", reply_markup=setup_menu())
+        await safe_edit_text(callback.message, "Сохранено. Выберите следующий пункт.", reply_markup=setup_menu())
         await callback.answer()
         return
 
     if data == "wizard:area":
         repo.set_setup_session(chat_id, user_id, "await_area_name", {"prompt_message_id": callback.message.message_id})
-        await callback.message.edit_text("Введите название участка.\n\nУчасток нужен для учёта сырья и счётчиков. Название можно написать любое. После сохранения бот предложит добавить сокращения.", reply_markup=cancel_keyboard())
+        await safe_edit_text(callback.message, "Введите название участка.\n\nУчасток нужен для учёта сырья и счётчиков. Название можно написать любое. После сохранения бот предложит добавить сокращения.", reply_markup=cancel_keyboard())
         await callback.answer()
         return
 
     if data == "wizard:job":
         repo.set_setup_session(chat_id, user_id, "await_job_name", {"prompt_message_id": callback.message.message_id})
-        await callback.message.edit_text("Введите название должности.\n\nПосле названия бот покажет список прав. Отметьте галочками, что будет разрешено этой должности.", reply_markup=cancel_keyboard())
+        await safe_edit_text(callback.message, "Введите название должности.\n\nПосле названия бот покажет список прав. Отметьте галочками, что будет разрешено этой должности.", reply_markup=cancel_keyboard())
+        await callback.answer()
+        return
+
+    if data == "wizard:product_components":
+        repo.set_setup_session(chat_id, user_id, "await_product_for_components", {"prompt_message_id": callback.message.message_id})
+        await safe_edit_text(callback.message, "Введите название изделия.", reply_markup=cancel_keyboard())
         await callback.answer()
         return
 
@@ -115,7 +123,7 @@ async def wizard_callback(callback: CallbackQuery) -> None:
         entity_type = data.rsplit(":", 1)[1]
         label = ENTITY_LABELS.get(entity_type, "Позиция")
         repo.set_setup_session(chat_id, user_id, "await_entity_name", {"entity_type": entity_type, "prompt_message_id": callback.message.message_id})
-        await callback.message.edit_text(f"Введите название.\n\nТип: {label}\nНазвание можно написать любое. После сохранения можно добавить сокращения и рабочие названия.", reply_markup=cancel_keyboard())
+        await safe_edit_text(callback.message, f"Введите название.\n\nТип: {label}\nНазвание можно написать любое. После сохранения можно добавить сокращения и рабочие названия.", reply_markup=cancel_keyboard())
         await callback.answer()
         return
 
@@ -139,7 +147,7 @@ async def permission_callback(callback: CallbackQuery) -> None:
         permissions[key] = not permissions.get(key, False)
         data["permissions"] = permissions
         repo.set_setup_session(chat_id, user_id, "choose_job_permissions", data)
-        await callback.message.edit_text(
+        await safe_edit_text(callback.message, 
             f"Должность: {data.get('name', '')}\n\nОтметьте, что разрешено.",
             reply_markup=permission_keyboard(permissions),
         )
@@ -150,7 +158,7 @@ async def permission_callback(callback: CallbackQuery) -> None:
         name = data.get("name", "").strip()
         ok, msg = repo.create_job_title(chat_id, name, permissions)
         repo.clear_setup_session(chat_id, user_id)
-        await callback.message.edit_text(msg, reply_markup=setup_menu())
+        await safe_edit_text(callback.message, msg, reply_markup=setup_menu())
         await callback.answer()
         return
 
@@ -178,7 +186,7 @@ async def meter_area_callback(callback: CallbackQuery) -> None:
             selected.add(area_id)
         data["area_ids"] = sorted(selected)
         repo.set_setup_session(chat_id, user_id, "choose_meter_areas", data)
-        await callback.message.edit_text(
+        await safe_edit_text(callback.message, 
             "Выберите участки для счётчика. Можно выбрать один или несколько. Показания будут относиться к прибору, закреплённому за выбранным участком.",
             reply_markup=meter_area_keyboard([(a.id, a.name) for a in areas], selected),
         )
@@ -192,7 +200,7 @@ async def meter_area_callback(callback: CallbackQuery) -> None:
         names = repo.list_meter_area_names(meter_id)
         text = "Счётчик привязан."
         text += "\nУчастки: " + ", ".join(names) if names else "\nУчастки не выбраны."
-        await callback.message.edit_text(
+        await safe_edit_text(callback.message, 
             text + "\n\nДобавьте сокращения через запятую или с новой строки. Например: короткое название, рабочее название. Можно пропустить.",
             reply_markup=skip_alias_keyboard(),
         )
@@ -202,7 +210,7 @@ async def meter_area_callback(callback: CallbackQuery) -> None:
     if callback.data == "meterarea:skip":
         meter_id = int(data.get("meter_id", 0))
         repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": "meter", "target_id": meter_id, "prompt_message_id": callback.message.message_id})
-        await callback.message.edit_text(
+        await safe_edit_text(callback.message, 
             "Счётчик создан без привязки. Его можно привязать к участкам позже.\n\nДобавьте сокращения через запятую или с новой строки. Можно пропустить.",
             reply_markup=skip_alias_keyboard(),
         )
@@ -233,7 +241,7 @@ async def stock_item_area_callback(callback: CallbackQuery) -> None:
             selected.add(area_id)
         data["area_ids"] = sorted(selected)
         repo.set_setup_session(chat_id, user_id, "choose_stock_item_areas", data)
-        await callback.message.edit_text(
+        await safe_edit_text(callback.message, 
             "Выберите участки для складской позиции. Можно выбрать один, несколько или оставить общей для всего учёта.",
             reply_markup=stock_item_area_keyboard([(a.id, a.name) for a in areas], selected),
         )
@@ -247,7 +255,7 @@ async def stock_item_area_callback(callback: CallbackQuery) -> None:
         names = repo.list_stock_item_area_names(stock_item_id)
         text = "Складская позиция привязана."
         text += "\nУчастки: " + ", ".join(names) if names else "\nПозиция оставлена общей."
-        await callback.message.edit_text(
+        await safe_edit_text(callback.message, 
             text + "\n\nДобавьте сокращения через запятую или с новой строки. Например: короткое название, рабочее название. Можно пропустить.",
             reply_markup=skip_alias_keyboard(),
         )
@@ -258,12 +266,49 @@ async def stock_item_area_callback(callback: CallbackQuery) -> None:
         stock_item_id = int(data.get("stock_item_id", 0))
         repo.bind_stock_item_to_areas(chat_id, stock_item_id, [])
         repo.set_setup_session(chat_id, user_id, "await_aliases", {"target_type": "stock_item", "target_id": stock_item_id, "prompt_message_id": callback.message.message_id})
-        await callback.message.edit_text(
+        await safe_edit_text(callback.message, 
             "Складская позиция оставлена общей для этого учёта.\n\nДобавьте сокращения через запятую или с новой строки. Можно пропустить.",
             reply_markup=skip_alias_keyboard(),
         )
         await callback.answer()
         return
+
+
+async def _prompt_component_alias_callback(callback: CallbackQuery, data: dict) -> None:
+    queue = list(data.get("alias_queue") or [])
+    if not queue:
+        repo.clear_setup_session(callback.message.chat.id, callback.from_user.id)
+        await safe_edit_text(callback.message, "Состав сохранён.", reply_markup=setup_menu())
+        await callback.answer()
+        return
+    item = queue.pop(0)
+    data["current"] = item
+    data["alias_queue"] = queue
+    data["prompt_message_id"] = callback.message.message_id
+    repo.set_setup_session(callback.message.chat.id, callback.from_user.id, "await_component_aliases", data)
+    await safe_edit_text(callback.message, 
+        f"Сокращения для: {item['name']}\n\nМожно написать через запятую или с новой строки.",
+        reply_markup=component_alias_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("componentalias:"))
+async def component_alias_callback(callback: CallbackQuery) -> None:
+    if not await can_manage_accounting(callback.bot, callback.message.chat, callback.from_user):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    session = repo.get_setup_session(callback.message.chat.id, callback.from_user.id)
+    if not session or session["state"] != "await_component_aliases":
+        await callback.answer("Откройте настройку заново.", show_alert=True)
+        return
+    data = session["data"]
+    if callback.data == "componentalias:finish":
+        repo.clear_setup_session(callback.message.chat.id, callback.from_user.id)
+        await safe_edit_text(callback.message, "Состав сохранён.", reply_markup=setup_menu())
+        await callback.answer()
+        return
+    await _prompt_component_alias_callback(callback, data)
 
 
 async def try_handle_wizard_message(message: Message) -> bool:
@@ -307,6 +352,49 @@ async def try_handle_wizard_message(message: Message) -> bool:
     if state == "await_job_name":
         sent = await _send_step_message(message, f"Должность: {text}\n\nОтметьте, что разрешено. Потом нажмите «Сохранить должность».", reply_markup=permission_keyboard({}))
         repo.set_setup_session(chat_id, user_id, "choose_job_permissions", {"name": text, "permissions": {}, "prompt_message_id": sent.message_id})
+        return True
+
+    if state == "await_product_for_components":
+        from ..services.matcher import confident_match
+        match, _ = confident_match(chat_id, text, allowed_types={"product"})
+        if not match:
+            await _send_step_message(message, "Изделие не найдено. Сначала добавьте изделие или уточните название.", reply_markup=setup_menu())
+            repo.clear_setup_session(chat_id, user_id)
+            return True
+        sent = await _send_step_message(
+            message,
+            "Введите комплектующие и количество.\n\nМожно списком через строки или через запятую. Если комплектующей ещё нет, бот создаст её сам.",
+            reply_markup=cancel_keyboard(),
+        )
+        repo.set_setup_session(chat_id, user_id, "await_product_components", {"product_id": match.target_id, "product_name": match.name, "prompt_message_id": sent.message_id})
+        return True
+
+    if state == "await_product_components":
+        product_id = int(data.get("product_id", 0))
+        product = repo.get_entity(product_id)
+        if not product:
+            repo.clear_setup_session(chat_id, user_id)
+            await _send_step_message(message, "Изделие не найдено. Откройте настройку заново.", reply_markup=setup_menu())
+            return True
+        components, errors = _parse_component_lines(chat_id, text, create_missing=True)
+        if errors or not components:
+            await _send_step_message(message, "Не удалось сохранить состав.\n" + "\n".join(f"• {e}" for e in errors), reply_markup=cancel_keyboard())
+            sent = await message.answer("Введите список ещё раз.", reply_markup=cancel_keyboard())
+            repo.set_setup_session(chat_id, user_id, "await_product_components", {"product_id": product_id, "product_name": product.name, "prompt_message_id": sent.message_id})
+            return True
+        repo.set_product_components(chat_id, product_id, components)
+        component_ids = [component_id for component_id, _ in components]
+        await _start_component_alias_queue(message, component_ids)
+        return True
+
+    if state == "await_component_aliases":
+        current = data.get("current") or {}
+        if current and text.lower() not in {"пропустить", "нет", "не надо"}:
+            repo.add_aliases(chat_id, "component", int(current["target_id"]), text)
+            prefix = "Сокращения сохранены."
+        else:
+            prefix = "Пропущено."
+        await _send_next_component_alias_prompt(message, data, prefix)
         return True
 
     if state == "await_entity_name":
@@ -366,9 +454,11 @@ def _display_name_from_user(user) -> str:
     return full or user.username or str(user.id)
 
 
-def _parse_component_lines(chat_id: int, text: str) -> tuple[list[tuple[int, float]], list[str]]:
+def _parse_component_lines(chat_id: int, text: str, create_missing: bool = False) -> tuple[list[tuple[int, float]], list[str]]:
     from ..services.matcher import confident_match
     from ..services.parser import NUMBER_RE
+
+    scope_chat_id = repo.resolve_scope_chat_id(chat_id)
     parts: list[str] = []
     for line in text.splitlines():
         line = line.strip()
@@ -392,12 +482,62 @@ def _parse_component_lines(chat_id: int, text: str) -> tuple[list[tuple[int, flo
             errors.append(f"Не понял количество: {part}")
             continue
         name = (part[:m.start()] + " " + part[m.end():]).strip(" ,.-")
-        match, variants = confident_match(chat_id, name, allowed_types={"component"})
-        if not match:
+        name = re.sub(r"\b(?:шт|штук|штуки|кг|г|т)\b", " ", name, flags=re.IGNORECASE).strip(" ,.-")
+        if not name:
+            errors.append(f"Не найдено название: {part}")
+            continue
+        exact = repo.get_entity_by_name(scope_chat_id, "component", name)
+        component_id: int | None = exact.id if exact else None
+        if component_id is None:
+            match, variants = confident_match(chat_id, name, allowed_types={"component"})
+            if match and match.score >= 0.98:
+                component_id = match.target_id
+        if component_id is None and create_missing:
+            ok, _ = repo.create_entity(scope_chat_id, "component", name, "шт")
+            entity = repo.get_entity_by_name(scope_chat_id, "component", name)
+            if entity:
+                component_id = entity.id
+        if component_id is None:
             errors.append(f"Не найдена комплектующая: {name}")
             continue
-        components.append((match.target_id, qty))
+        components.append((component_id, qty))
     return components, errors
+
+
+def _unique_component_queue(component_ids: list[int]) -> list[dict]:
+    result: list[dict] = []
+    seen: set[int] = set()
+    for component_id in component_ids:
+        if component_id in seen:
+            continue
+        seen.add(component_id)
+        ent = repo.get_entity(component_id)
+        if ent:
+            result.append({"target_id": ent.id, "name": ent.name})
+    return result
+
+
+async def _send_next_component_alias_prompt(message: Message, data: dict, prefix: str = "") -> None:
+    queue = list(data.get("alias_queue") or [])
+    if not queue:
+        repo.clear_setup_session(message.chat.id, message.from_user.id)
+        await _send_step_message(message, (prefix + "\n" if prefix else "") + "Состав сохранён.", reply_markup=setup_menu())
+        return
+    current = queue.pop(0)
+    data["current"] = current
+    data["alias_queue"] = queue
+    sent = await _send_step_message(
+        message,
+        (prefix + "\n\n" if prefix else "") + f"Сокращения для: {current['name']}\n\nМожно написать через запятую или с новой строки.",
+        reply_markup=component_alias_keyboard(),
+    )
+    data["prompt_message_id"] = sent.message_id
+    repo.set_setup_session(message.chat.id, message.from_user.id, "await_component_aliases", data)
+
+
+async def _start_component_alias_queue(message: Message, component_ids: list[int]) -> None:
+    data = {"alias_queue": _unique_component_queue(component_ids)}
+    await _send_next_component_alias_prompt(message, data, "Состав сохранён.")
 
 async def try_handle_setup_command(message: Message) -> bool:
     text = (message.text or "").strip()
@@ -443,17 +583,12 @@ async def try_handle_setup_command(message: Message) -> bool:
         if not product_match:
             await message.answer("Изделие не найдено. Сначала создайте изделие.")
             return True
-        components, errors = _parse_component_lines(chat_id, body)
+        components, errors = _parse_component_lines(chat_id, body, create_missing=True)
         if errors or not components:
             await message.answer("Не удалось сохранить состав.\n" + "\n".join(f"• {e}" for e in errors))
             return True
         repo.set_product_components(chat_id, product_match.target_id, components)
-        lines = [f"Состав сохранён: {product_match.name}"]
-        for component_id, qty in components:
-            ent = repo.get_entity(component_id)
-            if ent:
-                lines.append(f"• {ent.name} — {qty:g}")
-        await message.answer("\n".join(lines))
+        await _start_component_alias_queue(message, [component_id for component_id, _ in components])
         return True
 
     if normalize_key(text) in {"работники", "список работников"}:

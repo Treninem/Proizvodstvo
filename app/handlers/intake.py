@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ._safe import safe_edit_text
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 
@@ -67,7 +68,7 @@ async def confirm_pending(callback: CallbackQuery) -> None:
     scope_chat_id = repo.resolve_scope_chat_id(callback.message.chat.id)
     saved = accounting.apply_operations(scope_chat_id, callback.message.chat.id, callback.from_user.id, payload.get("operations", []), payload.get("raw_text", ""))
     accounting.clear_pending(pending_id)
-    await callback.message.edit_text(f"Сохранено записей: {saved}")
+    await safe_edit_text(callback.message, f"Сохранено записей: {saved}")
     await callback.answer()
 
 
@@ -75,7 +76,7 @@ async def confirm_pending(callback: CallbackQuery) -> None:
 async def cancel_pending(callback: CallbackQuery) -> None:
     pending_id = callback.data.split(":", 1)[1]
     accounting.clear_pending(pending_id)
-    await callback.message.edit_text("Запись отменена.")
+    await safe_edit_text(callback.message, "Запись отменена.")
     await callback.answer()
 
 

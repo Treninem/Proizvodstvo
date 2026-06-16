@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ._safe import safe_edit_text
 from aiogram import F, Router
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, Message
@@ -26,11 +27,11 @@ async def start(message: Message) -> None:
 
 @router.callback_query(F.data == "menu:main")
 async def menu_main(callback: CallbackQuery) -> None:
-    await callback.message.edit_text("Главное меню", reply_markup=main_menu())
+    await safe_edit_text(callback.message, "Главное меню", reply_markup=main_menu())
     await callback.answer()
 
 
 @router.callback_query(F.data == "menu:setup")
 async def menu_setup(callback: CallbackQuery) -> None:
-    await callback.message.edit_text("Настройка учёта", reply_markup=setup_menu())
+    await safe_edit_text(callback.message, "Настройка учёта", reply_markup=setup_menu())
     await callback.answer()

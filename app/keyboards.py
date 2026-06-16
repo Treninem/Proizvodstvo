@@ -34,7 +34,7 @@ def main_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Настроить учёт", callback_data="menu:setup")],
         [InlineKeyboardButton(text="Проверить учёт", callback_data="menu:readiness")],
         [InlineKeyboardButton(text="Склад", callback_data="menu:stock"), InlineKeyboardButton(text="Отчёты", callback_data="menu:reports")],
-        [InlineKeyboardButton(text="Работники", callback_data="menu:workers"), InlineKeyboardButton(text="Файл для печати", callback_data="menu:export")],
+        [InlineKeyboardButton(text="Работники", callback_data="menu:workers")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -45,6 +45,7 @@ def setup_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Создать участок", callback_data="wizard:area")],
         [InlineKeyboardButton(text="Создать должность", callback_data="wizard:job")],
         [InlineKeyboardButton(text="Добавить изделие", callback_data="wizard:entity:product")],
+        [InlineKeyboardButton(text="Состав изделия", callback_data="wizard:product_components")],
         [InlineKeyboardButton(text="Добавить комплектующую", callback_data="wizard:entity:component")],
         [InlineKeyboardButton(text="Добавить сырьё", callback_data="wizard:entity:material")],
         [InlineKeyboardButton(text="Добавить позицию склада", callback_data="wizard:entity:stock_item")],
@@ -85,6 +86,28 @@ def area_choice_keyboard(areas: list[tuple[int, str]], prefix: str = "area_bind"
     rows.append([InlineKeyboardButton(text="Отмена", callback_data="wizard:cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+
+
+def reports_quick_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Сегодня", callback_data="reportquick:отчёт за сегодня"), InlineKeyboardButton(text="Неделя", callback_data="reportquick:отчёт за неделю")],
+        [InlineKeyboardButton(text="Месяц", callback_data="reportquick:отчёт за месяц")],
+        [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
+    ])
+
+
+def workers_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Настроить учёт", callback_data="menu:setup")],
+        [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
+    ])
+
+
+def component_alias_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Пропустить", callback_data="componentalias:skip")],
+        [InlineKeyboardButton(text="Готово", callback_data="componentalias:finish")],
+    ])
 
 def confirm_keyboard(pending_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -130,3 +153,19 @@ def export_preferences_keyboard(selected: dict[str, bool]) -> InlineKeyboardMark
         rows.append([InlineKeyboardButton(text=mark + label, callback_data=f"export:toggle:{key}")])
     rows.append([InlineKeyboardButton(text="Сохранить", callback_data="export:done")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def report_sections_keyboard(token: str, selected: dict[str, bool], action_text: str = "Показать отчёт") -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for key, label in EXPORT_SECTION_LABELS.items():
+        mark = "✅ " if selected.get(key) else "⬜ "
+        rows.append([InlineKeyboardButton(text=mark + label, callback_data=f"report:toggle:{token}:{key}")])
+    rows.append([InlineKeyboardButton(text=action_text, callback_data=f"report:show:{token}")])
+    rows.append([InlineKeyboardButton(text="Отмена", callback_data=f"report:cancel:{token}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def report_download_keyboard(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Скачать отчёт", callback_data=f"report:download:{token}")],
+    ])

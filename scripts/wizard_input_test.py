@@ -119,6 +119,27 @@ async def main_async() -> None:
     assert session["data"].get("prompt_message_id") == 9001
     assert message.answers and "Участок создан" in message.answers[0][0]
 
+    ok, msg = repo.create_entity(chat_id, "product", "Изделие 1", "шт")
+    assert ok, msg
+    repo.set_setup_session(chat_id, user_id, "await_product_for_components", {"prompt_message_id": 200})
+    message_product = FakeMessage("Изделие 1", bot)
+    handled = await try_handle_wizard_message(message_product)
+    assert handled is True
+    session = repo.get_setup_session(chat_id, user_id)
+    assert session and session["state"] == "await_product_components", session
+
+    message_components = FakeMessage("Комплектующая 1 2, Комплектующая 2 3", bot)
+    handled = await try_handle_wizard_message(message_components)
+    assert handled is True
+    components = repo.list_entities(chat_id, {"component"})
+    assert {c.name for c in components} == {"Комплектующая 1", "Комплектующая 2"}
+    product = repo.get_entity_by_name(chat_id, "product", "Изделие 1")
+    assert product is not None
+    assert len(repo.list_product_components(product.id)) == 2
+    session = repo.get_setup_session(chat_id, user_id)
+    assert session and session["state"] == "await_component_aliases", session
+    assert message_components.answers and "Сокращения для" in message_components.answers[0][0]
+
 
 def main() -> None:
     asyncio.run(main_async())
