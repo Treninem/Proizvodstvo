@@ -126,7 +126,8 @@ async def main_async() -> None:
     handled = await try_handle_wizard_message(message_product)
     assert handled is True
     session = repo.get_setup_session(chat_id, user_id)
-    assert session and session["state"] == "await_product_components", session
+    assert session and session["state"] == "choose_product_components_action", session
+    repo.set_setup_session(chat_id, user_id, "await_product_components_replace", session["data"])
 
     message_components = FakeMessage("Комплектующая 1 2, Комплектующая 2 3", bot)
     handled = await try_handle_wizard_message(message_components)

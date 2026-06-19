@@ -32,7 +32,6 @@ ENTITY_LABELS: dict[str, str] = {
 def main_menu() -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="Настроить учёт", callback_data="menu:setup")],
-        [InlineKeyboardButton(text="Проверить учёт", callback_data="menu:readiness")],
         [InlineKeyboardButton(text="Склад", callback_data="menu:stock"), InlineKeyboardButton(text="Отчёты", callback_data="menu:reports")],
         [InlineKeyboardButton(text="Работники", callback_data="menu:workers")],
     ]
@@ -102,6 +101,25 @@ def workers_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
     ])
 
+
+
+def quick_step_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Пропустить", callback_data="quick:skip")],
+        [InlineKeyboardButton(text="Отмена", callback_data="wizard:cancel")],
+    ])
+
+
+def product_components_action_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Показать состав", callback_data="components:show")],
+        [InlineKeyboardButton(text="Заменить состав", callback_data="components:replace")],
+        [InlineKeyboardButton(text="Добавить комплектующие", callback_data="components:add")],
+        [InlineKeyboardButton(text="Изменить количество", callback_data="components:qty")],
+        [InlineKeyboardButton(text="Удалить комплектующие", callback_data="components:remove")],
+        [InlineKeyboardButton(text="Готово", callback_data="components:finish")],
+        [InlineKeyboardButton(text="Отмена", callback_data="wizard:cancel")],
+    ])
 
 def component_alias_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[

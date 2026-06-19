@@ -86,6 +86,15 @@ python -m app.main
 
 Можно вводить через запятую. Если комплектующей ещё нет, бот создаст её и предложит добавить сокращения.
 
+После выбора изделия можно:
+
+- показать состав;
+- заменить состав;
+- добавить комплектующие;
+- изменить количество;
+- убрать комплектующие;
+- посмотреть, сколько изделий можно собрать из текущих остатков.
+
 ## Отчёты
 
 Можно запросить один день или период:
@@ -117,6 +126,9 @@ python scripts/smoke_test.py
 python scripts/wizard_input_test.py
 python scripts/flow_test.py
 python scripts/report_flow_test.py
+python scripts/report_callback_owner_test.py
+python scripts/component_management_test.py
+python scripts/quick_setup_test.py
 python scripts/safe_edit_test.py
 python scripts/security_audit.py
 python scripts/runtime_guard_test.py

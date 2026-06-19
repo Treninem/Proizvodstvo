@@ -11,7 +11,7 @@ from ..services.normalize import normalize_key
 from ..services import reporting
 from ..services import repository as repo
 from ..access import can_view_reports
-from ..keyboards import report_sections_keyboard, report_download_keyboard, EXPORT_SECTION_LABELS
+from ..keyboards import report_sections_keyboard, report_download_keyboard, EXPORT_SECTION_LABELS, reports_quick_menu
 
 router = Router()
 
@@ -110,8 +110,9 @@ def _download_path(state: ReportState):
     return reporting.create_universal_report_zip(state.scope_chat_id, state.request_text, user_id=state.user_id)
 
 
-def _start_selection(message: Message, scope_chat_id: int, text: str, mode: str) -> tuple[str, ReportState]:
-    user_id = message.from_user.id if message.from_user else 0
+def _start_selection(message: Message, scope_chat_id: int, text: str, mode: str, user_id: int | None = None) -> tuple[str, ReportState]:
+    if user_id is None:
+        user_id = message.from_user.id if message.from_user else 0
     selected = repo.get_export_preferences(scope_chat_id, user_id)
     token = _token()
     state = ReportState(
@@ -134,7 +135,7 @@ async def report_quick_callback(callback: CallbackQuery) -> None:
         await callback.answer("Нет доступа.", show_alert=True)
         return
     scope_chat_id = repo.resolve_scope_chat_id(callback.message.chat.id)
-    token, state = _start_selection(callback.message, scope_chat_id, request_text, "show")
+    token, state = _start_selection(callback.message, scope_chat_id, request_text, "show", user_id=callback.from_user.id)
     await safe_edit_text(callback.message, 
         _format_selection_text(state),
         reply_markup=report_sections_keyboard(token, state.selected, "Показать отчёт"),
@@ -168,7 +169,7 @@ async def report_selection_callback(callback: CallbackQuery) -> None:
         return
     if action == "cancel":
         _REPORT_STATES.pop(token, None)
-        await safe_edit_text(callback.message, "Отменено.")
+        await safe_edit_text(callback.message, "Отчёт отменён.", reply_markup=reports_quick_menu())
         await callback.answer()
         return
     if action == "show":

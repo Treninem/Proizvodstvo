@@ -13,6 +13,8 @@ from ..keyboards import (
     component_alias_keyboard,
     meter_area_keyboard,
     permission_keyboard,
+    product_components_action_keyboard,
+    quick_step_keyboard,
     setup_menu,
     skip_alias_keyboard,
     stock_item_area_keyboard,
@@ -58,24 +60,57 @@ def _with_prompt(data: dict | None, message_id: int | None) -> dict:
 
 @router.callback_query(F.data.startswith("setup:"))
 async def setup_section(callback: CallbackQuery) -> None:
+    if not await can_manage_accounting(callback.bot, callback.message.chat, callback.from_user):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
     section = callback.data.split(":", 1)[1]
+    if section == "quick":
+        repo.set_setup_session(callback.message.chat.id, callback.from_user.id, "quick_area_name", {"prompt_message_id": callback.message.message_id})
+        await safe_edit_text(callback.message, "Быстрая настройка\n\nШаг 1 из 6\nВведите название участка.", reply_markup=quick_step_keyboard())
+        await callback.answer()
+        return
     texts = {
-        "quick": (
-            "Быстрая настройка\n\n"
-            "1. Создайте участок.\n"
-            "2. Создайте нужные должности.\n"
-            "3. Добавьте изделия, комплектующие, сырьё, складские позиции и счётчики.\n"
-            "4. Добавьте сокращения, если работники пишут коротко.\n"
-            "5. Подключите рабочую группу командой: привязать группу."
-        ),
-        "areas": "Участки\n\nСоздавайте только нужные участки. Максимум — 999.",
-        "groups": "Группы\n\nБот принимает данные только в подключённых группах.",
-        "jobs": "Должности\n\nВладелец учёта сам создаёт названия должностей и выбирает права.",
-        "items": "Позиции\n\nДобавьте свои изделия, комплектующие или складские позиции. Названия можно писать любые.",
+        "areas": "Участки\n\nЗдесь создаются места для сырья и счётчиков.",
+        "groups": "Группы\n\nДанные принимаются только из подключённых групп.",
+        "jobs": "Должности\n\nСоздайте должность и отметьте нужные права.",
+        "items": "Позиции\n\nДобавьте изделия, комплектующие или складские позиции.",
         "materials": "Сырьё\n\nСырьё можно учитывать по участкам.",
         "meters": "Счётчики\n\nСчётчик можно привязать к одному или нескольким участкам.",
     }
     await safe_edit_text(callback.message, texts.get(section, "Настройка учёта"), reply_markup=setup_menu())
+    await callback.answer()
+
+
+def _next_quick_state(state: str) -> tuple[str | None, str]:
+    steps = {
+        "quick_area_name": ("quick_job_name", "Быстрая настройка\n\nШаг 2 из 6\nВведите название должности."),
+        "quick_job_name": ("quick_product_name", "Быстрая настройка\n\nШаг 3 из 6\nВведите название изделия."),
+        "quick_product_name": ("quick_product_components", "Быстрая настройка\n\nШаг 4 из 6\nВведите комплектующие и количество через строки или запятую."),
+        "quick_product_components": ("quick_material_name", "Быстрая настройка\n\nШаг 5 из 6\nВведите название сырья."),
+        "quick_material_name": ("quick_meter_name", "Быстрая настройка\n\nШаг 6 из 6\nВведите название счётчика."),
+        "quick_meter_name": (None, "Быстрая настройка завершена."),
+    }
+    return steps.get(state, (None, "Быстрая настройка завершена."))
+
+
+@router.callback_query(F.data == "quick:skip")
+async def quick_skip_callback(callback: CallbackQuery) -> None:
+    if not await can_manage_accounting(callback.bot, callback.message.chat, callback.from_user):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    session = repo.get_setup_session(callback.message.chat.id, callback.from_user.id)
+    if not session or not str(session["state"]).startswith("quick_"):
+        await callback.answer("Откройте настройку заново.", show_alert=True)
+        return
+    next_state, prompt = _next_quick_state(session["state"])
+    data = dict(session["data"] or {})
+    if next_state is None:
+        repo.clear_setup_session(callback.message.chat.id, callback.from_user.id)
+        await safe_edit_text(callback.message, prompt, reply_markup=setup_menu())
+    else:
+        data["prompt_message_id"] = callback.message.message_id
+        repo.set_setup_session(callback.message.chat.id, callback.from_user.id, next_state, data)
+        await safe_edit_text(callback.message, prompt, reply_markup=quick_step_keyboard())
     await callback.answer()
 
 
@@ -161,6 +196,63 @@ async def permission_callback(callback: CallbackQuery) -> None:
         await safe_edit_text(callback.message, msg, reply_markup=setup_menu())
         await callback.answer()
         return
+
+
+def _product_components_text(product_id: int) -> str:
+    product = repo.get_entity(product_id)
+    if not product:
+        return "Изделие не найдено."
+    components = repo.list_product_components(product_id)
+    lines = [f"Состав изделия: {product.name}"]
+    if not components:
+        lines.append("Состав пока не задан.")
+    else:
+        for comp in components:
+            lines.append(f"• {comp['name']} — {float(comp['quantity']):g} {comp.get('default_unit') or 'шт'}")
+    from ..services import reporting
+    capacity = reporting.build_assembly_capacity_report(product.chat_id, f"сколько можно собрать {product.name}")
+    lines.append("")
+    lines.append(capacity)
+    return "\n".join(lines)
+
+
+@router.callback_query(F.data.startswith("components:"))
+async def product_components_callback(callback: CallbackQuery) -> None:
+    if not await can_manage_accounting(callback.bot, callback.message.chat, callback.from_user):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    chat_id = callback.message.chat.id
+    user_id = callback.from_user.id
+    session = repo.get_setup_session(chat_id, user_id)
+    if not session or session["state"] != "choose_product_components_action":
+        await callback.answer("Откройте настройку заново.", show_alert=True)
+        return
+    data = dict(session["data"] or {})
+    product_id = int(data.get("product_id", 0))
+    action = callback.data.split(":", 1)[1]
+    if action == "finish":
+        repo.clear_setup_session(chat_id, user_id)
+        await safe_edit_text(callback.message, "Сохранено.", reply_markup=setup_menu())
+        await callback.answer()
+        return
+    if action == "show":
+        await safe_edit_text(callback.message, _product_components_text(product_id), reply_markup=product_components_action_keyboard())
+        await callback.answer()
+        return
+    prompts = {
+        "replace": ("await_product_components_replace", "Введите полный состав изделия. Старый состав будет заменён."),
+        "add": ("await_product_components_add", "Введите комплектующие, которые нужно добавить или обновить."),
+        "remove": ("await_product_components_remove", "Введите комплектующие, которые нужно убрать из состава."),
+        "qty": ("await_product_component_quantity", "Введите комплектующие с новым количеством."),
+    }
+    if action not in prompts:
+        await callback.answer()
+        return
+    next_state, prompt = prompts[action]
+    data["prompt_message_id"] = callback.message.message_id
+    repo.set_setup_session(chat_id, user_id, next_state, data)
+    await safe_edit_text(callback.message, prompt + "\n\nМожно писать через строки или через запятую.", reply_markup=cancel_keyboard())
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("meterarea:"))
@@ -330,6 +422,44 @@ async def try_handle_wizard_message(message: Message) -> bool:
         await _send_step_message(message, "Отменено.", reply_markup=setup_menu())
         return True
 
+    if state.startswith("quick_"):
+        skip_words = {"пропустить", "нет", "не надо", "дальше"}
+        current = state
+        if current == "quick_area_name" and text.lower() not in skip_words:
+            if repo.count_active_areas(chat_id) < 999:
+                repo.create_area(chat_id, text)
+        elif current == "quick_job_name" and text.lower() not in skip_words:
+            repo.create_job_title(chat_id, text, repo.full_permissions())
+        elif current == "quick_product_name" and text.lower() not in skip_words:
+            ok, _ = repo.create_entity(chat_id, "product", text, "шт")
+            product = repo.get_entity_by_name(chat_id, "product", text)
+            if product:
+                data["quick_product_id"] = product.id
+        elif current == "quick_product_components" and text.lower() not in skip_words:
+            product_id = int(data.get("quick_product_id") or 0)
+            if product_id:
+                components, errors = _parse_component_lines(chat_id, text, create_missing=True)
+                if errors or not components:
+                    sent = await _send_step_message(message, "Не удалось сохранить состав. Введите список ещё раз или нажмите «Пропустить».", reply_markup=quick_step_keyboard())
+                    data["prompt_message_id"] = sent.message_id
+                    repo.set_setup_session(chat_id, user_id, current, data)
+                    return True
+                repo.set_product_components(chat_id, product_id, components)
+        elif current == "quick_material_name" and text.lower() not in skip_words:
+            repo.create_entity(chat_id, "material", text, "кг")
+        elif current == "quick_meter_name" and text.lower() not in skip_words:
+            repo.create_entity(chat_id, "meter", text, "кВт⋅ч")
+
+        next_state, prompt = _next_quick_state(current)
+        if next_state is None:
+            repo.clear_setup_session(chat_id, user_id)
+            await _send_step_message(message, prompt, reply_markup=setup_menu())
+        else:
+            sent = await _send_step_message(message, prompt, reply_markup=quick_step_keyboard())
+            data["prompt_message_id"] = sent.message_id
+            repo.set_setup_session(chat_id, user_id, next_state, data)
+        return True
+
     if state == "await_area_name":
         if repo.count_active_areas(chat_id) >= 999:
             repo.clear_setup_session(chat_id, user_id)
@@ -363,13 +493,13 @@ async def try_handle_wizard_message(message: Message) -> bool:
             return True
         sent = await _send_step_message(
             message,
-            "Введите комплектующие и количество.\n\nМожно списком через строки или через запятую. Если комплектующей ещё нет, бот создаст её сам.",
-            reply_markup=cancel_keyboard(),
+            _product_components_text(match.target_id),
+            reply_markup=product_components_action_keyboard(),
         )
-        repo.set_setup_session(chat_id, user_id, "await_product_components", {"product_id": match.target_id, "product_name": match.name, "prompt_message_id": sent.message_id})
+        repo.set_setup_session(chat_id, user_id, "choose_product_components_action", {"product_id": match.target_id, "product_name": match.name, "prompt_message_id": sent.message_id})
         return True
 
-    if state == "await_product_components":
+    if state in {"await_product_components", "await_product_components_replace", "await_product_components_add", "await_product_component_quantity"}:
         product_id = int(data.get("product_id", 0))
         product = repo.get_entity(product_id)
         if not product:
@@ -380,11 +510,34 @@ async def try_handle_wizard_message(message: Message) -> bool:
         if errors or not components:
             await _send_step_message(message, "Не удалось сохранить состав.\n" + "\n".join(f"• {e}" for e in errors), reply_markup=cancel_keyboard())
             sent = await message.answer("Введите список ещё раз.", reply_markup=cancel_keyboard())
-            repo.set_setup_session(chat_id, user_id, "await_product_components", {"product_id": product_id, "product_name": product.name, "prompt_message_id": sent.message_id})
+            repo.set_setup_session(chat_id, user_id, state, {"product_id": product_id, "product_name": product.name, "prompt_message_id": sent.message_id})
             return True
-        repo.set_product_components(chat_id, product_id, components)
+        if state in {"await_product_components", "await_product_components_replace"}:
+            repo.set_product_components(chat_id, product_id, components)
+            prefix = "Состав заменён."
+        else:
+            repo.add_or_update_product_components(chat_id, product_id, components)
+            prefix = "Состав обновлён."
         component_ids = [component_id for component_id, _ in components]
-        await _start_component_alias_queue(message, component_ids)
+        await _start_component_alias_queue(message, component_ids, prefix=prefix)
+        return True
+
+    if state == "await_product_components_remove":
+        product_id = int(data.get("product_id", 0))
+        product = repo.get_entity(product_id)
+        if not product:
+            repo.clear_setup_session(chat_id, user_id)
+            await _send_step_message(message, "Изделие не найдено. Откройте настройку заново.", reply_markup=setup_menu())
+            return True
+        component_ids, errors = _parse_component_names(chat_id, text)
+        if errors or not component_ids:
+            await _send_step_message(message, "Не удалось убрать комплектующие.\n" + "\n".join(f"• {e}" for e in errors), reply_markup=cancel_keyboard())
+            sent = await message.answer("Введите список ещё раз.", reply_markup=cancel_keyboard())
+            repo.set_setup_session(chat_id, user_id, state, {"product_id": product_id, "product_name": product.name, "prompt_message_id": sent.message_id})
+            return True
+        removed = repo.remove_product_components(chat_id, product_id, component_ids)
+        repo.set_setup_session(chat_id, user_id, "choose_product_components_action", {"product_id": product_id, "product_name": product.name})
+        await _send_step_message(message, f"Убрано из состава: {removed}.", reply_markup=product_components_action_keyboard())
         return True
 
     if state == "await_component_aliases":
@@ -504,6 +657,43 @@ def _parse_component_lines(chat_id: int, text: str, create_missing: bool = False
     return components, errors
 
 
+def _parse_component_names(chat_id: int, text: str) -> tuple[list[int], list[str]]:
+    from ..services.matcher import confident_match
+
+    scope_chat_id = repo.resolve_scope_chat_id(chat_id)
+    parts: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        for chunk in line.split(","):
+            chunk = chunk.strip(" -•")
+            if chunk:
+                parts.append(chunk)
+    ids: list[int] = []
+    errors: list[str] = []
+    seen: set[int] = set()
+    for part in parts:
+        name = re.sub(r"\b(?:шт|штук|штуки|кг|г|т)\b", " ", part, flags=re.IGNORECASE).strip(" ,.-")
+        name = re.sub(r"\d+(?:[,.]\d+)?", " ", name).strip(" ,.-")
+        if not name:
+            errors.append(f"Не найдено название: {part}")
+            continue
+        exact = repo.get_entity_by_name(scope_chat_id, "component", name)
+        component_id: int | None = exact.id if exact else None
+        if component_id is None:
+            match, _ = confident_match(chat_id, name, allowed_types={"component"})
+            if match and match.score >= 0.90:
+                component_id = match.target_id
+        if component_id is None:
+            errors.append(f"Не найдена комплектующая: {name}")
+            continue
+        if component_id not in seen:
+            ids.append(component_id)
+            seen.add(component_id)
+    return ids, errors
+
+
 def _unique_component_queue(component_ids: list[int]) -> list[dict]:
     result: list[dict] = []
     seen: set[int] = set()
@@ -535,9 +725,9 @@ async def _send_next_component_alias_prompt(message: Message, data: dict, prefix
     repo.set_setup_session(message.chat.id, message.from_user.id, "await_component_aliases", data)
 
 
-async def _start_component_alias_queue(message: Message, component_ids: list[int]) -> None:
+async def _start_component_alias_queue(message: Message, component_ids: list[int], prefix: str = "Состав сохранён.") -> None:
     data = {"alias_queue": _unique_component_queue(component_ids)}
-    await _send_next_component_alias_prompt(message, data, "Состав сохранён.")
+    await _send_next_component_alias_prompt(message, data, prefix)
 
 async def try_handle_setup_command(message: Message) -> bool:
     text = (message.text or "").strip()
@@ -571,6 +761,68 @@ async def try_handle_setup_command(message: Message) -> bool:
         user = message.reply_to_message.from_user
         repo.set_worker_job(chat_id, user.id, _display_name_from_user(user), int(job["id"]))
         await message.answer(f"Должность назначена: {job['name']}.")
+        return True
+
+    show_comp_match = re.match(r"^состав\s+(.+)$", text, flags=re.IGNORECASE)
+    if show_comp_match and ":" not in text:
+        from ..services.matcher import confident_match
+        product_name = show_comp_match.group(1).strip()
+        product_match, _ = confident_match(chat_id, product_name, allowed_types={"product"})
+        if not product_match:
+            await message.answer("Изделие не найдено. Сначала создайте изделие.")
+            return True
+        await message.answer(_product_components_text(product_match.target_id))
+        return True
+
+    add_comp_match = re.match(r"^добавить\s+в\s+состав\s+(.+?)\s*:\s*(.+)$", text, flags=re.IGNORECASE | re.DOTALL)
+    if add_comp_match:
+        from ..services.matcher import confident_match
+        product_name = add_comp_match.group(1).strip()
+        body = add_comp_match.group(2).strip()
+        product_match, _ = confident_match(chat_id, product_name, allowed_types={"product"})
+        if not product_match:
+            await message.answer("Изделие не найдено. Сначала создайте изделие.")
+            return True
+        components, errors = _parse_component_lines(chat_id, body, create_missing=True)
+        if errors or not components:
+            await message.answer("Не удалось обновить состав.\n" + "\n".join(f"• {e}" for e in errors))
+            return True
+        repo.add_or_update_product_components(chat_id, product_match.target_id, components)
+        await message.answer("Состав обновлён.")
+        return True
+
+    remove_comp_match = re.match(r"^(?:убрать|удалить)\s+из\s+состава\s+(.+?)\s*:\s*(.+)$", text, flags=re.IGNORECASE | re.DOTALL)
+    if remove_comp_match:
+        from ..services.matcher import confident_match
+        product_name = remove_comp_match.group(1).strip()
+        body = remove_comp_match.group(2).strip()
+        product_match, _ = confident_match(chat_id, product_name, allowed_types={"product"})
+        if not product_match:
+            await message.answer("Изделие не найдено. Сначала создайте изделие.")
+            return True
+        component_ids, errors = _parse_component_names(chat_id, body)
+        if errors or not component_ids:
+            await message.answer("Не удалось убрать комплектующие.\n" + "\n".join(f"• {e}" for e in errors))
+            return True
+        removed = repo.remove_product_components(chat_id, product_match.target_id, component_ids)
+        await message.answer(f"Убрано из состава: {removed}.")
+        return True
+
+    qty_comp_match = re.match(r"^(?:изменить\s+количество\s+в\s+составе|количество\s+в\s+составе)\s+(.+?)\s*:\s*(.+)$", text, flags=re.IGNORECASE | re.DOTALL)
+    if qty_comp_match:
+        from ..services.matcher import confident_match
+        product_name = qty_comp_match.group(1).strip()
+        body = qty_comp_match.group(2).strip()
+        product_match, _ = confident_match(chat_id, product_name, allowed_types={"product"})
+        if not product_match:
+            await message.answer("Изделие не найдено. Сначала создайте изделие.")
+            return True
+        components, errors = _parse_component_lines(chat_id, body, create_missing=True)
+        if errors or not components:
+            await message.answer("Не удалось изменить количество.\n" + "\n".join(f"• {e}" for e in errors))
+            return True
+        repo.add_or_update_product_components(chat_id, product_match.target_id, components)
+        await message.answer("Количество обновлено.")
         return True
 
     # Состав изделия: первая часть до двоеточия — изделие, дальше комплектующие и количество.

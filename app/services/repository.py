@@ -786,6 +786,52 @@ def set_product_components(chat_id: int, product_id: int, components: list[tuple
             db.execute("INSERT OR REPLACE INTO product_components(product_id,component_id,quantity) VALUES(?,?,?)", (product_id, component_id, float(qty)))
 
 
+def add_or_update_product_components(chat_id: int, product_id: int, components: list[tuple[int, float]]) -> None:
+    chat_id = resolve_scope_chat_id(chat_id)
+    product = db.fetchone("SELECT id FROM entities WHERE chat_id=? AND id=? AND entity_type='product' AND is_archived=0", (chat_id, product_id))
+    if not product:
+        return
+    for component_id, qty in components:
+        comp = db.fetchone("SELECT id FROM entities WHERE chat_id=? AND id=? AND entity_type='component' AND is_archived=0", (chat_id, component_id))
+        if comp and qty > 0:
+            db.execute(
+                "INSERT OR REPLACE INTO product_components(product_id,component_id,quantity) VALUES(?,?,?)",
+                (product_id, component_id, float(qty)),
+            )
+
+
+def remove_product_components(chat_id: int, product_id: int, component_ids: list[int]) -> int:
+    chat_id = resolve_scope_chat_id(chat_id)
+    if not component_ids:
+        return 0
+    product = db.fetchone("SELECT id FROM entities WHERE chat_id=? AND id=? AND entity_type='product' AND is_archived=0", (chat_id, product_id))
+    if not product:
+        return 0
+    removed = 0
+    for component_id in component_ids:
+        before = db.fetchone("SELECT component_id FROM product_components WHERE product_id=? AND component_id=?", (product_id, component_id))
+        if before:
+            db.execute("DELETE FROM product_components WHERE product_id=? AND component_id=?", (product_id, component_id))
+            removed += 1
+    return removed
+
+
+def update_product_component_quantity(chat_id: int, product_id: int, component_id: int, quantity: float) -> bool:
+    chat_id = resolve_scope_chat_id(chat_id)
+    if quantity <= 0:
+        return False
+    product = db.fetchone("SELECT id FROM entities WHERE chat_id=? AND id=? AND entity_type='product' AND is_archived=0", (chat_id, product_id))
+    comp = db.fetchone("SELECT id FROM entities WHERE chat_id=? AND id=? AND entity_type='component' AND is_archived=0", (chat_id, component_id))
+    if not product or not comp:
+        return False
+    existing = db.fetchone("SELECT component_id FROM product_components WHERE product_id=? AND component_id=?", (product_id, component_id))
+    if existing:
+        db.execute("UPDATE product_components SET quantity=? WHERE product_id=? AND component_id=?", (float(quantity), product_id, component_id))
+    else:
+        db.execute("INSERT INTO product_components(product_id,component_id,quantity) VALUES(?,?,?)", (product_id, component_id, float(quantity)))
+    return True
+
+
 def list_product_components(product_id: int) -> list[dict]:
     rows = db.fetchall(
         """
