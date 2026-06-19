@@ -35,6 +35,7 @@ def main_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Группы", callback_data="menu:chats")],
         [InlineKeyboardButton(text="Склад", callback_data="menu:stock"), InlineKeyboardButton(text="Отчёты", callback_data="menu:reports")],
         [InlineKeyboardButton(text="Работники", callback_data="menu:workers")],
+        [InlineKeyboardButton(text="Как пользоваться", callback_data="menu:help")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -108,6 +109,31 @@ def area_choice_keyboard(areas: list[tuple[int, str]], prefix: str = "area_bind"
     rows.append([InlineKeyboardButton(text="Отмена", callback_data="wizard:cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+
+
+def job_title_choice_keyboard(jobs: list[dict], target_user_id: int, page: int = 0) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    start = max(0, page) * 12
+    shown = jobs[start:start + 12]
+    for job in shown:
+        rows.append([InlineKeyboardButton(text=str(job.get("name") or "Должность"), callback_data=f"jobassign:pick:{target_user_id}:{int(job['id'])}:{page}")])
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="Назад", callback_data=f"jobassign:page:{target_user_id}:{page - 1}"))
+    if start + 12 < len(jobs):
+        nav.append(InlineKeyboardButton(text="Дальше", callback_data=f"jobassign:page:{target_user_id}:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="Отмена", callback_data=f"jobassign:cancel:{target_user_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def job_assignment_confirm_keyboard(target_user_id: int, job_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Подтвердить", callback_data=f"jobassign:confirm:{target_user_id}:{job_id}")],
+        [InlineKeyboardButton(text="Изменить", callback_data=f"jobassign:change:{target_user_id}")],
+        [InlineKeyboardButton(text="Отмена", callback_data=f"jobassign:cancel:{target_user_id}")],
+    ])
 
 
 def reports_quick_menu() -> InlineKeyboardMarkup:

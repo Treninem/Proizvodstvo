@@ -71,11 +71,18 @@ async def workers_open(callback: CallbackQuery) -> None:
         return
     workers = repo.list_workers(callback.message.chat.id)
     if not workers:
-        text = "Работники пока не назначены."
+        text = (
+            "Работники пока не назначены.\n\n"
+            "Как назначить должность:\n"
+            "1. В рабочей группе ответьте на сообщение нужного человека.\n"
+            "2. Напишите: назначить должность\n"
+            "3. Выберите должность в личке и подтвердите."
+        )
     else:
         lines = ["Работники"]
         for w in workers[:60]:
             lines.append(f"• {w.get('display_name') or w.get('user_id')} — {w.get('job_name') or 'без должности'}")
+        lines.append("\nЧтобы назначить должность: ответьте в группе на сообщение человека и напишите: назначить должность")
         text = "\n".join(lines)
     await safe_edit_text(callback.message, text, reply_markup=workers_menu())
     await callback.answer()

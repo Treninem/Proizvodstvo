@@ -12,6 +12,8 @@ from ..keyboards import (
     cancel_keyboard,
     component_alias_keyboard,
     component_choice_keyboard,
+    job_assignment_confirm_keyboard,
+    job_title_choice_keyboard,
     meter_area_keyboard,
     permission_keyboard,
     product_choice_keyboard,
@@ -60,6 +62,42 @@ def _with_prompt(data: dict | None, message_id: int | None) -> dict:
     return payload
 
 
+def _short_list(names: list[str], empty: str = "Пока ничего нет.") -> str:
+    clean = [name.strip() for name in names if name and name.strip()]
+    if not clean:
+        return empty
+    shown = clean[:12]
+    text = ", ".join(shown)
+    if len(clean) > len(shown):
+        text += f" и ещё {len(clean) - len(shown)}"
+    return text
+
+
+def _existing_jobs_text(chat_id: int) -> str:
+    jobs = repo.list_job_titles(chat_id)
+    return "Уже есть: " + _short_list([str(job.get("name") or "") for job in jobs])
+
+
+def _existing_areas_text(chat_id: int) -> str:
+    areas = repo.list_areas(chat_id)
+    return "Уже есть: " + _short_list([area.name for area in areas])
+
+
+def _existing_entities_text(chat_id: int, entity_type: str) -> str:
+    items = repo.list_entities(chat_id, {entity_type})
+    return "Уже есть: " + _short_list([item.name for item in items])
+
+
+def _neutral_example_for_entity(entity_type: str) -> str:
+    return {
+        "product": "Изделие 1",
+        "component": "Комплектующая 1",
+        "material": "Сырьё 1",
+        "stock_item": "Позиция 1",
+        "meter": "Счётчик 1",
+    }.get(entity_type, "Название 1")
+
+
 @router.callback_query(F.data.startswith("setup:"))
 async def setup_section(callback: CallbackQuery) -> None:
     if not await can_manage_accounting(callback.bot, callback.message.chat, callback.from_user):
@@ -68,7 +106,13 @@ async def setup_section(callback: CallbackQuery) -> None:
     section = callback.data.split(":", 1)[1]
     if section == "quick":
         repo.set_setup_session(callback.message.chat.id, callback.from_user.id, "quick_area_name", {"prompt_message_id": callback.message.message_id})
-        await safe_edit_text(callback.message, "Быстрая настройка\n\nШаг 1 из 6\nВведите название участка.", reply_markup=quick_step_keyboard())
+        await safe_edit_text(
+            callback.message,
+            "Быстрая настройка\n\nШаг 1 из 6\nВведите название участка.\n"
+            + _existing_areas_text(callback.message.chat.id)
+            + "\n\nПример: Участок 1",
+            reply_markup=quick_step_keyboard(),
+        )
         await callback.answer()
         return
     texts = {
@@ -85,11 +129,11 @@ async def setup_section(callback: CallbackQuery) -> None:
 
 def _next_quick_state(state: str) -> tuple[str | None, str]:
     steps = {
-        "quick_area_name": ("quick_job_name", "Быстрая настройка\n\nШаг 2 из 6\nВведите название должности."),
-        "quick_job_name": ("quick_product_name", "Быстрая настройка\n\nШаг 3 из 6\nВведите название изделия."),
-        "quick_product_name": ("quick_product_components", "Быстрая настройка\n\nШаг 4 из 6\nВведите комплектующие и количество через строки или запятую."),
-        "quick_product_components": ("quick_material_name", "Быстрая настройка\n\nШаг 5 из 6\nВведите название сырья."),
-        "quick_material_name": ("quick_meter_name", "Быстрая настройка\n\nШаг 6 из 6\nВведите название счётчика."),
+        "quick_area_name": ("quick_job_name", "Быстрая настройка\n\nШаг 2 из 6\nВведите название должности.\n\nПример: Смена 1"),
+        "quick_job_name": ("quick_product_name", "Быстрая настройка\n\nШаг 3 из 6\nВведите название изделия.\n\nПример: Изделие 1"),
+        "quick_product_name": ("quick_product_components", "Быстрая настройка\n\nШаг 4 из 6\nВведите комплектующие и количество через строки или запятую.\n\nПример:\nКомплектующая 1 — 2 шт\nКомплектующая 2 — 1 шт"),
+        "quick_product_components": ("quick_material_name", "Быстрая настройка\n\nШаг 5 из 6\nВведите название сырья.\n\nПример: Сырьё 1"),
+        "quick_material_name": ("quick_meter_name", "Быстрая настройка\n\nШаг 6 из 6\nВведите название счётчика.\n\nПример: Счётчик 1"),
         "quick_meter_name": (None, "Быстрая настройка завершена."),
     }
     return steps.get(state, (None, "Быстрая настройка завершена."))
@@ -140,13 +184,27 @@ async def wizard_callback(callback: CallbackQuery) -> None:
 
     if data == "wizard:area":
         repo.set_setup_session(chat_id, user_id, "await_area_name", {"prompt_message_id": callback.message.message_id})
-        await safe_edit_text(callback.message, "Введите название участка.\n\nУчасток нужен для учёта сырья и счётчиков. Название можно написать любое. После сохранения бот предложит добавить сокращения.", reply_markup=cancel_keyboard())
+        await safe_edit_text(
+            callback.message,
+            "Введите название участка.\n\n"
+            "Участок нужен для сырья и счётчиков. Название можно написать любое.\n"
+            + _existing_areas_text(chat_id)
+            + "\n\nПример: Участок 1",
+            reply_markup=cancel_keyboard(),
+        )
         await callback.answer()
         return
 
     if data == "wizard:job":
         repo.set_setup_session(chat_id, user_id, "await_job_name", {"prompt_message_id": callback.message.message_id})
-        await safe_edit_text(callback.message, "Введите название должности.\n\nПосле названия бот покажет список прав. Отметьте галочками, что будет разрешено этой должности.", reply_markup=cancel_keyboard())
+        await safe_edit_text(
+            callback.message,
+            "Введите название должности.\n\n"
+            "После названия бот покажет список прав. Отметьте только нужное.\n"
+            + _existing_jobs_text(chat_id)
+            + "\n\nПример: Смена 1",
+            reply_markup=cancel_keyboard(),
+        )
         await callback.answer()
         return
 
@@ -169,9 +227,133 @@ async def wizard_callback(callback: CallbackQuery) -> None:
         entity_type = data.rsplit(":", 1)[1]
         label = ENTITY_LABELS.get(entity_type, "Позиция")
         repo.set_setup_session(chat_id, user_id, "await_entity_name", {"entity_type": entity_type, "prompt_message_id": callback.message.message_id})
-        await safe_edit_text(callback.message, f"Введите название.\n\nТип: {label}\nНазвание можно написать любое. После сохранения можно добавить сокращения и рабочие названия.", reply_markup=cancel_keyboard())
+        await safe_edit_text(
+            callback.message,
+            f"Введите название.\n\nТип: {label}\n"
+            "После сохранения можно добавить сокращения и рабочие названия.\n"
+            + _existing_entities_text(chat_id, entity_type)
+            + f"\n\nПример: {_neutral_example_for_entity(entity_type)}",
+            reply_markup=cancel_keyboard(),
+        )
         await callback.answer()
         return
+
+
+def _assignment_job_by_id(group_chat_id: int, job_id: int) -> dict | None:
+    for job in repo.list_job_titles(group_chat_id):
+        if int(job.get("id") or 0) == int(job_id):
+            return job
+    return None
+
+
+def _assignment_text(data: dict, page: int = 0) -> str:
+    group_title = str(data.get("group_title") or "рабочая группа")
+    target_name = str(data.get("target_name") or data.get("target_user_id") or "участник")
+    return (
+        "Назначение должности\n\n"
+        f"Кому: {target_name}\n"
+        f"Группа: {group_title}\n\n"
+        "Выберите должность кнопкой. После выбора бот попросит подтвердить действие."
+    )
+
+
+async def _open_assignment_menu(message_or_callback_message, actor_user_id: int, group_chat_id: int, data: dict, page: int = 0) -> None:
+    jobs = repo.list_job_titles(group_chat_id)
+    if not jobs:
+        repo.clear_setup_session(actor_user_id, actor_user_id)
+        await safe_edit_text(
+            message_or_callback_message,
+            "Должностей пока нет. Сначала создайте должность в настройке учёта.",
+            reply_markup=setup_menu(),
+        )
+        return
+    data["page"] = int(page)
+    repo.set_setup_session(actor_user_id, actor_user_id, "assign_job_select", data)
+    await safe_edit_text(
+        message_or_callback_message,
+        _assignment_text(data, page),
+        reply_markup=job_title_choice_keyboard(jobs, int(data["target_user_id"]), page),
+    )
+
+
+@router.callback_query(F.data.startswith("jobassign:"))
+async def job_assignment_callback(callback: CallbackQuery) -> None:
+    if not callback.from_user:
+        await callback.answer("Откройте меню заново.", show_alert=True)
+        return
+    user_id = callback.from_user.id
+    session = repo.get_setup_session(user_id, user_id)
+    if not session or not str(session.get("state", "")).startswith("assign_job"):
+        await callback.answer("Откройте назначение заново.", show_alert=True)
+        return
+    data = dict(session.get("data") or {})
+    parts = callback.data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    target_user_id = int(data.get("target_user_id") or 0)
+    group_chat_id = int(data.get("group_chat_id") or 0)
+    if not target_user_id or not group_chat_id:
+        repo.clear_setup_session(user_id, user_id)
+        await callback.answer("Откройте назначение заново.", show_alert=True)
+        return
+
+    if action == "cancel":
+        repo.clear_setup_session(user_id, user_id)
+        await _safe_delete_message(callback.message)
+        await callback.answer("Отменено.", show_alert=True)
+        return
+
+    if action == "page":
+        page = int(parts[3]) if len(parts) > 3 else 0
+        await _open_assignment_menu(callback.message, user_id, group_chat_id, data, page)
+        await callback.answer()
+        return
+
+    if action == "change":
+        await _open_assignment_menu(callback.message, user_id, group_chat_id, data, int(data.get("page") or 0))
+        await callback.answer()
+        return
+
+    if action == "pick":
+        if len(parts) < 5:
+            await callback.answer("Не удалось выбрать должность.", show_alert=True)
+            return
+        job_id = int(parts[3])
+        page = int(parts[4])
+        job = _assignment_job_by_id(group_chat_id, job_id)
+        if not job:
+            await callback.answer("Должность не найдена.", show_alert=True)
+            return
+        data["selected_job_id"] = job_id
+        data["selected_job_name"] = str(job.get("name") or "")
+        data["page"] = page
+        repo.set_setup_session(user_id, user_id, "assign_job_confirm", data)
+        await safe_edit_text(
+            callback.message,
+            "Проверьте назначение\n\n"
+            f"Кому: {data.get('target_name') or target_user_id}\n"
+            f"Должность: {job.get('name')}\n\n"
+            "Нажмите «Подтвердить», если всё верно.",
+            reply_markup=job_assignment_confirm_keyboard(target_user_id, job_id),
+        )
+        await callback.answer()
+        return
+
+    if action == "confirm":
+        if len(parts) < 4:
+            await callback.answer("Не удалось подтвердить.", show_alert=True)
+            return
+        job_id = int(parts[3])
+        job = _assignment_job_by_id(group_chat_id, job_id)
+        if not job:
+            await callback.answer("Должность не найдена.", show_alert=True)
+            return
+        repo.set_worker_job(group_chat_id, target_user_id, str(data.get("target_name") or target_user_id), job_id)
+        repo.clear_setup_session(user_id, user_id)
+        await _safe_delete_message(callback.message)
+        await callback.answer(f"Готово: {job.get('name')}", show_alert=True)
+        return
+
+    await callback.answer("Откройте назначение заново.", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("perm:"))
@@ -572,7 +754,12 @@ async def try_handle_wizard_message(message: Message) -> bool:
         return True
 
     if state == "await_job_name":
-        sent = await _send_step_message(message, f"Должность: {text}\n\nОтметьте, что разрешено. Потом нажмите «Сохранить должность».", reply_markup=permission_keyboard({}))
+        sent = await _send_step_message(
+            message,
+            f"Должность: {text}\n\nОтметьте, что разрешено. Потом нажмите «Сохранить должность».\n\n"
+            "Подсказка: обычному работнику обычно хватает сдачи данных, мастеру — отчётов и исправлений.",
+            reply_markup=permission_keyboard({}),
+        )
         repo.set_setup_session(chat_id, user_id, "choose_job_permissions", {"name": text, "permissions": {}, "prompt_message_id": sent.message_id})
         return True
 
@@ -862,20 +1049,52 @@ async def try_handle_setup_command(message: Message) -> bool:
         await message.answer(msg)
         return True
 
-    # Назначение должности делается ответом на сообщение работника.
-    assign_match = re.match(r"^(?:назначить|выдать|поставить)\s+должность\s+(.+)$", text, flags=re.IGNORECASE)
+    assign_match = re.match(r"^(?:назначить|выдать|поставить)\s+должность(?:\s+(.+))?$", text, flags=re.IGNORECASE)
     if assign_match:
         if not message.reply_to_message or not message.reply_to_message.from_user:
-            await message.answer("Ответьте этой командой на сообщение нужного участника.")
+            await message.answer("Ответьте этой фразой на сообщение нужного участника.\n\nПример: ответьте на сообщение работника и напишите: назначить должность")
             return True
-        job_name = assign_match.group(1).strip()
-        job = repo.find_job_title(chat_id, job_name)
-        if not job:
-            await message.answer("Должность не найдена. Сначала создайте должность.")
+        target = message.reply_to_message.from_user
+        target_name = _display_name_from_user(target)
+        if target.username:
+            username_label = f"@{target.username}"
+            target_name = username_label if target_name == target.username else f"{target_name} ({username_label})"
+        job_name = (assign_match.group(1) or "").strip()
+        if job_name and not job_name.startswith("@"):
+            job = repo.find_job_title(chat_id, job_name)
+            if not job:
+                await message.answer("Должность не найдена. Откройте настройку учёта и создайте её.")
+                return True
+            repo.set_worker_job(chat_id, target.id, target_name, int(job["id"]))
+            try:
+                await message.bot.send_message(message.from_user.id, f"Готово. {target_name} — {job['name']}.")
+                await _safe_delete_message(message)
+            except Exception:
+                await message.answer(f"Готово. {target_name} — {job['name']}.")
             return True
-        user = message.reply_to_message.from_user
-        repo.set_worker_job(chat_id, user.id, _display_name_from_user(user), int(job["id"]))
-        await message.answer(f"Должность назначена: {job['name']}.")
+
+        jobs = repo.list_job_titles(chat_id)
+        if not jobs:
+            await message.answer("Должностей пока нет. Сначала создайте должность в настройке учёта.")
+            return True
+        data = {
+            "group_chat_id": chat_id,
+            "group_title": message.chat.title or "рабочая группа",
+            "target_user_id": target.id,
+            "target_name": target_name,
+            "target_username": target.username or "",
+            "page": 0,
+        }
+        repo.set_setup_session(message.from_user.id, message.from_user.id, "assign_job_select", data)
+        try:
+            await message.bot.send_message(
+                message.from_user.id,
+                _assignment_text(data, 0),
+                reply_markup=job_title_choice_keyboard(jobs, target.id, 0),
+            )
+            await _safe_delete_message(message)
+        except Exception:
+            await message.answer("Откройте личку с ботом и нажмите Start. После этого повторите назначение должности.")
         return True
 
     show_comp_match = re.match(r"^состав\s+(.+)$", text, flags=re.IGNORECASE)
