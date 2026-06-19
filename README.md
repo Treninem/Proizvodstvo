@@ -91,8 +91,8 @@ python -m app.main
 - показать состав;
 - заменить состав;
 - добавить комплектующие;
-- изменить количество;
-- убрать комплектующие;
+- изменить количество через выбор комплектующей кнопкой;
+- убрать комплектующие через выбор кнопкой;
 - посмотреть, сколько изделий можно собрать из текущих остатков.
 
 ## Отчёты
@@ -108,14 +108,15 @@ python -m app.main
 
 ## Файлы
 
-Доступны форматы:
+После формирования отчёта можно выбрать формат скачивания:
 
 - Excel;
 - PDF;
 - CSV;
 - HTML;
-- TXT;
-- ZIP со всеми форматами.
+- TXT.
+
+Таблицы в разных форматах используют одинаковые разделы и одинаковые столбцы.
 
 ## Проверки
 
@@ -127,7 +128,9 @@ python scripts/wizard_input_test.py
 python scripts/flow_test.py
 python scripts/report_flow_test.py
 python scripts/report_callback_owner_test.py
+python scripts/report_file_type_test.py
 python scripts/component_management_test.py
+python scripts/component_button_selection_test.py
 python scripts/quick_setup_test.py
 python scripts/safe_edit_test.py
 python scripts/security_audit.py
