@@ -286,9 +286,23 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_test_modes (
+                user_id INTEGER PRIMARY KEY,
+                is_enabled INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        _ensure_column(conn, "pending_confirmations", "is_test", "INTEGER NOT NULL DEFAULT 0")
         conn.commit()
 
 
