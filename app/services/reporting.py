@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterable
 import csv
 import html
+import os
 import re
 import zipfile
 
@@ -18,7 +19,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 
 from .. import db
 from ..config import settings
@@ -362,19 +363,76 @@ def create_xlsx_report(chat_id: int, request_text: str = "отчёт") -> Path:
     return path
 
 
-def _register_pdf_font() -> str:
-    candidates = [
-        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-        Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
+
+def _font_has_cyrillic(font_path: Path) -> bool:
+    try:
+        probe = TTFont("ProbeFont", str(font_path))
+        glyphs = getattr(probe.face, "charToGlyph", {})
+        return all(ord(ch) in glyphs for ch in "Производственный отчёт Склад")
+    except Exception:
+        return False
+
+
+def _pdf_font_candidates() -> list[Path]:
+    env_font = os.environ.get("REPORT_PDF_FONT", "").strip()
+    candidates: list[Path] = []
+    if env_font:
+        candidates.append(Path(env_font))
+    direct_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/usr/local/share/fonts/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/Arial.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/calibri.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/Library/Fonts/Arial.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
     ]
-    for font_path in candidates:
-        if font_path.exists():
-            try:
-                pdfmetrics.registerFont(TTFont("BotSans", str(font_path)))
-                return "BotSans"
-            except Exception:
+    candidates.extend(Path(item) for item in direct_paths)
+    search_roots = [
+        Path("/usr/share/fonts"),
+        Path("/usr/local/share/fonts"),
+        Path.home() / ".fonts",
+        Path.home() / ".local/share/fonts",
+    ]
+    wanted = ("dejavu", "noto", "free", "liberation", "arial", "segoe", "calibri")
+    for root in search_roots:
+        if not root.exists():
+            continue
+        for item in root.rglob("*"):
+            if item.suffix.lower() not in {".ttf", ".ttc"}:
                 continue
-    return "Helvetica"
+            if any(part in item.name.lower() for part in wanted):
+                candidates.append(item)
+    result: list[Path] = []
+    seen: set[str] = set()
+    for item in candidates:
+        key = str(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def _register_pdf_font() -> str:
+    for font_path in _pdf_font_candidates():
+        if not font_path.exists() or not _font_has_cyrillic(font_path):
+            continue
+        try:
+            font_name = "BotSans" + str(abs(hash(str(font_path))) % 100000)
+            pdfmetrics.registerFont(TTFont(font_name, str(font_path)))
+            return font_name
+        except Exception:
+            continue
+    raise ValueError("PDF не собран: на сервере не найден русский шрифт. Установите DejaVu Sans, Noto Sans или укажите путь через REPORT_PDF_FONT.")
 
 
 def create_pdf_report(chat_id: int, request_text: str = "отчёт") -> Path:
@@ -612,7 +670,7 @@ def product_capacity_rows(chat_id: int) -> list[dict]:
     return rows
 
 
-def build_all_assembly_capacity_report(chat_id: int) -> str:
+def build_all_assembly_capacity_report(chat_id: int, targets: list[int] | None = None) -> str:
     rows = product_capacity_rows(chat_id)
     if not rows:
         return "Изделия пока не созданы."
@@ -629,6 +687,16 @@ def build_all_assembly_capacity_report(chat_id: int) -> str:
             lines.append(f"• {row['component_name']}: есть {float(row['stock']):g}, нужно {float(row['need']):g}{extra}")
         else:
             lines.append("• Состав пока не задан.")
+    target_rows = _product_target_rows(chat_id, targets or DEFAULT_ASSEMBLY_TARGETS)
+    if target_rows:
+        lines.append("\nПлан по количеству:")
+        for product, target, possible, component, stock, need_one, need_total, missing, unit in target_rows[:60]:
+            if component:
+                lines.append(f"• {product} · {target:g} шт: {component} — нужно {float(need_total):g}, есть {float(stock):g}, не хватает {float(missing):g} {unit}")
+            else:
+                lines.append(f"• {product}: состав пока не задан.")
+        if len(target_rows) > 60:
+            lines.append("• Полный план есть в скачанном отчёте.")
     return "\n".join(lines)
 
 
@@ -636,15 +704,17 @@ def build_assembly_capacity_report(chat_id: int, request_text: str) -> str:
     from .matcher import confident_match
     from . import repository as repo
 
+    targets = _target_quantities_from_text(request_text, include_defaults=False)
     key = normalize_key(request_text)
     if any(word in key for word in ("все", "всё", "кажд", "общ")) or key.strip() in {"сколько можно собрать", "расчет сборки", "расчёт сборки"}:
-        return build_all_assembly_capacity_report(chat_id)
-    key_text = request_text
-    for word in ["сколько", "можно", "собрать", "изготовить", "сделать", "готово", "изделий", "изделие", "расчет", "расчёт"]:
+        return build_all_assembly_capacity_report(chat_id, targets or DEFAULT_ASSEMBLY_TARGETS)
+    key_text = _DATE_PATTERN.sub(" ", request_text)
+    key_text = re.sub(r"(?<!\d)\d{3,9}(?!\d)", " ", key_text)
+    for word in ["сколько", "можно", "собрать", "сбора", "сбор", "сборки", "изготовить", "сделать", "готово", "изделий", "изделие", "расчет", "расчёт", "нужно", "не", "хватает", "до", "для"]:
         key_text = re.sub(rf"\b{word}\b", " ", key_text, flags=re.IGNORECASE)
     match, _ = confident_match(chat_id, key_text.strip() or request_text, allowed_types={"product"})
     if not match:
-        return build_all_assembly_capacity_report(chat_id)
+        return build_all_assembly_capacity_report(chat_id, targets or DEFAULT_ASSEMBLY_TARGETS)
     components = repo.list_product_components(match.target_id)
     if not components:
         return f"У изделия «{match.name}» пока не задан состав."
@@ -668,7 +738,84 @@ def build_assembly_capacity_report(chat_id: int, request_text: str) -> str:
     if missing_next:
         lines.append("\nДля ещё 1 изделия не хватает:")
         lines.extend(missing_next)
+    target_rows = _product_target_rows(chat_id, targets or DEFAULT_ASSEMBLY_TARGETS)
+    own_rows = [row for row in target_rows if str(row[0]) == str(match.name)]
+    if own_rows:
+        lines.append("\nДо нужного количества:")
+        for _product, target, _possible, component, stock, _need_one, need_total, missing, unit in own_rows[:45]:
+            lines.append(f"• {target:g} шт · {component}: нужно {float(need_total):g}, есть {float(stock):g}, не хватает {float(missing):g} {unit}")
     return "\n".join(lines)
+
+
+
+def _number_format_for_header(header: str) -> str:
+    if header in {"Количество", "Есть", "Нужно на 1", "Не хватает для ещё 1", "Итого", "Цель", "Можно собрать", "Нужно на цель", "Не хватает", "Собрано", "Отправлено/продано", "Остаток"}:
+        return "#,##0.###"
+    if re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", header or "") or re.fullmatch(r"\d{2}\.\d{4}", header or ""):
+        return "#,##0.###"
+    if header == "Строк":
+        return "0"
+    return "General"
+
+
+def _style_used_range(ws, header_rows: set[int] | None = None, section_rows: set[int] | None = None) -> None:
+    header_rows = header_rows or {1}
+    section_rows = section_rows or set()
+    header_fill = PatternFill("solid", fgColor="D9EAF7")
+    section_fill = PatternFill("solid", fgColor="EEF6FC")
+    header_font = Font(bold=True)
+    section_font = Font(bold=True, size=12)
+    title_font = Font(bold=True, size=14)
+    thin = Side(style="thin", color="CCCCCC")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    max_row = ws.max_row or 1
+    max_col = ws.max_column or 1
+    for row in ws.iter_rows(min_row=1, max_row=max_row, max_col=max_col):
+        row_number = row[0].row
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if row_number == 1:
+                cell.font = title_font
+            elif row_number in section_rows:
+                cell.fill = section_fill
+                cell.font = section_font
+            elif row_number in header_rows:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.border = border
+            elif any(c.value not in (None, "") for c in row):
+                cell.border = border
+    for column_cells in ws.columns:
+        col = get_column_letter(column_cells[0].column)
+        max_len = 10
+        for cell in column_cells:
+            value = cell.value
+            if value is None:
+                continue
+            max_len = max(max_len, min(len(str(value)), 38))
+        ws.column_dimensions[col].width = min(max_len + 2, 42)
+    for row_index in range(1, max_row + 1):
+        ws.row_dimensions[row_index].height = 20 if row_index not in section_rows else 24
+    ws.freeze_panes = "A3" if max_row >= 3 else "A2"
+
+
+def _append_report_section(ws, title: str, header: list[str], rows: list[list[object]], start_row: int) -> tuple[int, int, int]:
+    section_row = start_row
+    ws.cell(row=section_row, column=1, value=title)
+    header_row = section_row + 1
+    for col_index, value in enumerate(header, start=1):
+        ws.cell(row=header_row, column=col_index, value=value)
+    body_rows = rows or [_empty_row(len(header))]
+    for offset, row in enumerate(body_rows, start=1):
+        for col_index, value in enumerate(row, start=1):
+            cell = ws.cell(row=header_row + offset, column=col_index, value=value)
+            if col_index <= len(header):
+                cell.number_format = _number_format_for_header(str(header[col_index - 1]))
+    return section_row, header_row, header_row + len(body_rows) + 2
+
+
+def _full_export_selected() -> dict[str, bool]:
+    return {"inventory": True, "period_totals": True, "daily_matrix": True, "capacity": True, "journal": True}
 
 
 def create_xlsx_report(chat_id: int, request_text: str = "отчёт", user_id: int | None = None) -> Path:
@@ -676,36 +823,50 @@ def create_xlsx_report(chat_id: int, request_text: str = "отчёт", user_id: 
     if period.error:
         raise ValueError(period.error)
     wb = Workbook()
-    first_sheet = True
+    sections = report_sections(chat_id, request_text, user_id=user_id, selected=_full_export_selected())
+    if not sections:
+        sections = [("Отчёт", ["Раздел", "Состояние"], [["Отчёт", "Нет данных"]])]
 
-    def get_sheet(title: str):
-        nonlocal first_sheet
-        if first_sheet:
-            ws = wb.active
-            ws.title = title[:31]
-            first_sheet = False
-        else:
-            ws = wb.create_sheet(title[:31])
-        return ws
+    summary = wb.active
+    summary.title = "Отчёт"
+    max_width = max((len(header) for _, header, _ in sections), default=2)
+    summary.cell(row=1, column=1, value=f"Производственный отчёт {period.title}")
+    if max_width > 1:
+        summary.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_width)
+    header_rows: set[int] = set()
+    section_rows: set[int] = set()
+    current_row = 3
+    for title, header, rows in sections:
+        section_row, header_row, current_row = _append_report_section(summary, title, header, rows, current_row)
+        section_rows.add(section_row)
+        header_rows.add(header_row)
+    _style_used_range(summary, header_rows=header_rows, section_rows=section_rows)
 
-    for title, header, rows in report_sections(chat_id, request_text, user_id=user_id):
-        ws = get_sheet(title)
+    used_names = {summary.title}
+    for title, header, rows in sections:
+        base = title[:31] or "Раздел"
+        sheet_name = base
+        index = 2
+        while sheet_name in used_names:
+            suffix = f" {index}"
+            sheet_name = (base[:31 - len(suffix)] + suffix)[:31]
+            index += 1
+        used_names.add(sheet_name)
+        ws = wb.create_sheet(sheet_name)
         ws.append(header)
-        for row in rows:
+        for row in rows or [_empty_row(len(header))]:
             ws.append(row)
+        for col_index, header_name in enumerate(header, start=1):
+            number_format = _number_format_for_header(str(header_name))
+            for cell in ws.iter_cols(min_col=col_index, max_col=col_index, min_row=2, max_row=ws.max_row):
+                for item in cell:
+                    item.number_format = number_format
         _style_sheet(ws)
 
-    if first_sheet:
-        ws = wb.active
-        ws.title = "Отчёт"
-        ws.append(["Раздел", "Состояние"])
-        ws.append(["Отчёт", "Не выбран ни один раздел"])
-        _style_sheet(ws)
     filename = f"uchet_{_safe_name(period.title)}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
     path = reports_dir() / filename
     wb.save(path)
     return path
-
 
 def _stringify_table(header: list[str], rows: list[list[object]]) -> list[list[str]]:
     data: list[list[str]] = [[str(cell) for cell in header]]
@@ -720,6 +881,7 @@ def _pdf_cell(value: object, style: ParagraphStyle) -> Paragraph:
     return Paragraph(html.escape("" if value is None else str(value)).replace("\n", "<br/>"), style)
 
 
+
 def _pdf_col_widths(data: list[list[str]]) -> list[float]:
     page_width = landscape(A3)[0] - 16 * mm
     if not data:
@@ -727,30 +889,28 @@ def _pdf_col_widths(data: list[list[str]]) -> list[float]:
     col_count = len(data[0])
     if col_count <= 0:
         return []
-    if col_count <= 7:
-        weights: list[float] = []
-        for index in range(col_count):
-            sample = max((len(str(row[index])) if index < len(row) else 0 for row in data[:80]), default=8)
-            weights.append(max(8.0, min(30.0, float(sample))))
-        total = sum(weights) or 1.0
-        return [page_width * w / total for w in weights]
-    fixed_first = min(70 * mm, page_width * 0.34)
-    remaining = max(25 * mm, page_width - fixed_first)
-    rest = remaining / max(1, col_count - 1)
-    return [fixed_first, *[rest for _ in range(col_count - 1)]]
+    weights: list[float] = []
+    for index in range(col_count):
+        sample = max((len(str(row[index])) if index < len(row) else 0 for row in data[:90]), default=8)
+        if index == 0:
+            weights.append(max(16.0, min(34.0, float(sample))))
+        else:
+            weights.append(max(8.0, min(26.0, float(sample))))
+    total = sum(weights) or 1.0
+    return [page_width * w / total for w in weights]
 
 
 def _pdf_table(data: list[list[str]], font_name: str) -> Table:
     col_count = len(data[0]) if data else 1
-    font_size = 8 if col_count <= 8 else 6.5
-    leading = font_size + 2
+    font_size = 8.2 if col_count <= 7 else 7.0
+    leading = font_size + 2.2
     cell_style = ParagraphStyle("CellRu", fontName=font_name, fontSize=font_size, leading=leading, wordWrap="CJK")
     header_style = ParagraphStyle("HeaderRu", parent=cell_style, fontName=font_name, fontSize=font_size, leading=leading, wordWrap="CJK")
     converted: list[list[Paragraph]] = []
     for row_index, row in enumerate(data):
         style = header_style if row_index == 0 else cell_style
         converted.append([_pdf_cell(cell, style) for cell in row])
-    table = Table(converted, repeatRows=1, colWidths=_pdf_col_widths(data))
+    table = Table(converted, repeatRows=1, colWidths=_pdf_col_widths(data), splitByRow=1)
     table.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, -1), font_name),
         ("FONTSIZE", (0, 0), (-1, -1), font_size),
@@ -767,6 +927,31 @@ def _pdf_table(data: list[list[str]], font_name: str) -> Table:
     return table
 
 
+def _pdf_section_tables(title: str, header: list[str], rows: list[list[object]], font_name: str) -> list[Table]:
+    if len(header) <= 12:
+        return [_pdf_table(_stringify_table(header, rows), font_name)]
+    fixed_count = min(3, len(header))
+    fixed_header = header[:fixed_count]
+    tail_header = header[fixed_count:]
+    total_header = []
+    if tail_header and tail_header[-1] == "Итого":
+        total_header = [tail_header[-1]]
+        tail_header = tail_header[:-1]
+    tables: list[Table] = []
+    chunk_size = 8
+    for index in range(0, len(tail_header), chunk_size):
+        chunk = tail_header[index:index + chunk_size]
+        new_header = [*fixed_header, *chunk, *total_header]
+        new_rows: list[list[object]] = []
+        for row in rows:
+            fixed_values = row[:fixed_count]
+            chunk_values = row[fixed_count + index:fixed_count + index + len(chunk)]
+            total_values = [row[-1]] if total_header and row else []
+            new_rows.append([*fixed_values, *chunk_values, *total_values])
+        tables.append(_pdf_table(_stringify_table(new_header, new_rows), font_name))
+    return tables or [_pdf_table(_stringify_table(header, rows), font_name)]
+
+
 def create_pdf_report(chat_id: int, request_text: str = "отчёт", user_id: int | None = None) -> Path:
     period = _date_bounds_for_text(request_text)
     if period.error:
@@ -778,14 +963,24 @@ def create_pdf_report(chat_id: int, request_text: str = "отчёт", user_id: i
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle("TitleRuReadable", parent=styles["Title"], fontName=font_name, fontSize=16, leading=20)
     section_style = ParagraphStyle("SectionRuReadable", parent=styles["Heading2"], fontName=font_name, fontSize=11, leading=14, spaceBefore=6, spaceAfter=4)
+    small_style = ParagraphStyle("SmallRuReadable", parent=styles["Normal"], fontName=font_name, fontSize=8, leading=10)
     story = [Paragraph(f"Производственный отчёт {period.title}", title_style), Spacer(1, 6)]
 
-    sections = report_sections(chat_id, request_text, user_id=user_id)
+    sections = report_sections(chat_id, request_text, user_id=user_id, selected=_full_export_selected())
     if not sections:
-        sections = [("Отчёт", ["Раздел", "Состояние"], [["Отчёт", "Не выбран ни один раздел"]])]
-    for title, header, rows in sections:
+        sections = [("Отчёт", ["Раздел", "Состояние"], [["Отчёт", "Нет данных"]])]
+    for section_index, (title, header, rows) in enumerate(sections):
+        if section_index and title in {"По датам", "Журнал"}:
+            story.append(PageBreak())
         story.append(Paragraph(title, section_style))
-        story.append(_pdf_table(_stringify_table(header, rows), font_name))
+        if title == "По датам" and len(header) > 12:
+            story.append(Paragraph("Широкая таблица разделена на удобные части.", small_style))
+            story.append(Spacer(1, 3))
+        tables = _pdf_section_tables(title, header, rows or [_empty_row(len(header))], font_name)
+        for table_index, table in enumerate(tables):
+            if table_index:
+                story.append(Spacer(1, 6))
+            story.append(table)
         story.append(Spacer(1, 8))
     doc.build(story)
     return path
@@ -832,6 +1027,200 @@ def _period_totals_table(chat_id: int, period: PeriodFilter) -> list[list[object
     ] for row in operation_rows(chat_id, period)]
 
 
+DEFAULT_ASSEMBLY_TARGETS = [10000, 50000, 100000]
+
+
+def _target_quantities_from_text(text: str, include_defaults: bool = True) -> list[int]:
+    cleaned = _DATE_PATTERN.sub(" ", text or "")
+    found: list[int] = []
+    for raw in re.findall(r"(?<!\d)(\d{3,9})(?!\d)", cleaned):
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        if value > 0 and value not in found:
+            found.append(value)
+    result: list[int] = []
+    if include_defaults:
+        result.extend(DEFAULT_ASSEMBLY_TARGETS)
+    for value in found:
+        if value not in result:
+            result.append(value)
+    return result
+
+
+def _component_stock_rows(chat_id: int) -> list[list[object]]:
+    rows = db.fetchall(
+        """
+        SELECT i.entity_type,e.name AS entity_name,i.unit,COALESCE(SUM(i.quantity),0) AS quantity
+        FROM inventory i
+        JOIN entities e ON e.id=i.entity_id
+        WHERE i.chat_id=? AND i.entity_type IN ('component','stock_item') AND e.is_archived=0
+        GROUP BY i.entity_type,i.entity_id,i.unit
+        ORDER BY i.entity_type,e.name,i.unit
+        """,
+        (chat_id,),
+    )
+    result: list[list[object]] = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        result.append([
+            ENTITY_LABELS.get(row.get("entity_type") or "", row.get("entity_type") or ""),
+            row.get("entity_name") or "",
+            float(row.get("quantity") or 0),
+            row.get("unit") or "",
+        ])
+    return result
+
+
+def _component_daily_table(chat_id: int, period: PeriodFilter) -> tuple[list[str], list[list[object]]]:
+    bucket_type, labels = _bucket_labels_for_period(period)
+    bucket_sql = "strftime('%d.%m.%Y', o.created_at)" if bucket_type == "day" else "strftime('%m.%Y', o.created_at)"
+    rows = db.fetchall(
+        f"""
+        SELECT o.entity_type,e.name AS entity_name,o.unit,{bucket_sql} AS bucket,
+               SUM(o.quantity) AS total_quantity
+        FROM operations o
+        JOIN entities e ON e.id=o.entity_id
+        WHERE o.chat_id=? AND {period.where_sql}
+          AND o.operation_type='production'
+          AND o.entity_type IN ('component','stock_item')
+          AND e.is_archived=0
+        GROUP BY o.entity_type,o.entity_id,o.unit,bucket
+        ORDER BY o.entity_type,e.name,bucket
+        """,
+        (chat_id, *period.params),
+    )
+    grouped: dict[tuple[str, str, str], dict[str, object]] = {}
+    for raw_row in rows:
+        row = dict(raw_row)
+        key = (str(row.get("entity_type") or ""), str(row.get("entity_name") or ""), str(row.get("unit") or ""))
+        item = grouped.setdefault(key, {"entity_type": key[0], "entity_name": key[1], "unit": key[2], "values": {label: 0.0 for label in labels}})
+        bucket = str(row.get("bucket") or "")
+        if bucket in item["values"]:
+            item["values"][bucket] = float(row.get("total_quantity") or 0)
+    table: list[list[object]] = []
+    for item in grouped.values():
+        values = [float(item["values"].get(label) or 0) for label in labels]
+        table.append([
+            ENTITY_LABELS.get(str(item.get("entity_type") or ""), str(item.get("entity_type") or "")),
+            item.get("entity_name") or "",
+            item.get("unit") or "",
+            *values,
+            sum(values),
+        ])
+    return labels, table
+
+
+def _assembly_shipment_daily_table(chat_id: int, period: PeriodFilter) -> tuple[list[str], list[list[object]]]:
+    bucket_type, labels = _bucket_labels_for_period(period)
+    bucket_sql = "strftime('%d.%m.%Y', o.created_at)" if bucket_type == "day" else "strftime('%m.%Y', o.created_at)"
+    rows = db.fetchall(
+        f"""
+        SELECT o.operation_type,e.name AS entity_name,o.unit,{bucket_sql} AS bucket,
+               SUM(o.quantity) AS total_quantity
+        FROM operations o
+        JOIN entities e ON e.id=o.entity_id
+        WHERE o.chat_id=? AND {period.where_sql}
+          AND o.operation_type IN ('assembly','shipment')
+          AND o.entity_type='product'
+          AND e.is_archived=0
+        GROUP BY o.operation_type,o.entity_id,o.unit,bucket
+        ORDER BY o.operation_type,e.name,bucket
+        """,
+        (chat_id, *period.params),
+    )
+    grouped: dict[tuple[str, str, str], dict[str, object]] = {}
+    for raw_row in rows:
+        row = dict(raw_row)
+        key = (str(row.get("operation_type") or ""), str(row.get("entity_name") or ""), str(row.get("unit") or ""))
+        item = grouped.setdefault(key, {"operation_type": key[0], "entity_name": key[1], "unit": key[2], "values": {label: 0.0 for label in labels}})
+        bucket = str(row.get("bucket") or "")
+        if bucket in item["values"]:
+            item["values"][bucket] = float(row.get("total_quantity") or 0)
+    table: list[list[object]] = []
+    for item in grouped.values():
+        values = [float(item["values"].get(label) or 0) for label in labels]
+        table.append([
+            OPERATION_LABELS.get(str(item.get("operation_type") or ""), str(item.get("operation_type") or "")),
+            item.get("entity_name") or "",
+            item.get("unit") or "",
+            *values,
+            sum(values),
+        ])
+    return labels, table
+
+
+def _product_target_rows(chat_id: int, targets: list[int]) -> list[list[object]]:
+    from . import repository as repo
+
+    rows: list[list[object]] = []
+    for product_pack in repo.all_products_with_components(chat_id):
+        product = product_pack["product"]
+        components = product_pack["components"]
+        if not components:
+            rows.append([product.name, "состав не задан", "", "", "", "", "", ""])
+            continue
+        possible_values: list[float] = []
+        component_info: list[dict[str, object]] = []
+        for comp in components:
+            stock_qty = _component_stock(chat_id, int(comp["component_id"]))
+            need = float(comp["quantity"] or 0)
+            possible_values.append(stock_qty // need if need > 0 else 0)
+            component_info.append({
+                "name": str(comp.get("name") or ""),
+                "stock": stock_qty,
+                "need": need,
+                "unit": str(comp.get("default_unit") or "шт"),
+            })
+        possible = int(min(possible_values)) if possible_values else 0
+        for target in targets:
+            for comp in component_info:
+                need_total = float(comp["need"]) * target
+                missing = max(0.0, need_total - float(comp["stock"]))
+                rows.append([
+                    product.name,
+                    target,
+                    possible,
+                    comp["name"],
+                    comp["stock"],
+                    comp["need"],
+                    need_total,
+                    missing,
+                    comp["unit"],
+                ])
+    return rows
+
+
+def _assembly_shipping_summary_table(chat_id: int, period: PeriodFilter) -> list[list[object]]:
+    rows = db.fetchall(
+        f"""
+        SELECT e.name AS entity_name,o.unit,
+               SUM(CASE WHEN o.operation_type='assembly' THEN o.quantity ELSE 0 END) AS assembled,
+               SUM(CASE WHEN o.operation_type='shipment' THEN o.quantity ELSE 0 END) AS shipped
+        FROM operations o
+        JOIN entities e ON e.id=o.entity_id
+        WHERE o.chat_id=? AND {period.where_sql}
+          AND o.operation_type IN ('assembly','shipment')
+          AND o.entity_type='product'
+          AND e.is_archived=0
+        GROUP BY o.entity_id,o.unit
+        ORDER BY e.name,o.unit
+        """,
+        (chat_id, *period.params),
+    )
+    result: list[list[object]] = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        result.append([
+            row.get("entity_name") or "",
+            float(row.get("assembled") or 0),
+            float(row.get("shipped") or 0),
+            row.get("unit") or "",
+        ])
+    return result
+
+
 def _capacity_table(chat_id: int) -> list[list[object]]:
     return [[
         row.get("product_name") or "",
@@ -873,21 +1262,34 @@ def _daily_matrix_table(chat_id: int, period: PeriodFilter) -> tuple[list[str], 
     return labels, rows
 
 
-def report_sections(chat_id: int, request_text: str = "отчёт", user_id: int | None = None) -> list[tuple[str, list[str], list[list[object]]]]:
+def report_sections(
+    chat_id: int,
+    request_text: str = "отчёт",
+    user_id: int | None = None,
+    selected: dict[str, bool] | None = None,
+) -> list[tuple[str, list[str], list[list[object]]]]:
     from . import repository as repo
 
     period = _period_for_export(request_text)
-    prefs = repo.get_export_preferences(chat_id, user_id)
+    prefs = selected if selected is not None else repo.get_export_preferences(chat_id, user_id)
     sections: list[tuple[str, list[str], list[list[object]]]] = []
     if prefs.get("inventory"):
         sections.append(("Склад", ["Тип", "Название", "Участок", "Количество", "Ед."], _inventory_table(chat_id)))
+        sections.append(("Остатки комплектующих", ["Тип", "Название", "Остаток", "Ед."], _component_stock_rows(chat_id)))
     if prefs.get("period_totals"):
         sections.append(("Итоги за период", ["Операция", "Тип", "Название", "Участок", "Количество", "Ед.", "Строк"], _period_totals_table(chat_id, period)))
     if prefs.get("daily_matrix"):
         labels, rows = _daily_matrix_table(chat_id, period)
         sections.append(("По датам", ["Операция", "Название", "Ед.", *labels, "Итого"], rows))
+        comp_labels, comp_rows = _component_daily_table(chat_id, period)
+        sections.append(("Комплектующие по датам", ["Тип", "Название", "Ед.", *comp_labels, "Итого"], comp_rows))
+        move_labels, move_rows = _assembly_shipment_daily_table(chat_id, period)
+        sections.append(("Сборка и отправка по датам", ["Операция", "Изделие", "Ед.", *move_labels, "Итого"], move_rows))
     if prefs.get("capacity"):
         sections.append(("Расчёт сборки", ["Изделие", "Можно собрать", "Комплектующая", "Есть", "Нужно на 1", "Не хватает для ещё 1", "Ед."], _capacity_table(chat_id)))
+        targets = _target_quantities_from_text(request_text, include_defaults=True)
+        sections.append(("План сборки", ["Изделие", "Цель", "Можно собрать", "Комплектующая", "Есть", "Нужно на 1", "Нужно на цель", "Не хватает", "Ед."], _product_target_rows(chat_id, targets)))
+        sections.append(("Собрано и отправлено", ["Изделие", "Собрано", "Отправлено/продано", "Ед."], _assembly_shipping_summary_table(chat_id, period)))
     if prefs.get("journal"):
         sections.append(("Журнал", ["Дата", "Операция", "Тип", "Название", "Участок", "Количество", "Ед.", "Работник", "Группа"], _journal_table(chat_id, period)))
     return sections
@@ -905,7 +1307,7 @@ def create_csv_report(chat_id: int, request_text: str = "отчёт", user_id: i
         writer = csv.writer(f, delimiter=";")
         writer.writerow([f"Производственный отчёт {period.title}"])
         writer.writerow([])
-        sections = report_sections(chat_id, request_text, user_id=user_id)
+        sections = report_sections(chat_id, request_text, user_id=user_id, selected=_full_export_selected())
         if not sections:
             sections = [("Отчёт", ["Раздел", "Состояние"], [["Отчёт", "Не выбран ни один раздел"]])]
         for title, header, rows in sections:
@@ -933,7 +1335,7 @@ def create_txt_report(chat_id: int, request_text: str = "отчёт", user_id: i
     period = _period_for_export(request_text)
     filename = f"uchet_{_safe_name(period.title)}_{datetime.now():%Y%m%d_%H%M%S}.txt"
     path = reports_dir() / filename
-    sections = report_sections(chat_id, request_text, user_id=user_id)
+    sections = report_sections(chat_id, request_text, user_id=user_id, selected=_full_export_selected())
     if not sections:
         sections = [("Отчёт", ["Раздел", "Состояние"], [["Отчёт", "Не выбран ни один раздел"]])]
     parts = [f"Производственный отчёт {period.title}"]
@@ -966,7 +1368,7 @@ def create_html_report(chat_id: int, request_text: str = "отчёт", user_id: 
     period = _period_for_export(request_text)
     filename = f"uchet_{_safe_name(period.title)}_{datetime.now():%Y%m%d_%H%M%S}.html"
     path = reports_dir() / filename
-    sections_data = report_sections(chat_id, request_text, user_id=user_id)
+    sections_data = report_sections(chat_id, request_text, user_id=user_id, selected=_full_export_selected())
     if not sections_data:
         sections_data = [("Отчёт", ["Раздел", "Состояние"], [["Отчёт", "Не выбран ни один раздел"]])]
     sections = [_html_table(title, header, rows) for title, header, rows in sections_data]

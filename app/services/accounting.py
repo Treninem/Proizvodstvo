@@ -315,3 +315,17 @@ def last_editable_operation_id(chat_id: int, group_chat_id: int, user_id: int) -
     if rows:
         return int(rows[0]["id"])
     return None
+
+
+def update_pending(pending_id: str, payload: dict[str, Any]) -> None:
+    db.execute(
+        "UPDATE pending_confirmations SET data_json=? WHERE id=?",
+        (json.dumps(payload, ensure_ascii=False), pending_id),
+    )
+
+
+def first_unresolved_index(operations: list[dict[str, Any]]) -> int | None:
+    for idx, op in enumerate(operations):
+        if op.get("needs_attention") or not op.get("entity_type") or not op.get("entity_id") or op.get("quantity") is None:
+            return idx
+    return None

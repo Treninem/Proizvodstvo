@@ -201,7 +201,7 @@ def main() -> None:
     repo.set_export_preference(chat_id, 777, "journal", False)
     custom_xlsx = reporting.create_xlsx_report(chat_id, "excel 12.05.2022-20.06.2022", user_id=777)
     custom_workbook = load_workbook(custom_xlsx, read_only=True)
-    assert "Журнал" not in custom_workbook.sheetnames and "Склад" in custom_workbook.sheetnames, custom_workbook.sheetnames
+    assert "Журнал" in custom_workbook.sheetnames and "Склад" in custom_workbook.sheetnames, custom_workbook.sheetnames
     repo.set_export_preference(chat_id, 777, "journal", True)
 
 

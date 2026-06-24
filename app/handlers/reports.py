@@ -60,7 +60,9 @@ def _state_for(token: str) -> ReportState | None:
 
 def _looks_like_capacity_request(text: str) -> bool:
     key = normalize_key(text)
-    return "сколько" in key and "собрать" in key
+    if "сколько" not in key:
+        return False
+    return any(word in key for word in ("собрать", "сбор", "сборки", "сбора", "комплект", "не хватает", "нужно"))
 
 
 def _looks_like_report_request(text: str) -> bool:
@@ -79,6 +81,21 @@ def _looks_like_report_request(text: str) -> bool:
 def _looks_like_file_request(text: str) -> bool:
     key = normalize_key(text)
     return any(word in key for word in _FILE_WORDS)
+
+
+def _file_type_from_text(text: str) -> str | None:
+    key = normalize_key(text)
+    if any(word in key for word in {"excel", "xlsx", "ексель", "эксель", "таблица"}):
+        return "xlsx"
+    if any(word in key for word in {"pdf", "пдф"}):
+        return "pdf"
+    if any(word in key for word in {"csv", "цсв"}):
+        return "csv"
+    if any(word in key for word in {"html", "хтмл", "браузер"}):
+        return "html"
+    if any(word in key for word in {"txt", "текстовый"}):
+        return "txt"
+    return None
 
 
 def _format_selection_text(state: ReportState) -> str:
@@ -110,7 +127,10 @@ def _download_path(state: ReportState, file_type: str):
 def _start_selection(message: Message, scope_chat_id: int, text: str, mode: str, user_id: int | None = None) -> tuple[str, ReportState]:
     if user_id is None:
         user_id = message.from_user.id if message.from_user else 0
-    selected = repo.get_export_preferences(scope_chat_id, user_id)
+    if mode == "download":
+        selected = {key: True for key in EXPORT_SECTION_LABELS}
+    else:
+        selected = repo.get_export_preferences(scope_chat_id, user_id)
     token = _token()
     state = ReportState(
         chat_id=message.chat.id,
@@ -231,10 +251,31 @@ async def try_handle_report(message: Message) -> bool:
         await message.answer(period_error)
         return True
 
+    requested_file_type = _file_type_from_text(text)
+    if requested_file_type:
+        state = ReportState(
+            chat_id=message.chat.id,
+            scope_chat_id=scope_chat_id,
+            user_id=message.from_user.id if message.from_user else 0,
+            request_text=text,
+            selected={key: True for key in EXPORT_SECTION_LABELS},
+            mode="download",
+        )
+        try:
+            path = _download_path(state, requested_file_type)
+        except ValueError as exc:
+            await message.answer(str(exc))
+            return True
+        await message.answer_document(FSInputFile(path), caption="Отчёт готов.")
+        return True
+
     mode = "download" if _looks_like_file_request(text) else "show"
     token, state = _start_selection(message, scope_chat_id, text, mode)
-    await message.answer(
-        _format_selection_text(state),
-        reply_markup=report_sections_keyboard(token, state.selected, "Выбрать формат" if mode == "download" else "Показать отчёт"),
-    )
+    if mode == "download":
+        await message.answer("Выберите формат отчёта.", reply_markup=report_download_keyboard(token))
+    else:
+        await message.answer(
+            _format_selection_text(state),
+            reply_markup=report_sections_keyboard(token, state.selected, "Показать отчёт"),
+        )
     return True

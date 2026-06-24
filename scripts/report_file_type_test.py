@@ -41,7 +41,19 @@ def main() -> None:
 
     sections = reporting.report_sections(chat_id, "отчёт за сегодня", user_id=user_id)
     section_titles = [title for title, _, _ in sections]
-    assert section_titles == ["Склад", "Итоги за период", "По датам", "Расчёт сборки", "Журнал"], section_titles
+    expected_titles = [
+        "Склад",
+        "Остатки комплектующих",
+        "Итоги за период",
+        "По датам",
+        "Комплектующие по датам",
+        "Сборка и отправка по датам",
+        "Расчёт сборки",
+        "План сборки",
+        "Собрано и отправлено",
+        "Журнал",
+    ]
+    assert section_titles == expected_titles, section_titles
 
     xlsx = reporting.create_xlsx_report(chat_id, "отчёт за сегодня", user_id=user_id)
     pdf = reporting.create_pdf_report(chat_id, "отчёт за сегодня", user_id=user_id)
@@ -58,16 +70,18 @@ def main() -> None:
     assert txt.suffix == ".txt"
 
     workbook = load_workbook(xlsx, read_only=True)
-    assert workbook.sheetnames == section_titles, workbook.sheetnames
-    assert [cell.value for cell in next(workbook["Итоги за период"].iter_rows(max_row=1))] == sections[1][1]
+    assert workbook.sheetnames[0] == "Отчёт", workbook.sheetnames
+    for title in section_titles:
+        assert title in workbook.sheetnames, workbook.sheetnames
+    assert [cell.value for cell in next(workbook["Итоги за период"].iter_rows(max_row=1))] == sections[2][1]
 
     with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
         csv_text = f.read()
-    assert "Склад" in csv_text and "Итоги за период" in csv_text and "Расчёт сборки" in csv_text
+    assert "Склад" in csv_text and "Комплектующие по датам" in csv_text and "План сборки" in csv_text
     html_text = html_path.read_text(encoding="utf-8")
-    assert "<table" in html_text and "Склад" in html_text and "Итоги за период" in html_text
+    assert "<table" in html_text and "Склад" in html_text and "План сборки" in html_text
     txt_text = txt.read_text(encoding="utf-8")
-    assert "Склад" in txt_text and "Итоги за период" in txt_text and "Расчёт сборки" in txt_text
+    assert "Склад" in txt_text and "Комплектующие по датам" in txt_text and "План сборки" in txt_text
     assert " | " in txt_text
 
     universal = reporting.create_universal_report_zip(chat_id, "отчёт за сегодня", user_id=user_id)

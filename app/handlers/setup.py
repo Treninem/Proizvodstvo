@@ -127,13 +127,43 @@ async def setup_section(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-def _next_quick_state(state: str) -> tuple[str | None, str]:
+def _next_quick_state(state: str, chat_id: int | None = None) -> tuple[str | None, str]:
+    existing_jobs = _existing_jobs_text(chat_id) if chat_id is not None else "Уже есть: Пока ничего нет."
+    existing_products = _existing_entities_text(chat_id, "product") if chat_id is not None else "Уже есть: Пока ничего нет."
+    existing_components = _existing_entities_text(chat_id, "component") if chat_id is not None else "Уже есть: Пока ничего нет."
+    existing_materials = _existing_entities_text(chat_id, "material") if chat_id is not None else "Уже есть: Пока ничего нет."
+    existing_meters = _existing_entities_text(chat_id, "meter") if chat_id is not None else "Уже есть: Пока ничего нет."
     steps = {
-        "quick_area_name": ("quick_job_name", "Быстрая настройка\n\nШаг 2 из 6\nВведите название должности.\n\nПример: Смена 1"),
-        "quick_job_name": ("quick_product_name", "Быстрая настройка\n\nШаг 3 из 6\nВведите название изделия.\n\nПример: Изделие 1"),
-        "quick_product_name": ("quick_product_components", "Быстрая настройка\n\nШаг 4 из 6\nВведите комплектующие и количество через строки или запятую.\n\nПример:\nКомплектующая 1 — 2 шт\nКомплектующая 2 — 1 шт"),
-        "quick_product_components": ("quick_material_name", "Быстрая настройка\n\nШаг 5 из 6\nВведите название сырья.\n\nПример: Сырьё 1"),
-        "quick_material_name": ("quick_meter_name", "Быстрая настройка\n\nШаг 6 из 6\nВведите название счётчика.\n\nПример: Счётчик 1"),
+        "quick_area_name": (
+            "quick_job_name",
+            "Быстрая настройка\n\nШаг 2 из 6\nВведите название должности.\n"
+            + existing_jobs
+            + "\n\nПример: Смена 1",
+        ),
+        "quick_job_name": (
+            "quick_product_name",
+            "Быстрая настройка\n\nШаг 3 из 6\nВведите название изделия.\n"
+            + existing_products
+            + "\n\nПример: Изделие 1",
+        ),
+        "quick_product_name": (
+            "quick_product_components",
+            "Быстрая настройка\n\nШаг 4 из 6\nВведите комплектующие и количество через строки или запятую.\n"
+            + existing_components
+            + "\n\nПример:\nКомплектующая 1 — 2 шт\nКомплектующая 2 — 1 шт",
+        ),
+        "quick_product_components": (
+            "quick_material_name",
+            "Быстрая настройка\n\nШаг 5 из 6\nВведите название сырья.\n"
+            + existing_materials
+            + "\n\nПример: Сырьё 1",
+        ),
+        "quick_material_name": (
+            "quick_meter_name",
+            "Быстрая настройка\n\nШаг 6 из 6\nВведите название счётчика.\n"
+            + existing_meters
+            + "\n\nПример: Счётчик 1",
+        ),
         "quick_meter_name": (None, "Быстрая настройка завершена."),
     }
     return steps.get(state, (None, "Быстрая настройка завершена."))
@@ -148,7 +178,7 @@ async def quick_skip_callback(callback: CallbackQuery) -> None:
     if not session or not str(session["state"]).startswith("quick_"):
         await callback.answer("Откройте настройку заново.", show_alert=True)
         return
-    next_state, prompt = _next_quick_state(session["state"])
+    next_state, prompt = _next_quick_state(session["state"], callback.message.chat.id)
     data = dict(session["data"] or {})
     if next_state is None:
         repo.clear_setup_session(callback.message.chat.id, callback.from_user.id)
@@ -724,7 +754,7 @@ async def try_handle_wizard_message(message: Message) -> bool:
         elif current == "quick_meter_name" and text.lower() not in skip_words:
             repo.create_entity(chat_id, "meter", text, "кВт⋅ч")
 
-        next_state, prompt = _next_quick_state(current)
+        next_state, prompt = _next_quick_state(current, chat_id)
         if next_state is None:
             repo.clear_setup_session(chat_id, user_id)
             await _send_step_message(message, prompt, reply_markup=setup_menu())

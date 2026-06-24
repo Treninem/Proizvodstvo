@@ -264,3 +264,17 @@ def report_download_keyboard(token: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="TXT", callback_data=f"report:file:{token}:txt")],
         [InlineKeyboardButton(text="Назад", callback_data=f"report:back:{token}"), InlineKeyboardButton(text="В меню", callback_data="menu:main")],
     ])
+
+
+def resolve_operation_keyboard(pending_id: str, op_index: int, choices: list[dict]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in choices[:40]:
+        target_type = str(item.get("target_type") or "")
+        target_id = int(item.get("target_id") or 0)
+        name = str(item.get("name") or "Позиция")[:48]
+        if not target_type or not target_id:
+            continue
+        rows.append([InlineKeyboardButton(text=name, callback_data=f"resolveop:{pending_id}:{op_index}:{target_type}:{target_id}")])
+    rows.append([InlineKeyboardButton(text="Исправить сообщением", callback_data=f"edit:{pending_id}")])
+    rows.append([InlineKeyboardButton(text="Отмена", callback_data=f"cancel:{pending_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

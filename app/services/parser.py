@@ -148,7 +148,7 @@ def _detect_area(chat_id: int, line: str, current_area_id: int | None, current_a
 
 def _parse_entity_quantity(chat_id: int, line: str, operation_type: str, area_id: int | None, area_name: str | None) -> ParsedOperation:
     quantity, unit, name_part = _extract_number_unit(line)
-    allowed = {"component", "product"}
+    allowed = {"component", "product", "stock_item"}
     if operation_type in {"material_in", "material_out", "stock_in", "stock_out"}:
         allowed = {"material", "stock_item"}
     elif operation_type == "energy":
@@ -293,7 +293,7 @@ def parse_message(chat_id: int, group_chat_id: int, text: str) -> tuple[list[Par
                         op.needs_attention = True
                         errors.append("К участку не привязан прибор учёта.")
 
-            if op.entity_type == "stock_item" and op.entity_id:
+            if op.entity_type == "stock_item" and op.entity_id and op.operation_type in {"stock_in", "stock_out"}:
                 stock_area_ids = list_stock_item_area_ids(int(op.entity_id))
                 if not stock_area_ids:
                     op.area_id = None

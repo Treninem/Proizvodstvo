@@ -42,7 +42,9 @@ def main() -> None:
     path = reporting.create_xlsx_report(chat_id, "отчёт за сегодня", user_id=111)
     assert path.exists() and path.suffix == ".xlsx", path
     workbook = load_workbook(path, read_only=True)
-    assert workbook.sheetnames == ["Итоги за период"], workbook.sheetnames
+    assert workbook.sheetnames[:2] == ["Отчёт", "Склад"], workbook.sheetnames
+    assert "Итоги за период" in workbook.sheetnames, workbook.sheetnames
+    assert "По датам" in workbook.sheetnames, workbook.sheetnames
     print("OK")
 
 
