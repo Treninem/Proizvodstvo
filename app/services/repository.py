@@ -1022,6 +1022,7 @@ def owner_account_report(account_id: int) -> str:
         chat_lines.append("• нет подключённых чатов")
     return (
         f"Учёт: {account.name}\n\n"
+        f"Номер учёта: №{account.id}\n"
         f"Общий: {common}\n"
         f"Подключённых чатов: {len(chats)}\n"
         f"Участков: {areas}\n"
