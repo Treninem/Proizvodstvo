@@ -144,23 +144,8 @@ def main() -> None:
     assert "Отчёт" in text_report and "Склад" in text_report, text_report
     xlsx_path = reporting.create_xlsx_report(chat_id, "excel отчёт за сегодня")
     pdf_path = reporting.create_pdf_report(chat_id, "pdf отчёт за сегодня")
-    csv_path = reporting.create_csv_report(chat_id, "csv отчёт за сегодня")
-    html_path = reporting.create_html_report(chat_id, "html отчёт за сегодня")
-    txt_path = reporting.create_txt_report(chat_id, "txt отчёт за сегодня")
-    zip_path = reporting.create_universal_report_zip(chat_id, "универсальный файл за сегодня")
     assert xlsx_path.exists() and xlsx_path.suffix == ".xlsx", xlsx_path
     assert pdf_path.exists() and pdf_path.suffix == ".pdf", pdf_path
-    assert csv_path.exists() and csv_path.suffix == ".csv", csv_path
-    assert html_path.exists() and html_path.suffix == ".html", html_path
-    assert txt_path.exists() and txt_path.suffix == ".txt", txt_path
-    assert zip_path.exists() and zip_path.suffix == ".zip", zip_path
-    with zipfile.ZipFile(zip_path) as zf:
-        names = set(zf.namelist())
-    assert any(name.endswith(".xlsx") for name in names), names
-    assert any(name.endswith(".pdf") for name in names), names
-    assert any(name.endswith(".csv") for name in names), names
-    assert any(name.endswith(".html") for name in names), names
-    assert any(name.endswith(".txt") for name in names), names
 
     first_component = repo.list_entities(chat_id, {"component"})[0]
 

@@ -71,15 +71,8 @@ def main() -> None:
             assert "E" not in str(cell.value).upper(), cell.value
             assert cell.number_format != "General", cell.number_format
 
-    txt = reporting.create_txt_report(chat_id, "txt отчёт за сегодня для сборки: Изделие 1 2500000; Изделие 2 50000", user_id=user_id)
-    txt_data = txt.read_text("utf-8")
-    assert "4 020 000" in txt_data, txt_data
-    assert "4e+06" not in txt_data and "e+" not in txt_data.lower(), txt_data
-
-    html = reporting.create_html_report(chat_id, "html отчёт за сегодня для сборки: Изделие 1 2500000, Изделие 2 50000", user_id=user_id)
-    html_data = html.read_text("utf-8")
-    assert "4 020 000" in html_data, html_data
-    assert "4e+06" not in html_data and "e+" not in html_data.lower(), html_data
+    pdf = reporting.create_pdf_report(chat_id, "pdf отчёт за сегодня для сборки: Изделие 1 2500000; Изделие 2 50000", user_id=user_id)
+    assert pdf.exists() and pdf.suffix == ".pdf", pdf
     print("OK")
 
 

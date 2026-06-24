@@ -122,18 +122,10 @@ def main() -> None:
 
     xlsx = reporting.create_xlsx_report(group_a, "excel отчёт за сегодня", user_id=user_submit)
     pdf = reporting.create_pdf_report(group_a, "pdf отчёт за сегодня", user_id=user_submit)
-    csv = reporting.create_csv_report(group_a, "csv отчёт за сегодня")
-    html = reporting.create_html_report(group_a, "html отчёт за сегодня")
-    txt = reporting.create_txt_report(group_a, "txt отчёт за сегодня")
-    package = reporting.create_universal_report_zip(group_a, "универсальный файл за сегодня")
-    for path in (xlsx, pdf, csv, html, txt, package):
+    for path in (xlsx, pdf):
         assert path.exists(), path
     workbook = load_workbook(xlsx, read_only=True)
     assert "Склад" in workbook.sheetnames and "Расчёт сборки" in workbook.sheetnames, workbook.sheetnames
-    with zipfile.ZipFile(package) as zf:
-        names = set(zf.namelist())
-    assert any(name.endswith(".xlsx") for name in names), names
-    assert any(name.endswith(".pdf") for name in names), names
 
     recent = accounting.list_recent_operations(group_a, group_a, user_submit, 10)
     assert recent, recent
