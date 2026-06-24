@@ -1033,6 +1033,34 @@ def owner_account_report(account_id: int) -> str:
         "Чаты:\n" + "\n".join(chat_lines)
     )
 
+
+def set_user_test_mode(user_id: int, enabled: bool) -> None:
+    if not is_global_owner_id(user_id):
+        return
+    db.execute(
+        """
+        INSERT INTO user_test_modes(user_id,is_enabled,updated_at)
+        VALUES(?,?,CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET
+            is_enabled=excluded.is_enabled,
+            updated_at=CURRENT_TIMESTAMP
+        """,
+        (user_id, 1 if enabled else 0),
+    )
+
+
+def is_user_test_mode_enabled(user_id: int | None) -> bool:
+    if not is_global_owner_id(user_id):
+        return False
+    row = db.fetchone("SELECT is_enabled FROM user_test_modes WHERE user_id=?", (user_id,))
+    return bool(row and row["is_enabled"])
+
+
+def toggle_user_test_mode(user_id: int) -> bool:
+    enabled = not is_user_test_mode_enabled(user_id)
+    set_user_test_mode(user_id, enabled)
+    return enabled
+
 EXPORT_SECTION_KEYS = {
     "inventory": "Склад",
     "period_totals": "Итоги за период",

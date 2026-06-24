@@ -14,9 +14,10 @@ from .normalize import format_amount
 def create_pending(chat_id: int, group_chat_id: int, user_id: int, payload: dict[str, Any], minutes: int = 30) -> str:
     pending_id = uuid.uuid4().hex
     expires = (datetime.utcnow() + timedelta(minutes=minutes)).isoformat()
+    is_test = 1 if payload.get("is_test") else 0
     db.execute(
-        "INSERT INTO pending_confirmations(id,chat_id,group_chat_id,user_id,data_json,expires_at) VALUES(?,?,?,?,?,?)",
-        (pending_id, chat_id, group_chat_id, user_id, json.dumps(payload, ensure_ascii=False), expires),
+        "INSERT INTO pending_confirmations(id,chat_id,group_chat_id,user_id,data_json,expires_at,is_test) VALUES(?,?,?,?,?,?,?)",
+        (pending_id, chat_id, group_chat_id, user_id, json.dumps(payload, ensure_ascii=False), expires, is_test),
     )
     return pending_id
 
@@ -132,7 +133,20 @@ def _insert_operation(chat_id: int, group_chat_id: int, user_id: int, op: dict[s
     return operation_id
 
 
-def apply_operations(chat_id: int, group_chat_id: int, user_id: int, operations: list[dict[str, Any]], raw_text: str = "") -> int:
+def count_saveable_operations(operations: list[dict[str, Any]]) -> int:
+    saved = 0
+    for op in operations:
+        if op.get("needs_attention") or op.get("quantity") is None:
+            continue
+        if not op.get("operation_type") or not op.get("entity_type") or not op.get("entity_id"):
+            continue
+        saved += 1
+    return saved
+
+
+def apply_operations(chat_id: int, group_chat_id: int, user_id: int, operations: list[dict[str, Any]], raw_text: str = "", dry_run: bool = False) -> int:
+    if dry_run:
+        return count_saveable_operations(operations)
     saved = 0
     for op in operations:
         if op.get("needs_attention") or op.get("quantity") is None:
