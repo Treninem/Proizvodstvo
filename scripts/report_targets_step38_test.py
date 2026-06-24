@@ -47,8 +47,8 @@ def main() -> None:
     _save(chat_id, user_id, "Зафасовали Изделие 1 2000")
 
     text = reporting.build_assembly_capacity_report(chat_id, "сколько нужно для сборки 50000 Изделие 1")
-    assert "Итого сейчас: 10000 шт." in text, text
-    assert "50000" in text and "не хватает 80000" in text and "не хватает 39000" in text, text
+    assert "Итого сейчас: 10 000 шт." in text, text
+    assert "50 000" in text and "не хватает 80 000" in text and "не хватает 39 000" in text, text
 
     xlsx = reporting.create_xlsx_report(chat_id, "excel отчёт за сегодня для сборки 250000", user_id=user_id)
     wb = load_workbook(xlsx, data_only=True, read_only=True)
@@ -73,8 +73,8 @@ def main() -> None:
     assert any(row[1] == "Часть Б" and row[-1] == 16000 for row in daily_rows), daily_rows
 
     plan_rows = _rows(wb["План сборки"])
-    assert any(row[0] == "Изделие 1" and row[1] == 50000 and row[7] == 80000 for row in plan_rows), plan_rows
     assert any(row[0] == "Изделие 1" and row[1] == 250000 and row[7] == 480000 for row in plan_rows), plan_rows
+    assert not any(row[0] == "Изделие 1" and row[1] == 50000 for row in plan_rows), plan_rows
 
     move_rows = _rows(wb["Собрано и отправлено"])
     assert any(row[0] == "Изделие 1" and row[1] == 5000 and row[2] == 2000 for row in move_rows), move_rows
