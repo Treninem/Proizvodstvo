@@ -5,11 +5,11 @@ from datetime import datetime, timedelta, date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Iterable
-import csv
 import html
 import os
 import re
-import zipfile
+import shutil
+import subprocess
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
@@ -415,11 +415,56 @@ def _font_has_cyrillic(font_path: Path) -> bool:
         return False
 
 
+def _add_font_path(candidates: list[Path], value: str | Path | None) -> None:
+    if value is None:
+        return
+    raw = str(value).strip().strip('"')
+    if not raw:
+        return
+    path = Path(raw).expanduser()
+    if path.is_dir():
+        wanted = ("dejavu", "noto", "free", "liberation", "arial", "segoe", "calibri", "sans")
+        for item in path.rglob("*"):
+            if item.suffix.lower() not in {".ttf", ".ttc", ".otf"}:
+                continue
+            if any(part in item.name.lower() for part in wanted):
+                candidates.append(item)
+        return
+    candidates.append(path)
+
+
+def _font_paths_from_fontconfig() -> list[Path]:
+    if not shutil.which("fc-match"):
+        return []
+    result: list[Path] = []
+    families = ("DejaVu Sans", "Noto Sans", "Liberation Sans", "Arial", "FreeSans", "sans")
+    for family in families:
+        try:
+            completed = subprocess.run(
+                ["fc-match", "-f", "%{file}", family],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=3,
+            )
+        except Exception:
+            continue
+        value = (completed.stdout or "").strip()
+        if value:
+            result.append(Path(value))
+    return result
+
+
 def _pdf_font_candidates() -> list[Path]:
-    env_font = os.environ.get("REPORT_PDF_FONT", "").strip()
     candidates: list[Path] = []
-    if env_font:
-        candidates.append(Path(env_font))
+    for env_name in ("REPORT_PDF_FONT", "REPORT_PDF_FONT_DIR"):
+        env_value = os.environ.get(env_name, "").strip()
+        if env_value:
+            for part in env_value.split(os.pathsep):
+                _add_font_path(candidates, part)
+
+    project_root = Path(__file__).resolve().parents[2]
     direct_paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/dejavu/DejaVuSans.ttf",
@@ -429,6 +474,12 @@ def _pdf_font_candidates() -> list[Path]:
         "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/app/.fonts/DejaVuSans.ttf",
+        "/app/fonts/DejaVuSans.ttf",
+        "/opt/render/project/src/fonts/DejaVuSans.ttf",
+        "/workspace/fonts/DejaVuSans.ttf",
+        "/var/task/fonts/DejaVuSans.ttf",
         "C:/Windows/Fonts/arial.ttf",
         "C:/Windows/Fonts/Arial.ttf",
         "C:/Windows/Fonts/segoeui.ttf",
@@ -437,26 +488,32 @@ def _pdf_font_candidates() -> list[Path]:
         "/Library/Fonts/Arial.ttf",
         "/System/Library/Fonts/Supplemental/Arial.ttf",
     ]
-    candidates.extend(Path(item) for item in direct_paths)
+    for item in direct_paths:
+        _add_font_path(candidates, item)
+
     search_roots = [
+        project_root / "fonts",
+        project_root / ".fonts",
+        settings.data_dir / "fonts",
         Path("/usr/share/fonts"),
         Path("/usr/local/share/fonts"),
+        Path("/app/fonts"),
+        Path("/app/.fonts"),
+        Path("/opt/render/project/src/fonts"),
+        Path("/workspace/fonts"),
+        Path("/var/task/fonts"),
         Path.home() / ".fonts",
         Path.home() / ".local/share/fonts",
     ]
-    wanted = ("dejavu", "noto", "free", "liberation", "arial", "segoe", "calibri")
     for root in search_roots:
-        if not root.exists():
-            continue
-        for item in root.rglob("*"):
-            if item.suffix.lower() not in {".ttf", ".ttc"}:
-                continue
-            if any(part in item.name.lower() for part in wanted):
-                candidates.append(item)
+        _add_font_path(candidates, root)
+
+    candidates.extend(_font_paths_from_fontconfig())
+
     result: list[Path] = []
     seen: set[str] = set()
     for item in candidates:
-        key = str(item)
+        key = str(item.resolve() if item.exists() else item)
         if key in seen:
             continue
         seen.add(key)
@@ -470,11 +527,20 @@ def _register_pdf_font() -> str:
             continue
         try:
             font_name = "BotSans" + str(abs(hash(str(font_path))) % 100000)
-            pdfmetrics.registerFont(TTFont(font_name, str(font_path)))
+            if font_name not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont(font_name, str(font_path)))
             return font_name
         except Exception:
             continue
-    raise ValueError("PDF не собран: на сервере не найден русский шрифт. Установите DejaVu Sans, Noto Sans или укажите путь через REPORT_PDF_FONT.")
+    raise ValueError("PDF не собран: на сервере нет русского шрифта. Запустите start_linux.sh заново или установите fonts-dejavu-core. Ещё можно положить DejaVuSans.ttf или NotoSans-Regular.ttf в папку fonts рядом с ботом.")
+
+
+def pdf_font_status() -> tuple[bool, str]:
+    try:
+        font_name = _register_pdf_font()
+        return True, f"PDF готов: русский шрифт найден ({font_name})."
+    except ValueError as exc:
+        return False, str(exc)
 
 
 def create_pdf_report(chat_id: int, request_text: str = "отчёт") -> Path:
@@ -1041,7 +1107,7 @@ def create_pdf_report(chat_id: int, request_text: str = "отчёт", user_id: i
 
 
 
-# --- Дополнение: универсальные форматы файлов для разных устройств ---
+# --- Разделы отчёта для Excel и PDF ---
 
 
 def _period_for_export(request_text: str) -> PeriodFilter:
@@ -1049,14 +1115,6 @@ def _period_for_export(request_text: str) -> PeriodFilter:
     if period.error:
         raise ValueError(period.error)
     return period
-
-
-def _write_section_csv(writer: csv.writer, title: str, header: list[str], rows: list[list[object]]) -> None:
-    writer.writerow([title])
-    writer.writerow(header)
-    for row in rows:
-        writer.writerow([_display_cell(cell) for cell in row])
-    writer.writerow([])
 
 
 def _inventory_table(chat_id: int) -> list[list[object]]:
@@ -1416,120 +1474,3 @@ def report_sections(
 
 def _empty_row(width: int, text: str = "Нет данных") -> list[object]:
     return [text, *["" for _ in range(max(0, width - 1))]]
-
-
-def create_csv_report(chat_id: int, request_text: str = "отчёт", user_id: int | None = None) -> Path:
-    period = _period_for_export(request_text)
-    filename = f"uchet_{_safe_name(period.title)}_{datetime.now():%Y%m%d_%H%M%S}.csv"
-    path = reports_dir() / filename
-    with path.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.writer(f, delimiter=";")
-        writer.writerow([f"Производственный отчёт {period.title}"])
-        writer.writerow([])
-        sections = report_sections(chat_id, request_text, user_id=user_id, selected=_full_export_selected())
-        if not sections:
-            sections = [("Отчёт", ["Раздел", "Состояние"], [["Отчёт", "Не выбран ни один раздел"]])]
-        for title, header, rows in sections:
-            _write_section_csv(writer, title, header, rows)
-    return path
-
-
-def _format_text_table(header: list[str], rows: list[list[object]]) -> str:
-    table = [[str(cell) for cell in header]]
-    if rows:
-        table.extend([[_display_cell(cell) for cell in row] for row in rows])
-    else:
-        table.append(_empty_row(len(header)))
-    widths = [max(len(row[i]) if i < len(row) else 0 for row in table) for i in range(len(table[0]))]
-    lines: list[str] = []
-    for row_index, row in enumerate(table):
-        line = " | ".join((row[i] if i < len(row) else "").ljust(widths[i]) for i in range(len(widths)))
-        lines.append(line.rstrip())
-        if row_index == 0:
-            lines.append("-+-".join("-" * width for width in widths).rstrip())
-    return "\n".join(lines)
-
-
-def create_txt_report(chat_id: int, request_text: str = "отчёт", user_id: int | None = None) -> Path:
-    period = _period_for_export(request_text)
-    filename = f"uchet_{_safe_name(period.title)}_{datetime.now():%Y%m%d_%H%M%S}.txt"
-    path = reports_dir() / filename
-    sections = report_sections(chat_id, request_text, user_id=user_id, selected=_full_export_selected())
-    if not sections:
-        sections = [("Отчёт", ["Раздел", "Состояние"], [["Отчёт", "Не выбран ни один раздел"]])]
-    parts = [f"Производственный отчёт {period.title}"]
-    for title, header, rows in sections:
-        parts.append("")
-        parts.append(title)
-        parts.append(_format_text_table(header, rows))
-    path.write_text("\n".join(parts).rstrip() + "\n", encoding="utf-8")
-    return path
-
-
-def _html_table(title: str, header: list[str], rows: list[list[object]]) -> str:
-    parts = [f"<h2>{html.escape(title)}</h2>", "<div class='table-wrap'><table><thead><tr>"]
-    for cell in header:
-        parts.append(f"<th>{html.escape(str(cell))}</th>")
-    parts.append("</tr></thead><tbody>")
-    if not rows:
-        parts.append(f"<tr><td colspan='{len(header)}'>Нет данных</td></tr>")
-    else:
-        for row in rows:
-            parts.append("<tr>")
-            for cell in row:
-                parts.append(f"<td>{html.escape(_display_cell(cell))}</td>")
-            parts.append("</tr>")
-    parts.append("</tbody></table></div>")
-    return "".join(parts)
-
-
-def create_html_report(chat_id: int, request_text: str = "отчёт", user_id: int | None = None) -> Path:
-    period = _period_for_export(request_text)
-    filename = f"uchet_{_safe_name(period.title)}_{datetime.now():%Y%m%d_%H%M%S}.html"
-    path = reports_dir() / filename
-    sections_data = report_sections(chat_id, request_text, user_id=user_id, selected=_full_export_selected())
-    if not sections_data:
-        sections_data = [("Отчёт", ["Раздел", "Состояние"], [["Отчёт", "Не выбран ни один раздел"]])]
-    sections = [_html_table(title, header, rows) for title, header, rows in sections_data]
-    doc = f"""<!doctype html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Производственный отчёт {html.escape(period.title)}</title>
-<style>
-body {{ font-family: Arial, sans-serif; margin: 16px; color: #111; }}
-h1 {{ font-size: 22px; margin-bottom: 8px; }}
-h2 {{ font-size: 17px; margin-top: 22px; }}
-.table-wrap {{ overflow-x: auto; margin-bottom: 18px; }}
-table {{ border-collapse: collapse; width: 100%; min-width: 720px; }}
-th, td {{ border: 1px solid #cfcfcf; padding: 6px 8px; vertical-align: top; }}
-th {{ background: #e8f1fb; text-align: left; }}
-td:nth-child(n+4) {{ text-align: right; }}
-@media print {{ body {{ margin: 8mm; }} .table-wrap {{ overflow: visible; }} table {{ font-size: 10px; }} }}
-</style>
-</head>
-<body>
-<h1>Производственный отчёт {html.escape(period.title)}</h1>
-{''.join(sections)}
-</body>
-</html>"""
-    path.write_text(doc, encoding="utf-8")
-    return path
-
-
-def create_universal_report_zip(chat_id: int, request_text: str = "отчёт", user_id: int | None = None) -> Path:
-    period = _period_for_export(request_text)
-    files = [
-        create_xlsx_report(chat_id, request_text, user_id=user_id),
-        create_pdf_report(chat_id, request_text, user_id=user_id),
-        create_csv_report(chat_id, request_text, user_id=user_id),
-        create_html_report(chat_id, request_text, user_id=user_id),
-        create_txt_report(chat_id, request_text, user_id=user_id),
-    ]
-    filename = f"uchet_universal_{_safe_name(period.title)}_{datetime.now():%Y%m%d_%H%M%S}.zip"
-    path = reports_dir() / filename
-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for file_path in files:
-            zf.write(file_path, arcname=file_path.name)
-    return path
