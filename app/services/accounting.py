@@ -8,6 +8,7 @@ from typing import Any
 from .. import db
 from .normalize import normalize_key
 from . import repository as repo
+from .normalize import format_amount
 
 
 def create_pending(chat_id: int, group_chat_id: int, user_id: int, payload: dict[str, Any], minutes: int = 30) -> str:
@@ -162,7 +163,7 @@ def format_summary(operations: list[dict[str, Any]], errors: list[str] | None = 
         qty = op.get("quantity")
         unit = op.get("unit") or ""
         area = op.get("area_name")
-        line = f"• {name} — {qty:g} {unit}" if isinstance(qty, (int, float)) else f"• {name}"
+        line = f"• {name} — {format_amount(qty)} {unit}" if isinstance(qty, (int, float)) else f"• {name}"
         if area and op.get("operation_type") in {"material_in", "material_out", "energy", "stock_in", "stock_out"}:
             line += f" · {area}"
         if op.get("needs_attention"):
@@ -239,7 +240,7 @@ def format_recent_operations(rows: list[dict[str, Any]]) -> str:
         qty = float(row.get("quantity") or 0)
         unit = row.get("unit") or ""
         area = f" · {row['area_name']}" if row.get("area_name") else ""
-        lines.append(f"• №{row['id']} · {title}: {name} — {qty:g} {unit}{area}")
+        lines.append(f"• №{row['id']} · {title}: {name} — {format_amount(qty)} {unit}{area}")
     lines.append("\nМожно написать: отменить запись 12 или исправить запись 12 250")
     return "\n".join(lines)
 
@@ -307,7 +308,7 @@ def change_operation_quantity(chat_id: int, group_chat_id: int, actor_user_id: i
         """,
         (operation_id, reversal_id, replacement_id, actor_user_id, "quantity", operation.get("quantity"), new_quantity, "исправление количества"),
     )
-    return True, f"Запись №{operation_id} исправлена: {float(operation.get('quantity') or 0):g} → {new_quantity:g}."
+    return True, f"Запись №{operation_id} исправлена: {format_amount(float(operation.get('quantity') or 0))} → {format_amount(new_quantity)}."
 
 
 def last_editable_operation_id(chat_id: int, group_chat_id: int, user_id: int) -> int | None:

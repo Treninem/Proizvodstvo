@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from . import repository as repo
+from .normalize import format_amount
 from .matcher import confident_match
 from .normalize import normalize_key
 from .parser import NUMBER_RE
@@ -161,7 +162,7 @@ def format_inventory_summary(operations: list[dict[str, Any]], errors: list[str]
         fact = float(op.get("fact_quantity") or 0)
         delta = float(op.get("quantity") or 0)
         sign = "+" if delta >= 0 else ""
-        lines.append(f"• {name}{area}: было {old:g} {unit}, стало {fact:g} {unit}, правка {sign}{delta:g} {unit}")
+        lines.append(f"• {name}{area}: было {format_amount(old)} {unit}, стало {format_amount(fact)} {unit}, правка {sign}{format_amount(abs(delta)) if delta < 0 else format_amount(delta)} {unit}")
     if errors:
         lines.append("\nНужно уточнить:")
         lines.extend(f"• {e}" for e in sorted(set(errors)))

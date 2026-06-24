@@ -2,12 +2,46 @@ from __future__ import annotations
 
 import difflib
 import re
+from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass
 
 CYR_LAT = str.maketrans({
     "a": "а", "e": "е", "o": "о", "p": "р", "c": "с", "x": "х", "y": "у",
     "A": "а", "E": "е", "O": "о", "P": "р", "C": "с", "X": "х", "Y": "у",
 })
+
+
+
+
+def format_amount(value: object, decimals: int = 3) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, bool):
+        return str(value)
+    try:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return ""
+            decimal_value = Decimal(stripped.replace(" ", "").replace(",", "."))
+        else:
+            decimal_value = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return str(value)
+    if not decimal_value.is_finite():
+        return str(value)
+    quant = Decimal(1).scaleb(-decimals)
+    decimal_value = decimal_value.quantize(quant).normalize()
+    sign = "-" if decimal_value < 0 else ""
+    decimal_value = abs(decimal_value)
+    plain = format(decimal_value, "f")
+    if "." in plain:
+        integer, fraction = plain.split(".", 1)
+        fraction = fraction.rstrip("0")
+    else:
+        integer, fraction = plain, ""
+    grouped = f"{int(integer or '0'):,}".replace(",", " ")
+    return sign + grouped + (("," + fraction) if fraction else "")
 
 
 def normalize_text(text: str) -> str:

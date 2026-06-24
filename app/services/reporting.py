@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, date
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Iterable
 import csv
@@ -45,6 +46,47 @@ ENTITY_LABELS: dict[str, str] = {
     "meter": "Прибор учёта",
     "stock_item": "Складская позиция",
 }
+
+
+def _fmt_number(value: object, decimals: int = 3) -> str:
+    """Показывает числа обычным видом: 4 000 000, а не 4e+06."""
+    if value is None or value == "":
+        return ""
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return ""
+        try:
+            decimal_value = Decimal(stripped.replace(" ", "").replace(",", "."))
+        except (InvalidOperation, ValueError):
+            return value
+    else:
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return str(value)
+    if not decimal_value.is_finite():
+        return str(value)
+    quant = Decimal(1).scaleb(-decimals)
+    decimal_value = decimal_value.quantize(quant).normalize()
+    sign = "-" if decimal_value < 0 else ""
+    decimal_value = abs(decimal_value)
+    plain = format(decimal_value, "f")
+    if "." in plain:
+        integer, fraction = plain.split(".", 1)
+        fraction = fraction.rstrip("0")
+    else:
+        integer, fraction = plain, ""
+    grouped = f"{int(integer or '0'):,}".replace(",", " ")
+    return sign + grouped + (("," + fraction) if fraction else "")
+
+
+def _display_cell(value: object) -> str:
+    if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
+        return _fmt_number(value)
+    return "" if value is None else str(value)
 
 
 @dataclass(frozen=True)
@@ -213,7 +255,7 @@ def build_stock_text(chat_id: int) -> str:
         name = row.get("entity_name") or "Позиция"
         area = f" · {row['area_name']}" if row.get("area_name") else ""
         qty = float(row.get("quantity") or 0)
-        lines.append(f"• {name} — {qty:g} {row.get('unit') or ''}{area}")
+        lines.append(f"• {name} — {_fmt_number(qty)} {row.get('unit') or ''}{area}")
     if len(rows) > 80:
         lines.append(f"\nЕщё строк: {len(rows) - 80}")
     return "\n".join(lines)
@@ -241,7 +283,7 @@ def build_text_report(chat_id: int, request_text: str, user_id: int | None = Non
                 name = row.get("entity_name") or ENTITY_LABELS.get(row.get("entity_type") or "", "Позиция")
                 area = f" · {row['area_name']}" if row.get("area_name") else ""
                 qty = float(row.get("total_quantity") or 0)
-                lines.append(f"• {name} — {qty:g} {row.get('unit') or ''}{area}")
+                lines.append(f"• {name} — {_fmt_number(qty)} {row.get('unit') or ''}{area}")
 
     if prefs.get("daily_matrix"):
         labels, matrix = movement_matrix_rows(chat_id, period)
@@ -250,7 +292,7 @@ def build_text_report(chat_id: int, request_text: str, user_id: int | None = Non
             shown = labels[-10:]
             for label in shown:
                 total = sum(float(row["values"].get(label) or 0) for row in matrix)
-                lines.append(f"• {label}: {total:g}")
+                lines.append(f"• {label}: {_fmt_number(total)}")
             if len(labels) > len(shown):
                 lines.append("• Полная таблица доступна в скачанном отчёте.")
 
@@ -265,7 +307,7 @@ def build_text_report(chat_id: int, request_text: str, user_id: int | None = Non
                 name = row.get("entity_name") or ENTITY_LABELS.get(row.get("entity_type") or "", "Позиция")
                 area = f" · {row['area_name']}" if row.get("area_name") else ""
                 qty = float(row.get("quantity") or 0)
-                lines.append(f"• {name} — {qty:g} {row.get('unit') or ''}{area}")
+                lines.append(f"• {name} — {_fmt_number(qty)} {row.get('unit') or ''}{area}")
             if len(inv) > 25:
                 lines.append(f"• Ещё строк: {len(inv) - 25}")
         else:
@@ -279,7 +321,7 @@ def build_text_report(chat_id: int, request_text: str, user_id: int | None = Non
                 title = OPERATION_LABELS.get(row.get("operation_type") or "", "Запись")
                 name = row.get("entity_name") or ENTITY_LABELS.get(row.get("entity_type") or "", "Позиция")
                 qty = float(row.get("quantity") or 0)
-                lines.append(f"• {row.get('created_at') or ''} · {title}: {name} — {qty:g} {row.get('unit') or ''}")
+                lines.append(f"• {row.get('created_at') or ''} · {title}: {name} — {_fmt_number(qty)} {row.get('unit') or ''}")
 
     if len(lines) == 1:
         lines.append("\nВыберите хотя бы один раздел.")
@@ -454,7 +496,7 @@ def create_pdf_report(chat_id: int, request_text: str = "отчёт") -> Path:
             ENTITY_LABELS.get(row.get("entity_type") or "", row.get("entity_type") or ""),
             row.get("entity_name") or "",
             row.get("area_name") or "Общий склад",
-            f"{float(row.get('quantity') or 0):g}",
+            _fmt_number(float(row.get('quantity') or 0)),
             row.get("unit") or "",
         ])
     if len(inv_data) == 1:
@@ -469,7 +511,7 @@ def create_pdf_report(chat_id: int, request_text: str = "отчёт") -> Path:
             OPERATION_LABELS.get(row.get("operation_type") or "", row.get("operation_type") or ""),
             row.get("entity_name") or ENTITY_LABELS.get(row.get("entity_type") or "", ""),
             row.get("area_name") or "",
-            f"{float(row.get('total_quantity') or 0):g}",
+            _fmt_number(float(row.get('total_quantity') or 0)),
             row.get("unit") or "",
             str(row.get("count_rows") or 0),
         ])
@@ -525,11 +567,11 @@ def build_assembly_capacity_report(chat_id: int, request_text: str) -> str:
         need = float(comp["quantity"] or 0)
         can_make = stock_qty // need if need > 0 else 0
         possible_values.append(can_make)
-        lines.append(f"• {comp['name']}: есть {stock_qty:g}, нужно {need:g} на 1")
+        lines.append(f"• {comp['name']}: есть {_fmt_number(stock_qty)}, нужно {_fmt_number(need)} на 1")
         if stock_qty < need:
-            missing.append(f"• {comp['name']} — не хватает {need - stock_qty:g}")
+            missing.append(f"• {comp['name']} — не хватает {_fmt_number(need - stock_qty)}")
     possible = int(min(possible_values)) if possible_values else 0
-    lines.insert(1, f"Итого сейчас: {possible} шт.")
+    lines.insert(1, f"Итого сейчас: {_fmt_number(possible)} шт.")
     if missing:
         lines.append("\nДля одной полной сборки не хватает:")
         lines.extend(missing)
@@ -670,6 +712,23 @@ def product_capacity_rows(chat_id: int) -> list[dict]:
     return rows
 
 
+def _format_target_rows_text(rows: list[list[object]], title: str = "План по количеству") -> str:
+    if not rows:
+        return "План пустой. Укажите изделие и нужное количество."
+    lines = [title]
+    for product, target, possible, component, stock, need_one, need_total, missing, unit in rows[:80]:
+        if component and component != "состав не задан":
+            lines.append(
+                f"• {product} · {_fmt_number(target)} шт: {component} — нужно {_fmt_number(need_total)}, "
+                f"есть {_fmt_number(stock)}, не хватает {_fmt_number(missing)} {unit}"
+            )
+        else:
+            lines.append(f"• {product} · {_fmt_number(target)} шт: состав пока не задан.")
+    if len(rows) > 80:
+        lines.append("• Полный план есть в скачанном отчёте.")
+    return "\n".join(lines)
+
+
 def build_all_assembly_capacity_report(chat_id: int, targets: list[int] | None = None) -> str:
     rows = product_capacity_rows(chat_id)
     if not rows:
@@ -680,23 +739,16 @@ def build_all_assembly_capacity_report(chat_id: int, targets: list[int] | None =
         product_name = str(row["product_name"])
         if product_name != current:
             current = product_name
-            lines.append(f"\n{product_name}: можно собрать {row['possible']}")
+            lines.append(f"\n{product_name}: можно собрать {_fmt_number(row['possible'])}")
         if row.get("component_name"):
             missing = float(row.get("missing_next") or 0)
-            extra = f", для ещё 1 не хватает {missing:g} {row.get('unit') or ''}" if missing > 0 else ""
-            lines.append(f"• {row['component_name']}: есть {float(row['stock']):g}, нужно {float(row['need']):g}{extra}")
+            extra = f", для ещё 1 не хватает {_fmt_number(missing)} {row.get('unit') or ''}" if missing > 0 else ""
+            lines.append(f"• {row['component_name']}: есть {_fmt_number(row['stock'])}, нужно {_fmt_number(row['need'])}{extra}")
         else:
             lines.append("• Состав пока не задан.")
     target_rows = _product_target_rows(chat_id, targets or DEFAULT_ASSEMBLY_TARGETS)
     if target_rows:
-        lines.append("\nПлан по количеству:")
-        for product, target, possible, component, stock, need_one, need_total, missing, unit in target_rows[:60]:
-            if component:
-                lines.append(f"• {product} · {target:g} шт: {component} — нужно {float(need_total):g}, есть {float(stock):g}, не хватает {float(missing):g} {unit}")
-            else:
-                lines.append(f"• {product}: состав пока не задан.")
-        if len(target_rows) > 60:
-            lines.append("• Полный план есть в скачанном отчёте.")
+        lines.append("\n" + _format_target_rows_text(target_rows))
     return "\n".join(lines)
 
 
@@ -708,12 +760,14 @@ def build_assembly_capacity_report(chat_id: int, request_text: str) -> str:
     key = normalize_key(request_text)
     if any(word in key for word in ("все", "всё", "кажд", "общ")) or key.strip() in {"сколько можно собрать", "расчет сборки", "расчёт сборки"}:
         return build_all_assembly_capacity_report(chat_id, targets or DEFAULT_ASSEMBLY_TARGETS)
-    key_text = _DATE_PATTERN.sub(" ", request_text)
-    key_text = re.sub(r"(?<!\d)\d{3,9}(?!\d)", " ", key_text)
-    for word in ["сколько", "можно", "собрать", "сбора", "сбор", "сборки", "изготовить", "сделать", "готово", "изделий", "изделие", "расчет", "расчёт", "нужно", "не", "хватает", "до", "для"]:
+    key_text = _strip_target_numbers(request_text)
+    for word in ["сколько", "можно", "собрать", "сбора", "сбор", "сборки", "изготовить", "сделать", "готово", "изделий", "изделие", "расчет", "расчёт", "нужно", "не", "хватает", "до", "для", "план", "цель", "цели"]:
         key_text = re.sub(rf"\b{word}\b", " ", key_text, flags=re.IGNORECASE)
     match, _ = confident_match(chat_id, key_text.strip() or request_text, allowed_types={"product"})
     if not match:
+        custom_rows = _product_target_rows_for_request(chat_id, request_text, include_defaults=False)
+        if custom_rows:
+            return _format_target_rows_text(custom_rows)
         return build_all_assembly_capacity_report(chat_id, targets or DEFAULT_ASSEMBLY_TARGETS)
     components = repo.list_product_components(match.target_id)
     if not components:
@@ -725,25 +779,25 @@ def build_assembly_capacity_report(chat_id: int, request_text: str) -> str:
         need = float(comp["quantity"] or 0)
         can_make = stock_qty // need if need > 0 else 0
         possible_values.append(can_make)
-        lines.append(f"• {comp['name']}: есть {stock_qty:g}, нужно {need:g} на 1")
+        lines.append(f"• {comp['name']}: есть {_fmt_number(stock_qty)}, нужно {_fmt_number(need)} на 1")
     possible = int(min(possible_values)) if possible_values else 0
-    lines.insert(1, f"Итого сейчас: {possible} шт.")
+    lines.insert(1, f"Итого сейчас: {_fmt_number(possible)} шт.")
     missing_next: list[str] = []
     for comp in components:
         stock_qty = _component_stock(chat_id, int(comp["component_id"]))
         need = float(comp["quantity"] or 0)
         missing = max(0.0, need * (possible + 1) - stock_qty)
         if missing > 0:
-            missing_next.append(f"• {comp['name']} — {missing:g} {comp.get('default_unit') or 'шт'}")
+            missing_next.append(f"• {comp['name']} — {_fmt_number(missing)} {comp.get('default_unit') or 'шт'}")
     if missing_next:
         lines.append("\nДля ещё 1 изделия не хватает:")
         lines.extend(missing_next)
-    target_rows = _product_target_rows(chat_id, targets or DEFAULT_ASSEMBLY_TARGETS)
+    target_rows = _product_target_rows_for_request(chat_id, request_text, include_defaults=True)
     own_rows = [row for row in target_rows if str(row[0]) == str(match.name)]
     if own_rows:
         lines.append("\nДо нужного количества:")
         for _product, target, _possible, component, stock, _need_one, need_total, missing, unit in own_rows[:45]:
-            lines.append(f"• {target:g} шт · {component}: нужно {float(need_total):g}, есть {float(stock):g}, не хватает {float(missing):g} {unit}")
+            lines.append(f"• {_fmt_number(target)} шт · {component}: нужно {_fmt_number(need_total)}, есть {_fmt_number(stock)}, не хватает {_fmt_number(missing)} {unit}")
     return "\n".join(lines)
 
 
@@ -871,7 +925,7 @@ def create_xlsx_report(chat_id: int, request_text: str = "отчёт", user_id: 
 def _stringify_table(header: list[str], rows: list[list[object]]) -> list[list[str]]:
     data: list[list[str]] = [[str(cell) for cell in header]]
     if rows:
-        data.extend([["" if cell is None else str(cell) for cell in row] for row in rows])
+        data.extend([[_display_cell(cell) for cell in row] for row in rows])
     else:
         data.append(_empty_row(len(header)))
     return data
@@ -1001,7 +1055,7 @@ def _write_section_csv(writer: csv.writer, title: str, header: list[str], rows: 
     writer.writerow([title])
     writer.writerow(header)
     for row in rows:
-        writer.writerow(row)
+        writer.writerow([_display_cell(cell) for cell in row])
     writer.writerow([])
 
 
@@ -1030,24 +1084,64 @@ def _period_totals_table(chat_id: int, period: PeriodFilter) -> list[list[object
 DEFAULT_ASSEMBLY_TARGETS = [10000, 50000, 100000]
 
 
+_TARGET_NUMBER_RE = re.compile(r"(?<!\d)(\d{1,3}(?:[ \u00A0]\d{3})+|\d{3,12})(?!\d)")
+_TARGET_MARKED_NUMBER_RE = re.compile(
+    r"(?:план|цель|цели|целью|сборки|сборку|собрать|сбора|до|для|на)\s+"
+    r"(\d{1,3}(?:[ \u00A0]\d{3})+|\d{1,12})(?!\d)",
+    re.IGNORECASE,
+)
+
+
+def _normalize_target_number(raw: str) -> int | None:
+    clean = re.sub(r"[ \u00A0]+", "", raw or "")
+    if not clean.isdigit():
+        return None
+    value = int(clean)
+    return value if value > 0 else None
+
+
 def _target_quantities_from_text(text: str, include_defaults: bool = True) -> list[int]:
     cleaned = _DATE_PATTERN.sub(" ", text or "")
     found: list[int] = []
-    for raw in re.findall(r"(?<!\d)(\d{3,9})(?!\d)", cleaned):
-        try:
-            value = int(raw)
-        except ValueError:
-            continue
-        if value > 0 and value not in found:
-            found.append(value)
-    result: list[int] = []
-    if include_defaults:
-        result.extend(DEFAULT_ASSEMBLY_TARGETS)
-    for value in found:
-        if value not in result:
-            result.append(value)
-    return result
+    for pattern in (_TARGET_NUMBER_RE, _TARGET_MARKED_NUMBER_RE):
+        for match in pattern.finditer(cleaned):
+            value = _normalize_target_number(match.group(1))
+            if value and value not in found:
+                found.append(value)
+    if found:
+        return found
+    return list(DEFAULT_ASSEMBLY_TARGETS) if include_defaults else []
 
+
+def _strip_target_numbers(text: str) -> str:
+    cleaned = _DATE_PATTERN.sub(" ", text or "")
+    cleaned = _TARGET_MARKED_NUMBER_RE.sub(" ", cleaned)
+    cleaned = _TARGET_NUMBER_RE.sub(" ", cleaned)
+    return cleaned
+
+
+def _custom_product_targets_from_text(chat_id: int, request_text: str) -> dict[int, list[int]]:
+    """Возвращает цели, заданные в запросе для конкретных изделий.
+
+    Пример: "план сборки: Изделие 1 50000; Изделие 2 120000".
+    """
+    from .matcher import confident_match
+
+    chunks = [chunk.strip() for chunk in re.split(r"[;,\n]+", request_text or "") if chunk.strip()]
+    result: dict[int, list[int]] = {}
+    for chunk in chunks:
+        targets = _target_quantities_from_text(chunk, include_defaults=False)
+        if not targets:
+            continue
+        product_text = _strip_target_numbers(chunk)
+        match, _ = confident_match(chat_id, product_text.strip() or chunk, allowed_types={"product"})
+        if not match:
+            continue
+        bucket = result.setdefault(int(match.target_id), [])
+        for target in targets:
+            if target not in bucket:
+                bucket.append(target)
+    return result
 
 def _component_stock_rows(chat_id: int) -> list[list[object]]:
     rows = db.fetchall(
@@ -1151,15 +1245,27 @@ def _assembly_shipment_daily_table(chat_id: int, period: PeriodFilter) -> tuple[
     return labels, table
 
 
-def _product_target_rows(chat_id: int, targets: list[int]) -> list[list[object]]:
+def _product_target_rows(
+    chat_id: int,
+    targets: list[int],
+    product_ids: set[int] | None = None,
+    per_product_targets: dict[int, list[int]] | None = None,
+) -> list[list[object]]:
     from . import repository as repo
 
     rows: list[list[object]] = []
     for product_pack in repo.all_products_with_components(chat_id):
         product = product_pack["product"]
+        product_id = int(product.id)
+        if product_ids is not None and product_id not in product_ids:
+            continue
+        product_targets = list(per_product_targets.get(product_id, []) if per_product_targets else targets)
+        if not product_targets:
+            continue
         components = product_pack["components"]
         if not components:
-            rows.append([product.name, "состав не задан", "", "", "", "", "", ""])
+            for target in product_targets:
+                rows.append([product.name, target, "состав не задан", "", "", "", "", "", ""])
             continue
         possible_values: list[float] = []
         component_info: list[dict[str, object]] = []
@@ -1174,7 +1280,7 @@ def _product_target_rows(chat_id: int, targets: list[int]) -> list[list[object]]
                 "unit": str(comp.get("default_unit") or "шт"),
             })
         possible = int(min(possible_values)) if possible_values else 0
-        for target in targets:
+        for target in product_targets:
             for comp in component_info:
                 need_total = float(comp["need"]) * target
                 missing = max(0.0, need_total - float(comp["stock"]))
@@ -1191,6 +1297,20 @@ def _product_target_rows(chat_id: int, targets: list[int]) -> list[list[object]]
                 ])
     return rows
 
+
+def _product_target_rows_for_request(chat_id: int, request_text: str, include_defaults: bool = True) -> list[list[object]]:
+    from .matcher import confident_match
+
+    custom = _custom_product_targets_from_text(chat_id, request_text)
+    if custom:
+        return _product_target_rows(chat_id, [], product_ids=set(custom), per_product_targets=custom)
+
+    targets = _target_quantities_from_text(request_text, include_defaults=include_defaults)
+    product_text = _strip_target_numbers(request_text)
+    match, _ = confident_match(chat_id, product_text.strip() or request_text, allowed_types={"product"})
+    if match:
+        return _product_target_rows(chat_id, targets, product_ids={int(match.target_id)})
+    return _product_target_rows(chat_id, targets)
 
 def _assembly_shipping_summary_table(chat_id: int, period: PeriodFilter) -> list[list[object]]:
     rows = db.fetchall(
@@ -1287,8 +1407,7 @@ def report_sections(
         sections.append(("Сборка и отправка по датам", ["Операция", "Изделие", "Ед.", *move_labels, "Итого"], move_rows))
     if prefs.get("capacity"):
         sections.append(("Расчёт сборки", ["Изделие", "Можно собрать", "Комплектующая", "Есть", "Нужно на 1", "Не хватает для ещё 1", "Ед."], _capacity_table(chat_id)))
-        targets = _target_quantities_from_text(request_text, include_defaults=True)
-        sections.append(("План сборки", ["Изделие", "Цель", "Можно собрать", "Комплектующая", "Есть", "Нужно на 1", "Нужно на цель", "Не хватает", "Ед."], _product_target_rows(chat_id, targets)))
+        sections.append(("План сборки", ["Изделие", "Цель", "Можно собрать", "Комплектующая", "Есть", "Нужно на 1", "Нужно на цель", "Не хватает", "Ед."], _product_target_rows_for_request(chat_id, request_text, include_defaults=True)))
         sections.append(("Собрано и отправлено", ["Изделие", "Собрано", "Отправлено/продано", "Ед."], _assembly_shipping_summary_table(chat_id, period)))
     if prefs.get("journal"):
         sections.append(("Журнал", ["Дата", "Операция", "Тип", "Название", "Участок", "Количество", "Ед.", "Работник", "Группа"], _journal_table(chat_id, period)))
@@ -1318,7 +1437,7 @@ def create_csv_report(chat_id: int, request_text: str = "отчёт", user_id: i
 def _format_text_table(header: list[str], rows: list[list[object]]) -> str:
     table = [[str(cell) for cell in header]]
     if rows:
-        table.extend([["" if cell is None else str(cell) for cell in row] for row in rows])
+        table.extend([[_display_cell(cell) for cell in row] for row in rows])
     else:
         table.append(_empty_row(len(header)))
     widths = [max(len(row[i]) if i < len(row) else 0 for row in table) for i in range(len(table[0]))]
@@ -1358,7 +1477,7 @@ def _html_table(title: str, header: list[str], rows: list[list[object]]) -> str:
         for row in rows:
             parts.append("<tr>")
             for cell in row:
-                parts.append(f"<td>{html.escape(str(cell))}</td>")
+                parts.append(f"<td>{html.escape(_display_cell(cell))}</td>")
             parts.append("</tr>")
     parts.append("</tbody></table></div>")
     return "".join(parts)
