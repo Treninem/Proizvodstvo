@@ -24,7 +24,7 @@ from ..keyboards import (
     stock_item_area_keyboard,
 )
 from ..services import repository as repo
-from ..services.normalize import normalize_key
+from ..services.normalize import normalize_key, format_amount
 
 router = Router()
 
@@ -431,7 +431,7 @@ def _product_components_text(product_id: int) -> str:
         lines.append("Состав пока не задан.")
     else:
         for comp in components:
-            lines.append(f"• {comp['name']} — {float(comp['quantity']):g} {comp.get('default_unit') or 'шт'}")
+            lines.append(f"• {comp['name']} — {format_amount(float(comp['quantity']))} {comp.get('default_unit') or 'шт'}")
     from ..services import reporting
     capacity = reporting.build_assembly_capacity_report(product.chat_id, f"сколько можно собрать {product.name}")
     lines.append("")
@@ -850,7 +850,7 @@ async def try_handle_wizard_message(message: Message) -> bool:
             return True
         ok = repo.update_product_component_quantity(chat_id, product_id, component_id, quantity)
         repo.set_setup_session(chat_id, user_id, "choose_product_components_action", {"product_id": product_id, "product_name": data.get("product_name")})
-        text_out = f"Количество обновлено: {component_name} — {quantity:g}." if ok else "Не удалось обновить количество."
+        text_out = f"Количество обновлено: {component_name} — {format_amount(quantity)}." if ok else "Не удалось обновить количество."
         await _send_step_message(message, text_out, reply_markup=product_components_action_keyboard())
         return True
 

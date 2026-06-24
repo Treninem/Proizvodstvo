@@ -60,9 +60,11 @@ def _state_for(token: str) -> ReportState | None:
 
 def _looks_like_capacity_request(text: str) -> bool:
     key = normalize_key(text)
-    if "сколько" not in key:
-        return False
-    return any(word in key for word in ("собрать", "сбор", "сборки", "сбора", "комплект", "не хватает", "нужно"))
+    if any(word in key for word in ("собрать", "сбор", "сборки", "сбора", "комплект", "не хватает", "нужно")) and any(
+        marker in key for marker in ("сколько", "план", "цель", "цели", "расчет", "расчёт", "нужно", "хватает")
+    ):
+        return True
+    return False
 
 
 def _looks_like_report_request(text: str) -> bool:

@@ -9,6 +9,7 @@ from ..access import can_submit_operations
 from ..services import accounting
 from ..services import parser
 from ..services import repository as repo
+from ..services.normalize import format_amount
 
 router = Router()
 
@@ -63,7 +64,7 @@ def _choice_text(operation: dict, choices: list[dict]) -> str:
     raw_line = str(operation.get("raw_line") or "запись").strip()
     qty = operation.get("quantity")
     unit = operation.get("unit") or "шт"
-    qty_line = f"Количество: {float(qty):g} {unit}" if isinstance(qty, (int, float)) else "Количество нужно уточнить"
+    qty_line = f"Количество: {format_amount(qty)} {unit}" if isinstance(qty, (int, float)) else "Количество нужно уточнить"
     lines = [
         "Нужно уточнить позицию",
         "",
