@@ -260,8 +260,6 @@ def report_sections_keyboard(token: str, selected: dict[str, bool], action_text:
 def report_download_keyboard(token: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Excel", callback_data=f"report:file:{token}:xlsx"), InlineKeyboardButton(text="PDF", callback_data=f"report:file:{token}:pdf")],
-        [InlineKeyboardButton(text="CSV", callback_data=f"report:file:{token}:csv"), InlineKeyboardButton(text="HTML", callback_data=f"report:file:{token}:html")],
-        [InlineKeyboardButton(text="TXT", callback_data=f"report:file:{token}:txt")],
         [InlineKeyboardButton(text="Назад", callback_data=f"report:back:{token}"), InlineKeyboardButton(text="В меню", callback_data="menu:main")],
     ])
 
