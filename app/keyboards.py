@@ -189,7 +189,7 @@ def component_choice_keyboard(components: list[dict], mode: str) -> InlineKeyboa
         name = str(comp["name"])
         qty = float(comp.get("quantity") or 0)
         unit = str(comp.get("default_unit") or "шт")
-        rows.append([InlineKeyboardButton(text=f"{name} — {qty:g} {unit}", callback_data=f"components:{mode}:{component_id}")])
+        rows.append([InlineKeyboardButton(text=f"{name} — {format_amount(qty)} {unit}", callback_data=f"components:{mode}:{component_id}")])
     rows.append([InlineKeyboardButton(text="Назад", callback_data="components:back_actions")])
     rows.append([InlineKeyboardButton(text="Отмена", callback_data="wizard:cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
