@@ -33,7 +33,8 @@ _REPORT_TRIGGERS = {
     "общий отчёт",
 }
 
-_FILE_WORDS = {"файл", "скачать", "excel", "xlsx", "pdf", "пдф", "таблица", "выгрузка", "csv", "цсв", "html", "хтмл", "txt", "текстовый", "zip", "архив", "универсальный", "универсал", "телефон", "планшет", "компьютер", "андроид", "android", "айос", "ios", "iphone", "windows", "виндовс", "браузер"}
+_FILE_WORDS = {"файл", "скачать", "excel", "xlsx", "эксель", "ексель", "pdf", "пдф", "таблица", "выгрузка"}
+_UNSUPPORTED_FILE_WORDS = {"csv", "цсв", "html", "хтмл", "txt", "текстовый", "zip", "архив", "универсальный", "универсал", "браузер"}
 _REPORT_WORDS = {"отчет", "отчёт", "склад", "остатки", "сводка", "итоги", "движение"}
 
 
@@ -91,13 +92,12 @@ def _file_type_from_text(text: str) -> str | None:
         return "xlsx"
     if any(word in key for word in {"pdf", "пдф"}):
         return "pdf"
-    if any(word in key for word in {"csv", "цсв"}):
-        return "csv"
-    if any(word in key for word in {"html", "хтмл", "браузер"}):
-        return "html"
-    if any(word in key for word in {"txt", "текстовый"}):
-        return "txt"
     return None
+
+
+def _looks_like_unsupported_file_request(text: str) -> bool:
+    key = normalize_key(text)
+    return any(word in key for word in _UNSUPPORTED_FILE_WORDS)
 
 
 def _format_selection_text(state: ReportState) -> str:
@@ -115,12 +115,6 @@ def _save_selected(state: ReportState) -> None:
 
 
 def _download_path(state: ReportState, file_type: str):
-    if file_type == "csv":
-        return reporting.create_csv_report(state.scope_chat_id, state.request_text, user_id=state.user_id)
-    if file_type == "html":
-        return reporting.create_html_report(state.scope_chat_id, state.request_text, user_id=state.user_id)
-    if file_type == "txt":
-        return reporting.create_txt_report(state.scope_chat_id, state.request_text, user_id=state.user_id)
     if file_type == "pdf":
         return reporting.create_pdf_report(state.scope_chat_id, state.request_text, user_id=state.user_id)
     return reporting.create_xlsx_report(state.scope_chat_id, state.request_text, user_id=state.user_id)
@@ -251,6 +245,10 @@ async def try_handle_report(message: Message) -> bool:
     period_error = reporting.period_error_for_text(text)
     if period_error:
         await message.answer(period_error)
+        return True
+
+    if _looks_like_unsupported_file_request(text):
+        await message.answer("Сейчас доступны только два формата отчёта: Excel и PDF.")
         return True
 
     requested_file_type = _file_type_from_text(text)
