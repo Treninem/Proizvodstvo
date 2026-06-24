@@ -200,6 +200,80 @@ def list_accounts_for_user(user_id: int, chat_id: int | None = None, include_acc
     return accounts
 
 
+
+def _unique_account_name(owner_user_id: int, base_name: str, fallback_id: int) -> str:
+    clean = (base_name or '').strip() or 'Учёт группы'
+    key = normalize_key(clean)
+    row = db.fetchone(
+        "SELECT id FROM accounting_accounts WHERE owner_user_id=? AND normalized=? AND is_archived=0",
+        (owner_user_id, key),
+    )
+    if not row:
+        return clean
+    suffix = str(abs(fallback_id))[-6:]
+    candidate = f"{clean} {suffix}"
+    idx = 2
+    while db.fetchone(
+        "SELECT id FROM accounting_accounts WHERE owner_user_id=? AND normalized=? AND is_archived=0",
+        (owner_user_id, normalize_key(candidate)),
+    ):
+        candidate = f"{clean} {suffix}-{idx}"
+        idx += 1
+    return candidate
+
+
+def ensure_group_account_context(group_chat_id: int, group_title: str, group_type: str, owner_user_id: int, private_chat_id: int | None = None, private_title: str = '') -> AccountingAccount | None:
+    """Prepare a real accounting context for setup opened from a private chat.
+
+    Telegram sends inline-button callbacks in the private chat, so setup screens need an
+    active account mapped to that private chat. The account itself remains tied to the
+    selected group and its data is stored in the account scope, not in the private chat.
+    """
+    if not owner_user_id:
+        return None
+    title = (group_title or '').strip() or 'Рабочая группа'
+    chat_type = (group_type or '').strip() or 'supergroup'
+    upsert_chat(group_chat_id, title, chat_type, connected=True)
+    account = get_active_account(group_chat_id)
+    if account is None:
+        name = _unique_account_name(owner_user_id, title, group_chat_id)
+        ok, _msg, account_id = create_account(owner_user_id, group_chat_id, name)
+        if not ok or not account_id:
+            return None
+        attach_chat_to_account(account_id, group_chat_id, can_manage=True, set_active=True)
+        account = get_account_by_id(account_id)
+    if account is None:
+        return None
+    grant_account_user_access(account.id, owner_user_id, None, display_manage=True)
+    attach_chat_to_account(account.id, group_chat_id, can_manage=True, set_active=True)
+    if private_chat_id is not None:
+        upsert_chat(private_chat_id, private_title or 'Личный чат', 'private', connected=True)
+        attach_chat_to_account(account.id, private_chat_id, can_manage=True, set_active=True)
+    return account
+
+
+def ensure_private_account_context(user_id: int, private_chat_id: int, private_title: str = '') -> AccountingAccount | None:
+    """Let a first-time user configure a fresh account in private without a false denial."""
+    if not user_id:
+        return None
+    upsert_chat(private_chat_id, private_title or 'Личный чат', 'private', connected=True)
+    account = get_active_account(private_chat_id)
+    if account and user_has_account_access(account.id, user_id, require_manage=True):
+        return account
+    accounts = list_accounts_for_user(user_id, private_chat_id, include_accessible=True)
+    if accounts:
+        account = accounts[0]
+        grant_account_user_access(account.id, user_id, None, display_manage=True)
+        attach_chat_to_account(account.id, private_chat_id, can_manage=True, set_active=True)
+        return account
+    name = _unique_account_name(user_id, 'Учёт', private_chat_id)
+    ok, _msg, account_id = create_account(user_id, private_chat_id, name)
+    if not ok or not account_id:
+        return None
+    grant_account_user_access(account_id, user_id, None, display_manage=True)
+    attach_chat_to_account(account_id, private_chat_id, can_manage=True, set_active=True)
+    return get_account_by_id(account_id)
+
 def find_account_for_chat(chat_id: int, name: str) -> AccountingAccount | None:
     key = normalize_key(name)
     rows = db.fetchall(
