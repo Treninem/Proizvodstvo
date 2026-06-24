@@ -18,6 +18,7 @@ def _owner_menu() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Все учёты", callback_data="owner:accounts")],
             [InlineKeyboardButton(text="Общая статистика", callback_data="owner:stats")],
             [InlineKeyboardButton(text="Состояние базы", callback_data="owner:db")],
+            [InlineKeyboardButton(text="Режим проверки", callback_data="owner:testmode")],
             [InlineKeyboardButton(text="Обновить", callback_data="owner:panel")],
         ]
     )
@@ -43,15 +44,17 @@ def _accounts_keyboard() -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="Назад", callback_data="owner:panel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def _format_panel() -> str:
+def _format_panel(user_id: int | None = None) -> str:
     stats = repo.owner_global_stats()
+    test_mode = "включён" if repo.is_user_test_mode_enabled(user_id) else "выключен"
     return (
         "Закрытый раздел\n\n"
         f"Подключённых групп: {stats['connected_chats']}\n"
         f"Всего чатов в базе: {stats['total_chats']}\n"
         f"Записей учёта: {stats['operations']}\n"
         f"Позиции склада: {stats['inventory_rows']}\n"
-        f"Учётов: {stats.get('accounts', 0)}\n\n"
+        f"Учётов: {stats.get('accounts', 0)}\n"
+        f"Режим проверки: {test_mode}\n\n"
         "Выберите действие."
     )
 
@@ -89,7 +92,7 @@ def _format_db_status() -> str:
 
 
 async def _show_panel(message: Message) -> None:
-    await message.answer(_format_panel(), reply_markup=_owner_menu())
+    await message.answer(_format_panel(message.from_user.id if message.from_user else None), reply_markup=_owner_menu())
 
 
 @router.message(Command("owner"))
@@ -106,6 +109,25 @@ async def owner_text_command(message: Message) -> None:
     await _show_panel(message)
 
 
+
+
+@router.message(F.text.lower().in_({"тестовый режим", "режим проверки", "тест вкл", "тест выкл"}))
+async def owner_test_mode_text(message: Message) -> None:
+    if not is_global_owner(message.from_user.id if message.from_user else None):
+        return
+    text = (message.text or "").lower().strip()
+    if text == "тест вкл":
+        repo.set_user_test_mode(message.from_user.id, True)
+        await message.answer("Режим проверки включён. Ваши пробные записи не попадут в основной учёт.")
+        return
+    if text == "тест выкл":
+        repo.set_user_test_mode(message.from_user.id, False)
+        await message.answer("Режим проверки выключен.")
+        return
+    enabled = repo.toggle_user_test_mode(message.from_user.id)
+    await message.answer("Режим проверки включён. Ваши пробные записи не попадут в основной учёт." if enabled else "Режим проверки выключен.")
+
+
 @router.callback_query(F.data.startswith("owner:"))
 async def owner_callbacks(callback: CallbackQuery) -> None:
     if not is_global_owner(callback.from_user.id if callback.from_user else None):
@@ -113,7 +135,14 @@ async def owner_callbacks(callback: CallbackQuery) -> None:
         return
     action = callback.data.split(":", 1)[1]
     if action == "panel":
-        await safe_edit_text(callback.message, _format_panel(), reply_markup=_owner_menu())
+        await safe_edit_text(callback.message, _format_panel(callback.from_user.id if callback.from_user else None), reply_markup=_owner_menu())
+        await callback.answer()
+        return
+
+    if action == "testmode":
+        enabled = repo.toggle_user_test_mode(callback.from_user.id)
+        text = "Режим проверки включён. Ваши пробные записи не попадут в основной учёт." if enabled else "Режим проверки выключен."
+        await safe_edit_text(callback.message, text + "\n\n" + _format_panel(callback.from_user.id), reply_markup=_owner_menu())
         await callback.answer()
         return
     if action == "chats":

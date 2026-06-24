@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from ._safe import safe_edit_text
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
@@ -9,9 +11,37 @@ from ..access import can_submit_operations
 from ..services import accounting
 from ..services import parser
 from ..services import repository as repo
-from ..services.normalize import format_amount
+from ..services.normalize import format_amount, normalize_key
 
 router = Router()
+
+def _test_input(text: str, user_id: int | None) -> tuple[str, bool]:
+    if not repo.is_global_owner_id(user_id):
+        return text, False
+    test_mode = repo.is_user_test_mode_enabled(user_id)
+    one_time = False
+    cleaned = text.strip()
+    if re.match(r"^\s*(тест|проверка)\s+", cleaned, flags=re.IGNORECASE):
+        one_time = True
+        cleaned = re.sub(r"^\s*(тест|проверка)\s+", "", cleaned, flags=re.IGNORECASE).strip()
+    lowered = cleaned.lower()
+    if "#тест" in lowered or "#test" in lowered:
+        one_time = True
+        cleaned = re.sub(r"#(?:тест|test)\b", "", cleaned, flags=re.IGNORECASE).strip()
+    return cleaned or text, bool(test_mode or one_time)
+
+
+def _summary_for_payload(payload: dict, errors: list[str] | None = None) -> str:
+    text = accounting.format_summary(payload.get("operations", []), errors)
+    if payload.get("is_test"):
+        text = "Проверочный режим\nВ основной учёт эта запись не попадёт.\n\n" + text
+    return text
+
+
+def _saved_text(saved: int, is_test: bool) -> str:
+    if is_test:
+        return f"Проверка прошла: {saved} записей. Основной учёт не изменён."
+    return f"Сохранено записей: {saved}"
 
 
 def _allowed_entity_types(operation_type: str | None) -> set[str]:
@@ -127,7 +157,7 @@ async def _show_unresolved_or_confirm(message, pending_id: str, payload: dict) -
     operations = payload.get("operations", [])
     unresolved = accounting.first_unresolved_index(operations)
     if unresolved is None:
-        await safe_edit_text(message, accounting.format_summary(operations), reply_markup=confirm_keyboard(pending_id))
+        await safe_edit_text(message, _summary_for_payload(payload), reply_markup=confirm_keyboard(pending_id))
         return
     choices = _choices_for_operation(payload.get("chat_id") or repo.resolve_scope_chat_id(message.chat.id), operations[unresolved])
     markup = resolve_operation_keyboard(pending_id, unresolved, choices) if choices else confirm_keyboard(pending_id)
@@ -162,17 +192,18 @@ async def try_handle_confirmation_text(message: Message) -> bool:
         else:
             await message.answer("Сначала уточните название позиции или добавьте её в настройке учёта.")
         return True
-    saved = accounting.apply_operations(scope_chat_id, message.chat.id, message.from_user.id, payload.get("operations", []), payload.get("raw_text", ""))
+    saved = accounting.apply_operations(scope_chat_id, message.chat.id, message.from_user.id, payload.get("operations", []), payload.get("raw_text", ""), dry_run=bool(payload.get("is_test")))
     accounting.clear_pending(pending_id)
     if saved <= 0:
         await message.answer("Запись не сохранена. Уточните название позиции или отправьте данные заново.")
         return True
-    await message.answer(f"Сохранено записей: {saved}")
+    await message.answer(_saved_text(saved, bool(payload.get("is_test"))))
     return True
 
 
 async def try_handle_intake(message: Message) -> bool:
-    text = message.text or ""
+    raw_text = message.text or ""
+    text, is_test = _test_input(raw_text, message.from_user.id if message.from_user else None)
     if not parser.looks_like_accounting(text):
         return False
     if message.chat.type in {"group", "supergroup"} and not repo.is_connected_chat(message.chat.id):
@@ -187,7 +218,7 @@ async def try_handle_intake(message: Message) -> bool:
     if not await can_submit_operations(message.bot, message.chat, message.from_user, operation_types):
         await message.answer("Эти данные может сдавать только участник с подходящей должностью.")
         return True
-    payload = {"chat_id": scope_chat_id, "operations": [op.to_dict() for op in ops], "raw_text": text}
+    payload = {"chat_id": scope_chat_id, "operations": [op.to_dict() for op in ops], "raw_text": raw_text, "is_test": is_test}
     pending_id = accounting.create_pending(scope_chat_id, message.chat.id, message.from_user.id if message.from_user else 0, payload)
     unresolved = accounting.first_unresolved_index(payload["operations"])
     if unresolved is not None:
@@ -204,7 +235,7 @@ async def try_handle_intake(message: Message) -> bool:
                 ]),
             )
         return True
-    await message.answer(accounting.format_summary(payload["operations"], errors), reply_markup=confirm_keyboard(pending_id))
+    await message.answer(_summary_for_payload(payload, errors), reply_markup=confirm_keyboard(pending_id))
     return True
 
 
@@ -248,13 +279,13 @@ async def confirm_pending(callback: CallbackQuery) -> None:
         await _show_unresolved_or_confirm(callback.message, pending_id, payload)
         await callback.answer("Нужно уточнить позицию", show_alert=True)
         return
-    saved = accounting.apply_operations(scope_chat_id, callback.message.chat.id, callback.from_user.id, payload.get("operations", []), payload.get("raw_text", ""))
+    saved = accounting.apply_operations(scope_chat_id, callback.message.chat.id, callback.from_user.id, payload.get("operations", []), payload.get("raw_text", ""), dry_run=bool(payload.get("is_test")))
     accounting.clear_pending(pending_id)
     if saved <= 0:
         await safe_edit_text(callback.message, "Запись не сохранена. Уточните название позиции или отправьте данные заново.")
         await callback.answer("Нужно уточнить запись", show_alert=True)
         return
-    await safe_edit_text(callback.message, f"Сохранено записей: {saved}")
+    await safe_edit_text(callback.message, _saved_text(saved, bool(payload.get("is_test"))))
     await callback.answer()
 
 
