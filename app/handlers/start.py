@@ -5,7 +5,8 @@ from aiogram import F, Router
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, Message
 
-from ..keyboards import main_menu, setup_menu
+from ..access import is_chat_creator, is_global_owner
+from ..keyboards import chat_list_keyboard, main_menu, setup_menu
 from ..services import repository as repo
 
 router = Router()
@@ -109,6 +110,25 @@ excel отчёт за сегодня для сборки: Изделие 1 50000
 Сначала создайте участки, должности, изделия, комплектующие, сырьё и счётчики. Потом назначьте людям должности и подключите рабочие группы."""
 
 
+async def _manageable_group_chats(bot, user_id: int | None) -> list[dict]:
+    if not user_id:
+        return []
+    result: list[dict] = []
+    for chat in repo.list_known_group_chats(limit=200):
+        chat_id = int(chat["chat_id"])
+        if is_global_owner(user_id) or repo.user_has_manage_access_to_chat(chat_id, user_id):
+            result.append(chat)
+            continue
+        if await is_chat_creator(bot, chat_id, user_id):
+            result.append(chat)
+    return result
+
+
+def _private_title(callback: CallbackQuery) -> str:
+    chat = callback.message.chat
+    return getattr(chat, "full_name", None) or getattr(chat, "title", None) or "Личный чат"
+
+
 @router.message(CommandStart())
 async def start(message: Message) -> None:
     repo.upsert_chat(message.chat.id, message.chat.title or message.chat.full_name or "", message.chat.type)
@@ -143,6 +163,31 @@ async def menu_main(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "menu:setup")
 async def menu_setup(callback: CallbackQuery) -> None:
     if callback.message.chat.type == "private" and callback.from_user:
+        groups = await _manageable_group_chats(callback.bot, callback.from_user.id)
+        if len(groups) == 1:
+            group = groups[0]
+            group_chat_id = int(group["chat_id"])
+            title = str(group.get("title") or group_chat_id)
+            chat_type = str(group.get("chat_type") or "supergroup")
+            repo.ensure_group_account_context(
+                group_chat_id,
+                title,
+                chat_type,
+                callback.from_user.id,
+                private_chat_id=callback.message.chat.id,
+                private_title=_private_title(callback),
+            )
+            await safe_edit_text(callback.message, f"Настройка учёта\n\nГруппа: {title}", reply_markup=setup_menu())
+            await callback.answer()
+            return
+        if len(groups) > 1:
+            await safe_edit_text(
+                callback.message,
+                "Выберите группу для настройки.",
+                reply_markup=chat_list_keyboard(groups),
+            )
+            await callback.answer()
+            return
         repo.ensure_private_account_context(
             callback.from_user.id,
             callback.message.chat.id,

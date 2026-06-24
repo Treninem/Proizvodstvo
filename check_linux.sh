@@ -17,6 +17,7 @@ python3 scripts/compact_chat_report_step44_test.py
 python3 scripts/owner_test_mode_step41_test.py
 python3 scripts/owner_foreign_account_step42_test.py
 python3 scripts/private_group_setup_access_step45_test.py
+python3 scripts/job_assignment_private_job_step46_test.py
 python3 scripts/clean_runtime_artifacts.py
 python3 scripts/ui_text_audit.py
 python3 scripts/final_audit.py

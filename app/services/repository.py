@@ -628,6 +628,38 @@ def list_job_titles(chat_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+
+
+def copy_job_titles_between_contexts(source_chat_id: int, target_chat_id: int) -> int:
+    """Copy visible job titles from one accounting context to another without overwriting existing names."""
+    source_scope = resolve_scope_chat_id(source_chat_id)
+    target_scope = resolve_scope_chat_id(target_chat_id)
+    if source_scope == target_scope:
+        return 0
+    source_rows = db.fetchall(
+        "SELECT name,normalized,permissions_json FROM job_titles WHERE chat_id=? AND is_archived=0 ORDER BY name",
+        (source_scope,),
+    )
+    if not source_rows:
+        return 0
+    copied = 0
+    with db.connect() as conn:
+        conn.execute("PRAGMA foreign_keys=ON")
+        for row in source_rows:
+            exists = conn.execute(
+                "SELECT id FROM job_titles WHERE chat_id=? AND normalized=? AND is_archived=0",
+                (target_scope, row["normalized"]),
+            ).fetchone()
+            if exists:
+                continue
+            conn.execute(
+                "INSERT INTO job_titles(chat_id,name,normalized,permissions_json) VALUES(?,?,?,?)",
+                (target_scope, row["name"], row["normalized"], row["permissions_json"] or "{}"),
+            )
+            copied += 1
+        conn.commit()
+    return copied
+
 def update_job_permissions(chat_id: int, job_id: int, permissions: dict[str, bool]) -> None:
     chat_id = resolve_scope_chat_id(chat_id)
     db.execute(

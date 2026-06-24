@@ -289,19 +289,26 @@ def _assignment_text(data: dict, page: int = 0) -> str:
 
 async def _open_assignment_menu(message_or_callback_message, actor_user_id: int, group_chat_id: int, data: dict, page: int = 0) -> None:
     jobs = repo.list_job_titles(group_chat_id)
+    copied_jobs = 0
+    if not jobs:
+        copied_jobs = repo.copy_job_titles_between_contexts(actor_user_id, group_chat_id)
+        jobs = repo.list_job_titles(group_chat_id)
     if not jobs:
         repo.clear_setup_session(actor_user_id, actor_user_id)
         await safe_edit_text(
             message_or_callback_message,
-            "Должностей пока нет. Сначала создайте должность в настройке учёта.",
+            "Должностей пока нет. Откройте настройку этого учёта и создайте должность.",
             reply_markup=setup_menu(),
         )
         return
     data["page"] = int(page)
     repo.set_setup_session(actor_user_id, actor_user_id, "assign_job_select", data)
+    prefix = ""
+    if copied_jobs:
+        prefix = "Должности перенесены в этот учёт.\n\n"
     await safe_edit_text(
         message_or_callback_message,
-        _assignment_text(data, page),
+        prefix + _assignment_text(data, page),
         reply_markup=job_title_choice_keyboard(jobs, int(data["target_user_id"]), page),
     )
 
@@ -1070,6 +1077,13 @@ async def try_handle_setup_command(message: Message) -> bool:
 
     chat_id = message.chat.id
     repo.upsert_chat(chat_id, message.chat.title or message.chat.full_name or "", message.chat.type, connected=None)
+    if message.chat.type in {"group", "supergroup"} and message.from_user:
+        repo.ensure_group_account_context(
+            chat_id,
+            message.chat.title or "Рабочая группа",
+            message.chat.type,
+            message.from_user.id,
+        )
 
     # Владелец учёта может задать себе видимую должность при запуске учёта.
     self_job_match = re.match(r"^(?:моя\s+должность|назначить\s+себе\s+должность|поставить\s+себе\s+должность)\s+(.+)$", text, flags=re.IGNORECASE)
@@ -1093,7 +1107,10 @@ async def try_handle_setup_command(message: Message) -> bool:
         if job_name and not job_name.startswith("@"):
             job = repo.find_job_title(chat_id, job_name)
             if not job:
-                await message.answer("Должность не найдена. Откройте настройку учёта и создайте её.")
+                repo.copy_job_titles_between_contexts(message.from_user.id, chat_id)
+                job = repo.find_job_title(chat_id, job_name)
+            if not job:
+                await message.answer("Должность не найдена. Откройте настройку этого учёта и создайте её.")
                 return True
             repo.set_worker_job(chat_id, target.id, target_name, int(job["id"]))
             try:
@@ -1104,8 +1121,12 @@ async def try_handle_setup_command(message: Message) -> bool:
             return True
 
         jobs = repo.list_job_titles(chat_id)
+        copied_jobs = 0
         if not jobs:
-            await message.answer("Должностей пока нет. Сначала создайте должность в настройке учёта.")
+            copied_jobs = repo.copy_job_titles_between_contexts(message.from_user.id, chat_id)
+            jobs = repo.list_job_titles(chat_id)
+        if not jobs:
+            await message.answer("Должностей пока нет. Откройте настройку этого учёта и создайте должность.")
             return True
         data = {
             "group_chat_id": chat_id,
@@ -1117,9 +1138,10 @@ async def try_handle_setup_command(message: Message) -> bool:
         }
         repo.set_setup_session(message.from_user.id, message.from_user.id, "assign_job_select", data)
         try:
+            prefix = "Должности перенесены в этот учёт.\n\n" if copied_jobs else ""
             await message.bot.send_message(
                 message.from_user.id,
-                _assignment_text(data, 0),
+                prefix + _assignment_text(data, 0),
                 reply_markup=job_title_choice_keyboard(jobs, target.id, 0),
             )
             await _safe_delete_message(message)
