@@ -13,6 +13,7 @@ python3 scripts/report_export_quality_test.py
 python3 scripts/report_targets_step38_test.py
 python3 scripts/exact_entity_match_step39_test.py
 python3 scripts/custom_plan_step40_test.py
+python3 scripts/compact_chat_report_step44_test.py
 python3 scripts/owner_test_mode_step41_test.py
 python3 scripts/owner_foreign_account_step42_test.py
 python3 scripts/clean_runtime_artifacts.py
