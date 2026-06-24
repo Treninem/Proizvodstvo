@@ -15,13 +15,38 @@ _SELECT_RE = re.compile(r"^(?:выбрать|переключить|открыт
 _ATTACH_RE = re.compile(r"^(?:подключить|привязать)\s+чат\s+к\s+уч[её]ту\s+(.+)$", re.IGNORECASE)
 
 
+def _extract_account_id(text: str) -> int | None:
+    value = text.strip().lstrip("#№").strip()
+    return int(value) if value.isdigit() else None
+
+
 def _find_account_by_name(accounts, name: str):
     from ..services.normalize import normalize_key
     key = normalize_key(name)
-    for acc in accounts:
-        if acc.normalized == key:
-            return acc
+    matched = [acc for acc in accounts if acc.normalized == key]
+    if len(matched) == 1:
+        return matched[0]
     return None
+
+
+def _account_choices_text(accounts, name: str) -> str | None:
+    from ..services.normalize import normalize_key
+    key = normalize_key(name)
+    matched = [acc for acc in accounts if acc.normalized == key]
+    if len(matched) <= 1:
+        return None
+    lines = ["Найдено несколько учётов с таким названием.", "Выберите нужный по номеру:"]
+    for acc in matched[:10]:
+        lines.append(f"• №{acc.id} — {acc.name}")
+    lines.append("\nНапример: выбрать учёт №1")
+    return "\n".join(lines)
+
+
+def _find_account_for_owner(accounts, name: str):
+    account_id = _extract_account_id(name)
+    if account_id is not None:
+        return repo.get_account_by_id(account_id)
+    return _find_account_by_name(accounts, name)
 
 
 async def try_handle_account_command(message: Message) -> bool:
@@ -64,7 +89,13 @@ async def try_handle_account_command(message: Message) -> bool:
         accounts = repo.list_accounts_for_user(user_id, message.chat.id)
         if is_global_owner(user_id):
             accounts = repo.owner_list_accounts()
-        account = _find_account_by_name(accounts, name)
+            choices_text = _account_choices_text(accounts, name)
+            if choices_text:
+                await message.answer(choices_text)
+                return True
+            account = _find_account_for_owner(accounts, name)
+        else:
+            account = _find_account_by_name(accounts, name)
         if not account:
             await message.answer("Учёт не найден. Сначала создайте его или проверьте название.")
             return True
@@ -79,7 +110,13 @@ async def try_handle_account_command(message: Message) -> bool:
         accounts = repo.list_accounts_for_user(user_id, message.chat.id)
         if is_global_owner(user_id):
             accounts = repo.owner_list_accounts()
-        account = _find_account_by_name(accounts, name)
+            choices_text = _account_choices_text(accounts, name)
+            if choices_text:
+                await message.answer(choices_text)
+                return True
+            account = _find_account_for_owner(accounts, name)
+        else:
+            account = _find_account_by_name(accounts, name)
         if not account:
             await message.answer("Учёт не подключён к этому чату или не найден.")
             return True

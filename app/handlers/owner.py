@@ -44,6 +44,15 @@ def _accounts_keyboard() -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="Назад", callback_data="owner:panel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+
+def _owner_account_keyboard(account_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Выбрать для ввода", callback_data=f"owner:activateaccount:{account_id}")],
+            [InlineKeyboardButton(text="Назад", callback_data="owner:accounts")],
+        ]
+    )
+
 def _format_panel(user_id: int | None = None) -> str:
     stats = repo.owner_global_stats()
     test_mode = "включён" if repo.is_user_test_mode_enabled(user_id) else "выключен"
@@ -92,6 +101,12 @@ def _format_db_status() -> str:
 
 
 async def _show_panel(message: Message) -> None:
+    if message.chat.type != "private":
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        return
     await message.answer(_format_panel(message.from_user.id if message.from_user else None), reply_markup=_owner_menu())
 
 
@@ -133,6 +148,9 @@ async def owner_callbacks(callback: CallbackQuery) -> None:
     if not is_global_owner(callback.from_user.id if callback.from_user else None):
         await callback.answer()
         return
+    if callback.message and callback.message.chat.type != "private":
+        await callback.answer("Откройте личные сообщения бота.", show_alert=True)
+        return
     action = callback.data.split(":", 1)[1]
     if action == "panel":
         await safe_edit_text(callback.message, _format_panel(callback.from_user.id if callback.from_user else None), reply_markup=_owner_menu())
@@ -169,8 +187,30 @@ async def owner_callbacks(callback: CallbackQuery) -> None:
             await callback.answer("Учёт не найден.", show_alert=True)
             return
         report = repo.owner_account_report(account_id)
-        await safe_edit_text(callback.message, report, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="owner:accounts")]]))
+        await safe_edit_text(callback.message, report, reply_markup=_owner_account_keyboard(account_id))
         await callback.answer()
+        return
+    if action.startswith("activateaccount:"):
+        raw_account_id = action.split(":", 1)[1]
+        try:
+            account_id = int(raw_account_id)
+        except ValueError:
+            await callback.answer("Учёт не найден.", show_alert=True)
+            return
+        ok, msg = repo.set_active_account(callback.message.chat.id, account_id, user_id=callback.from_user.id)
+        if not ok:
+            await callback.answer(msg, show_alert=True)
+            return
+        account = repo.get_account_by_id(account_id)
+        name = account.name if account else str(account_id)
+        await safe_edit_text(
+            callback.message,
+            f"Выбран учёт: {name}\n\n"
+            "Теперь записи, отчёты и исправления из личных сообщений будут относиться к этому учёту.\n"
+            "Режим проверки можно включить отдельно, если запись нужна только для теста.",
+            reply_markup=_owner_menu(),
+        )
+        await callback.answer("Учёт выбран")
         return
     if action == "stats":
         await safe_edit_text(callback.message, _format_stats(), reply_markup=_owner_menu())
