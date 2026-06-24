@@ -142,5 +142,11 @@ async def menu_main(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "menu:setup")
 async def menu_setup(callback: CallbackQuery) -> None:
+    if callback.message.chat.type == "private" and callback.from_user:
+        repo.ensure_private_account_context(
+            callback.from_user.id,
+            callback.message.chat.id,
+            callback.message.chat.full_name or callback.message.chat.title or "Личный чат",
+        )
     await safe_edit_text(callback.message, "Настройка учёта", reply_markup=setup_menu())
     await callback.answer()

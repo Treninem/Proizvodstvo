@@ -4,7 +4,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 from ._safe import safe_edit_text
-from ..access import is_global_owner
+from ..access import is_chat_creator, is_global_owner
 from ..keyboards import area_choice_keyboard, chat_action_keyboard, chat_list_keyboard, main_menu, setup_menu
 from ..services import repository as repo
 
@@ -25,6 +25,22 @@ async def _can_see_chat(bot, chat_id: int, user_id: int | None) -> bool:
         pass
     return repo.user_has_manage_access_to_chat(chat_id, user_id)
 
+
+
+
+async def _can_manage_selected_chat(bot, chat_id: int, user_id: int | None) -> bool:
+    if not user_id:
+        return False
+    if is_global_owner(user_id):
+        return True
+    if repo.user_has_manage_access_to_chat(chat_id, user_id):
+        return True
+    return await is_chat_creator(bot, chat_id, user_id)
+
+
+def _private_title(callback: CallbackQuery) -> str:
+    chat = callback.message.chat
+    return getattr(chat, 'full_name', None) or getattr(chat, 'title', None) or 'Личный чат'
 
 async def _visible_chats(bot, user_id: int | None) -> list[dict]:
     result: list[dict] = []
@@ -139,12 +155,30 @@ async def chat_action(callback: CallbackQuery) -> None:
         await callback.answer("Группа не найдена.", show_alert=True)
         return
     action = parts[2]
-    if not await _can_see_chat(callback.bot, chat_id, callback.from_user.id if callback.from_user else None):
+    user_id = callback.from_user.id if callback.from_user else None
+    if not await _can_see_chat(callback.bot, chat_id, user_id):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     chat = repo.get_chat_info(chat_id) or {"title": str(chat_id), "chat_type": "supergroup"}
+    title = str(chat.get("title") or chat_id)
+    chat_type = str(chat.get("chat_type") or "supergroup")
+    if action in {"connect", "area", "setup"}:
+        if not await _can_manage_selected_chat(callback.bot, chat_id, user_id):
+            await callback.answer("Настройку может открыть владелец учёта.", show_alert=True)
+            return
+        account = repo.ensure_group_account_context(
+            chat_id,
+            title,
+            chat_type,
+            int(user_id or 0),
+            private_chat_id=callback.message.chat.id,
+            private_title=_private_title(callback),
+        )
+        if not account:
+            await callback.answer("Не удалось подготовить учёт.", show_alert=True)
+            return
     if action == "connect":
-        repo.set_chat_connected(chat_id, str(chat.get("title") or chat_id), str(chat.get("chat_type") or "supergroup"), True)
+        repo.set_chat_connected(chat_id, title, chat_type, True)
         await safe_edit_text(
             callback.message,
             "Группа подключена. Выберите участок для сырья и счётчиков или оставьте без участка.",
@@ -165,7 +199,7 @@ async def chat_action(callback: CallbackQuery) -> None:
         await callback.answer()
         return
     if action == "setup":
-        await safe_edit_text(callback.message, "Настройка учёта", reply_markup=setup_menu())
+        await safe_edit_text(callback.message, f"Настройка учёта\n\nГруппа: {title}", reply_markup=setup_menu())
         await callback.answer()
         return
     await callback.answer("Не удалось открыть действие.", show_alert=True)
