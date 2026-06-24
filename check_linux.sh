@@ -12,6 +12,7 @@ python3 scripts/report_export_quality_test.py
 python3 scripts/report_targets_step38_test.py
 python3 scripts/exact_entity_match_step39_test.py
 python3 scripts/custom_plan_step40_test.py
+python3 scripts/owner_test_mode_step41_test.py
 python3 scripts/clean_runtime_artifacts.py
 python3 scripts/ui_text_audit.py
 python3 scripts/final_audit.py
