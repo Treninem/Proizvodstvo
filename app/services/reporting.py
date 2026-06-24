@@ -260,6 +260,146 @@ def build_stock_text(chat_id: int) -> str:
         lines.append(f"\nЕщё строк: {len(rows) - 80}")
     return "\n".join(lines)
 
+
+
+def _production_summary_rows(chat_id: int, period: PeriodFilter) -> list[dict]:
+    rows = db.fetchall(
+        f"""
+        SELECT o.operation_type,o.entity_type,e.name AS entity_name,o.unit,
+               SUM(o.quantity) AS total_quantity, COUNT(o.id) AS count_rows
+        FROM operations o
+        LEFT JOIN entities e ON e.id=o.entity_id
+        WHERE o.chat_id=? AND {period.where_sql}
+          AND o.operation_type='production'
+        GROUP BY o.operation_type,o.entity_type,o.entity_id,o.unit
+        ORDER BY o.entity_type,e.name,o.unit
+        """,
+        (chat_id, *period.params),
+    )
+    return [dict(r) for r in rows]
+
+
+def _operation_summary_rows(chat_id: int, period: PeriodFilter, operation_types: set[str]) -> list[dict]:
+    if not operation_types:
+        return []
+    placeholders = ",".join("?" for _ in operation_types)
+    rows = db.fetchall(
+        f"""
+        SELECT o.operation_type,o.entity_type,e.name AS entity_name,o.unit,
+               SUM(o.quantity) AS total_quantity, COUNT(o.id) AS count_rows
+        FROM operations o
+        LEFT JOIN entities e ON e.id=o.entity_id
+        WHERE o.chat_id=? AND {period.where_sql}
+          AND o.operation_type IN ({placeholders})
+        GROUP BY o.operation_type,o.entity_type,o.entity_id,o.unit
+        ORDER BY o.operation_type,e.name,o.unit
+        """,
+        (chat_id, *period.params, *sorted(operation_types)),
+    )
+    return [dict(r) for r in rows]
+
+
+def _append_limited_rows(lines: list[str], rows: list[str], limit: int, more_text: str = "Полная таблица доступна в Excel/PDF.") -> None:
+    if not rows:
+        return
+    lines.extend(rows[:limit])
+    if len(rows) > limit:
+        lines.append(f"• Ещё строк: {len(rows) - limit}. {more_text}")
+
+
+def _append_chat_production_summary(lines: list[str], chat_id: int, period: PeriodFilter) -> None:
+    rows = _production_summary_rows(chat_id, period)
+    if not rows:
+        return
+    groups: dict[str, list[str]] = {"Производство комплектующих": [], "Производство готовой продукции": [], "Прочее производство": []}
+    for row in rows:
+        entity_type = str(row.get("entity_type") or "")
+        name = row.get("entity_name") or ENTITY_LABELS.get(entity_type, "Позиция")
+        qty = float(row.get("total_quantity") or 0)
+        unit = row.get("unit") or ""
+        line = f"• {name} — {_fmt_number(qty)} {unit}".rstrip()
+        if entity_type in {"component", "stock_item"}:
+            groups["Производство комплектующих"].append(line)
+        elif entity_type == "product":
+            groups["Производство готовой продукции"].append(line)
+        else:
+            groups["Прочее производство"].append(line)
+    for title, items in groups.items():
+        if items:
+            lines.append(f"\n{title}:")
+            _append_limited_rows(lines, items, 12)
+
+
+def _append_chat_operation_summary(lines: list[str], chat_id: int, period: PeriodFilter) -> None:
+    rows = _operation_summary_rows(chat_id, period, {"assembly", "shipment", "material_in", "material_out", "energy"})
+    if not rows:
+        return
+    grouped: dict[str, list[str]] = {}
+    for row in rows:
+        op = str(row.get("operation_type") or "")
+        title = OPERATION_LABELS.get(op, "Записи")
+        name = row.get("entity_name") or ENTITY_LABELS.get(row.get("entity_type") or "", "Позиция")
+        qty = float(row.get("total_quantity") or 0)
+        unit = row.get("unit") or ""
+        grouped.setdefault(title, []).append(f"• {name} — {_fmt_number(qty)} {unit}".rstrip())
+    for title, items in grouped.items():
+        lines.append(f"\n{title}:")
+        _append_limited_rows(lines, items, 8)
+
+
+def _nonzero_daily_totals(chat_id: int, period: PeriodFilter) -> list[tuple[str, float]]:
+    labels, matrix = movement_matrix_rows(chat_id, period)
+    result: list[tuple[str, float]] = []
+    for label in labels:
+        total = sum(float(row["values"].get(label) or 0) for row in matrix)
+        if abs(total) > 0.000001:
+            result.append((label, total))
+    return result
+
+
+def _custom_target_rows_for_chat(chat_id: int, request_text: str) -> list[list[object]]:
+    return _product_target_rows_for_request(chat_id, request_text, include_defaults=False)
+
+
+def build_compact_assembly_capacity_report(chat_id: int, request_text: str = "") -> str:
+    rows = product_capacity_rows(chat_id)
+    if not rows:
+        return "Изделия пока не созданы."
+    lines = ["Расчёт сборки"]
+    grouped: dict[str, dict[str, object]] = {}
+    for row in rows:
+        product_name = str(row.get("product_name") or "Изделие")
+        item = grouped.setdefault(product_name, {"possible": row.get("possible"), "missing": []})
+        if row.get("possible") not in ("", None):
+            item["possible"] = row.get("possible")
+        missing = float(row.get("missing_next") or 0) if row.get("missing_next") not in ("", None) else 0.0
+        component_name = str(row.get("component_name") or "")
+        if component_name and missing > 0:
+            cast = item.setdefault("missing", [])
+            if isinstance(cast, list):
+                cast.append(f"• {component_name} — {_fmt_number(missing)} {row.get('unit') or 'шт'}")
+    for product_name, item in grouped.items():
+        lines.append(f"\n{product_name}: можно собрать {_fmt_number(item.get('possible'))} шт")
+        missing_items = item.get("missing") if isinstance(item.get("missing"), list) else []
+        if missing_items:
+            lines.append("Не хватает для следующей сборки:")
+            _append_limited_rows(lines, list(missing_items), 6)
+        else:
+            lines.append("Для следующей сборки комплектующих хватает.")
+
+    target_rows = _custom_target_rows_for_chat(chat_id, request_text)
+    if target_rows:
+        missing_rows = [row for row in target_rows if float(row[7] or 0) > 0]
+        lines.append("\nПлан по количеству:")
+        if not missing_rows:
+            lines.append("• По указанной цели комплектующих хватает.")
+        else:
+            for product, target, _possible, component, _stock, _need_one, _need_total, missing, unit in missing_rows[:18]:
+                lines.append(f"• {product} · {_fmt_number(target)} шт: {component} — не хватает {_fmt_number(missing)} {unit}")
+            if len(missing_rows) > 18:
+                lines.append(f"• Ещё строк: {len(missing_rows) - 18}. Полная таблица доступна в Excel/PDF.")
+    return "\n".join(lines)
+
 def build_text_report(chat_id: int, request_text: str, user_id: int | None = None) -> str:
     from . import repository as repo
 
@@ -270,51 +410,40 @@ def build_text_report(chat_id: int, request_text: str, user_id: int | None = Non
     lines: list[str] = [f"Отчёт {period.title}"]
 
     if prefs.get("period_totals"):
-        ops = operation_rows(chat_id, period)
-        if not ops:
+        before = len(lines)
+        _append_chat_production_summary(lines, chat_id, period)
+        _append_chat_operation_summary(lines, chat_id, period)
+        if len(lines) == before:
             lines.append("\nДвижения за период пока нет.")
-        else:
-            current = None
-            for row in ops:
-                title = OPERATION_LABELS.get(row.get("operation_type") or "", "Запись")
-                if title != current:
-                    current = title
-                    lines.append(f"\n{title}:")
-                name = row.get("entity_name") or ENTITY_LABELS.get(row.get("entity_type") or "", "Позиция")
-                area = f" · {row['area_name']}" if row.get("area_name") else ""
-                qty = float(row.get("total_quantity") or 0)
-                lines.append(f"• {name} — {_fmt_number(qty)} {row.get('unit') or ''}{area}")
 
     if prefs.get("daily_matrix"):
-        labels, matrix = movement_matrix_rows(chat_id, period)
-        if labels and matrix:
+        nonzero = _nonzero_daily_totals(chat_id, period)
+        if nonzero:
             lines.append("\nПо датам:")
-            shown = labels[-10:]
-            for label in shown:
-                total = sum(float(row["values"].get(label) or 0) for row in matrix)
+            for label, total in nonzero[-8:]:
                 lines.append(f"• {label}: {_fmt_number(total)}")
-            if len(labels) > len(shown):
-                lines.append("• Полная таблица доступна в скачанном отчёте.")
+            if len(nonzero) > 8:
+                lines.append("• Полная таблица доступна в Excel/PDF.")
 
     if prefs.get("capacity"):
-        lines.append("\n" + build_all_assembly_capacity_report(chat_id))
+        lines.append("\n" + build_compact_assembly_capacity_report(chat_id, request_text))
 
     if prefs.get("inventory"):
         inv = inventory_rows(chat_id)
         if inv:
-            lines.append("\nОстатки склада:")
-            for row in inv[:25]:
+            lines.append("\nСклад: Остатки")
+            for row in inv[:12]:
                 name = row.get("entity_name") or ENTITY_LABELS.get(row.get("entity_type") or "", "Позиция")
                 area = f" · {row['area_name']}" if row.get("area_name") else ""
                 qty = float(row.get("quantity") or 0)
                 lines.append(f"• {name} — {_fmt_number(qty)} {row.get('unit') or ''}{area}")
-            if len(inv) > 25:
-                lines.append(f"• Ещё строк: {len(inv) - 25}")
+            if len(inv) > 12:
+                lines.append(f"• Ещё строк: {len(inv) - 12}. Полная таблица доступна в Excel/PDF.")
         else:
             lines.append("\nСклад пока пустой.")
 
     if prefs.get("journal"):
-        journal = raw_operation_rows(chat_id, period, limit=10)
+        journal = raw_operation_rows(chat_id, period, limit=5)
         if journal:
             lines.append("\nПоследние записи:")
             for row in journal:
@@ -325,9 +454,8 @@ def build_text_report(chat_id: int, request_text: str, user_id: int | None = Non
 
     if len(lines) == 1:
         lines.append("\nВыберите хотя бы один раздел.")
+    lines.append("\nПолная таблица доступна в Excel/PDF.")
     return "\n".join(lines)
-
-
 def _style_sheet(ws) -> None:
     header_fill = PatternFill("solid", fgColor="D9EAF7")
     header_font = Font(bold=True)
@@ -636,7 +764,7 @@ def build_assembly_capacity_report(chat_id: int, request_text: str) -> str:
         lines.append(f"• {comp['name']}: есть {_fmt_number(stock_qty)}, нужно {_fmt_number(need)} на 1")
         if stock_qty < need:
             missing.append(f"• {comp['name']} — не хватает {_fmt_number(need - stock_qty)}")
-    possible = int(min(possible_values)) if possible_values else 0
+    possible = max(0, int(min(possible_values))) if possible_values else 0
     lines.insert(1, f"Итого сейчас: {_fmt_number(possible)} шт.")
     if missing:
         lines.append("\nДля одной полной сборки не хватает:")
@@ -763,7 +891,7 @@ def product_capacity_rows(chat_id: int) -> list[dict]:
                 "need": need,
                 "unit": str(comp.get("default_unit") or "шт"),
             })
-        possible = int(min(possible_values)) if possible_values else 0
+        possible = max(0, int(min(possible_values))) if possible_values else 0
         for comp in component_info:
             missing_next = max(0.0, comp["need"] * (possible + 1) - comp["stock"])
             rows.append({
@@ -825,7 +953,7 @@ def build_assembly_capacity_report(chat_id: int, request_text: str) -> str:
     targets = _target_quantities_from_text(request_text, include_defaults=False)
     key = normalize_key(request_text)
     if any(word in key for word in ("все", "всё", "кажд", "общ")) or key.strip() in {"сколько можно собрать", "расчет сборки", "расчёт сборки"}:
-        return build_all_assembly_capacity_report(chat_id, targets or DEFAULT_ASSEMBLY_TARGETS)
+        return build_compact_assembly_capacity_report(chat_id, request_text)
     key_text = _strip_target_numbers(request_text)
     for word in ["сколько", "можно", "собрать", "сбора", "сбор", "сборки", "изготовить", "сделать", "готово", "изделий", "изделие", "расчет", "расчёт", "нужно", "не", "хватает", "до", "для", "план", "цель", "цели"]:
         key_text = re.sub(rf"\b{word}\b", " ", key_text, flags=re.IGNORECASE)
@@ -833,21 +961,21 @@ def build_assembly_capacity_report(chat_id: int, request_text: str) -> str:
     if not match:
         custom_rows = _product_target_rows_for_request(chat_id, request_text, include_defaults=False)
         if custom_rows:
-            return _format_target_rows_text(custom_rows)
-        return build_all_assembly_capacity_report(chat_id, targets or DEFAULT_ASSEMBLY_TARGETS)
+            missing_rows = [row for row in custom_rows if float(row[7] or 0) > 0]
+            return _format_target_rows_text(missing_rows or custom_rows)
+        return build_compact_assembly_capacity_report(chat_id, request_text)
     components = repo.list_product_components(match.target_id)
     if not components:
         return f"У изделия «{match.name}» пока не задан состав."
     possible_values: list[float] = []
-    lines = [f"Можно собрать: {match.name}"]
     for comp in components:
         stock_qty = _component_stock(chat_id, int(comp["component_id"]))
         need = float(comp["quantity"] or 0)
         can_make = stock_qty // need if need > 0 else 0
         possible_values.append(can_make)
-        lines.append(f"• {comp['name']}: есть {_fmt_number(stock_qty)}, нужно {_fmt_number(need)} на 1")
-    possible = int(min(possible_values)) if possible_values else 0
-    lines.insert(1, f"Итого сейчас: {_fmt_number(possible)} шт.")
+    possible = max(0, int(min(possible_values))) if possible_values else 0
+    lines = [f"Можно собрать: {match.name}", f"Итого сейчас: {_fmt_number(possible)} шт."]
+
     missing_next: list[str] = []
     for comp in components:
         stock_qty = _component_stock(chat_id, int(comp["component_id"]))
@@ -856,18 +984,25 @@ def build_assembly_capacity_report(chat_id: int, request_text: str) -> str:
         if missing > 0:
             missing_next.append(f"• {comp['name']} — {_fmt_number(missing)} {comp.get('default_unit') or 'шт'}")
     if missing_next:
-        lines.append("\nДля ещё 1 изделия не хватает:")
-        lines.extend(missing_next)
-    target_rows = _product_target_rows_for_request(chat_id, request_text, include_defaults=True)
-    own_rows = [row for row in target_rows if str(row[0]) == str(match.name)]
-    if own_rows:
-        lines.append("\nДо нужного количества:")
-        for _product, target, _possible, component, stock, _need_one, need_total, missing, unit in own_rows[:45]:
-            lines.append(f"• {_fmt_number(target)} шт · {component}: нужно {_fmt_number(need_total)}, есть {_fmt_number(stock)}, не хватает {_fmt_number(missing)} {unit}")
+        lines.append("\nДля следующей сборки не хватает:")
+        _append_limited_rows(lines, missing_next, 8)
+    else:
+        lines.append("\nДля следующей сборки комплектующих хватает.")
+
+    if targets or _custom_product_targets_from_text(chat_id, request_text):
+        target_rows = _product_target_rows_for_request(chat_id, request_text, include_defaults=False)
+        own_rows = [row for row in target_rows if str(row[0]) == str(match.name)]
+        missing_rows = [row for row in own_rows if float(row[7] or 0) > 0]
+        if own_rows:
+            lines.append("\nДо нужного количества:")
+            if not missing_rows:
+                lines.append("• По указанной цели комплектующих хватает.")
+            else:
+                for _product, target, _possible, component, _stock, _need_one, _need_total, missing, unit in missing_rows[:18]:
+                    lines.append(f"• {_fmt_number(target)} шт · {component}: не хватает {_fmt_number(missing)} {unit}")
+                if len(missing_rows) > 18:
+                    lines.append(f"• Ещё строк: {len(missing_rows) - 18}. Полная таблица доступна в Excel/PDF.")
     return "\n".join(lines)
-
-
-
 def _number_format_for_header(header: str) -> str:
     if header in {"Количество", "Есть", "Нужно на 1", "Не хватает для ещё 1", "Итого", "Цель", "Можно собрать", "Нужно на цель", "Не хватает", "Собрано", "Отправлено/продано", "Остаток"}:
         return "#,##0.###"
@@ -1337,7 +1472,7 @@ def _product_target_rows(
                 "need": need,
                 "unit": str(comp.get("default_unit") or "шт"),
             })
-        possible = int(min(possible_values)) if possible_values else 0
+        possible = max(0, int(min(possible_values))) if possible_values else 0
         for target in product_targets:
             for comp in component_info:
                 need_total = float(comp["need"]) * target
