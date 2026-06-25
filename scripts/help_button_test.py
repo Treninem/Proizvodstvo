@@ -8,13 +8,15 @@ keyboards = (ROOT / "app" / "keyboards.py").read_text(encoding="utf-8")
 
 checks = [
     'InlineKeyboardButton(text="Как пользоваться", callback_data="menu:help")',
-    'HELP_TEXT = """Как пользоваться ботом',
-    '@router.callback_query(F.data == "menu:help")',
+    'HELP_PAGES: dict[str, str]',
+    'Что для чего нужно',
+    '@router.callback_query(F.data.startswith("help:"))',
+    'help_topic_keyboard',
     'назначить должность',
-    'состав Изделие 1:',
-    'отчёт за сегодня',
+    'Норма комплектации',
+    'Отчёт из нескольких групп',
 ]
 missing = [item for item in checks if item not in start + keyboards]
 if missing:
-    raise SystemExit("Не найдены элементы памятки: " + "; ".join(missing))
+    raise SystemExit("Не найдены элементы подробной инструкции: " + "; ".join(missing))
 print("OK")
