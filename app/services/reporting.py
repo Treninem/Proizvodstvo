@@ -1609,3 +1609,151 @@ def report_sections(
 
 def _empty_row(width: int, text: str = "Нет данных") -> list[object]:
     return [text, *["" for _ in range(max(0, width - 1))]]
+
+
+# --- Общий отчёт по нескольким доступным группам ---
+
+
+def _safe_sheet_title(value: str, used: set[str]) -> str:
+    clean = re.sub(r"[\\/*?:\[\]]+", " ", value or "Отчёт").strip() or "Отчёт"
+    clean = re.sub(r"\s+", " ", clean)[:28]
+    candidate = clean
+    index = 2
+    while candidate in used:
+        suffix = f" {index}"
+        candidate = (clean[:31 - len(suffix)] + suffix).strip()
+        index += 1
+    used.add(candidate)
+    return candidate
+
+
+def _scope_title(scope_chat_id: int, titles: dict[int, str] | None = None) -> str:
+    if titles and scope_chat_id in titles:
+        return str(titles[scope_chat_id])
+    return f"Учёт {scope_chat_id}"
+
+
+def build_multi_text_report(
+    scope_chat_ids: Iterable[int],
+    request_text: str = "отчёт за месяц",
+    titles: dict[int, str] | None = None,
+    user_id: int | None = None,
+) -> str:
+    period = _date_bounds_for_text(request_text)
+    if period.error:
+        return period.error
+    scope_list = [int(item) for item in scope_chat_ids]
+    if not scope_list:
+        return "Выберите хотя бы одну группу."
+    lines = [f"Общий отчёт {period.title}", f"Групп: {len(scope_list)}"]
+    for index, scope_chat_id in enumerate(scope_list, start=1):
+        title = _scope_title(scope_chat_id, titles)
+        report = build_text_report(scope_chat_id, request_text, user_id=user_id)
+        report_lines = [line for line in report.splitlines() if line.strip()]
+        compact = report_lines[1:18] if report_lines and report_lines[0].startswith("Отчёт") else report_lines[:17]
+        lines.append(f"\n{index}. {title}")
+        if compact:
+            lines.extend(compact[:17])
+            if len(report_lines) > len(compact) + 1:
+                lines.append("Полная таблица доступна в Excel/PDF.")
+        else:
+            lines.append("Данных за период пока нет.")
+    lines.append("\nПолный общий отчёт доступен в Excel/PDF.")
+    return "\n".join(lines)
+
+
+def create_multi_xlsx_report(
+    scope_chat_ids: Iterable[int],
+    request_text: str = "отчёт за месяц",
+    titles: dict[int, str] | None = None,
+    user_id: int | None = None,
+) -> Path:
+    period = _date_bounds_for_text(request_text)
+    if period.error:
+        raise ValueError(period.error)
+    scope_list = [int(item) for item in scope_chat_ids]
+    if not scope_list:
+        raise ValueError("Выберите хотя бы одну группу.")
+    wb = Workbook()
+    used: set[str] = set()
+    summary = wb.active
+    summary.title = _safe_sheet_title("Общий отчёт", used)
+    summary.cell(row=1, column=1, value=f"Общий производственный отчёт {period.title}")
+    summary.cell(row=3, column=1, value="Группа")
+    summary.cell(row=3, column=2, value="Разделов")
+    summary.cell(row=3, column=3, value="Состояние")
+    for row_index, scope_chat_id in enumerate(scope_list, start=4):
+        sections = report_sections(scope_chat_id, request_text, user_id=user_id, selected=_full_export_selected())
+        title = _scope_title(scope_chat_id, titles)
+        summary.cell(row=row_index, column=1, value=title)
+        summary.cell(row=row_index, column=2, value=len(sections))
+        summary.cell(row=row_index, column=3, value="Готово" if sections else "Нет данных")
+    _style_used_range(summary, header_rows={3})
+
+    for index, scope_chat_id in enumerate(scope_list, start=1):
+        title = _scope_title(scope_chat_id, titles)
+        ws = wb.create_sheet(_safe_sheet_title(f"{index} {title}", used))
+        ws.cell(row=1, column=1, value=f"{title} · отчёт {period.title}")
+        sections = report_sections(scope_chat_id, request_text, user_id=user_id, selected=_full_export_selected())
+        if not sections:
+            sections = [("Отчёт", ["Раздел", "Состояние"], [["Отчёт", "Нет данных"]])]
+        header_rows: set[int] = set()
+        section_rows: set[int] = set()
+        current_row = 3
+        for section_title, header, rows in sections:
+            section_row, header_row, current_row = _append_report_section(ws, section_title, header, rows, current_row)
+            section_rows.add(section_row)
+            header_rows.add(header_row)
+        _style_used_range(ws, header_rows=header_rows, section_rows=section_rows)
+    filename = f"obshiy_uchet_{_safe_name(period.title)}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+    path = reports_dir() / filename
+    wb.save(path)
+    return path
+
+
+def create_multi_pdf_report(
+    scope_chat_ids: Iterable[int],
+    request_text: str = "отчёт за месяц",
+    titles: dict[int, str] | None = None,
+    user_id: int | None = None,
+) -> Path:
+    period = _date_bounds_for_text(request_text)
+    if period.error:
+        raise ValueError(period.error)
+    scope_list = [int(item) for item in scope_chat_ids]
+    if not scope_list:
+        raise ValueError("Выберите хотя бы одну группу.")
+    font_name = _register_pdf_font()
+    filename = f"obshiy_uchet_{_safe_name(period.title)}_{datetime.now():%Y%m%d_%H%M%S}.pdf"
+    path = reports_dir() / filename
+    doc = SimpleDocTemplate(str(path), pagesize=landscape(A3), rightMargin=8*mm, leftMargin=8*mm, topMargin=8*mm, bottomMargin=8*mm)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("MultiTitleRu", parent=styles["Title"], fontName=font_name, fontSize=16, leading=20)
+    section_style = ParagraphStyle("MultiSectionRu", parent=styles["Heading2"], fontName=font_name, fontSize=11, leading=14, spaceBefore=6, spaceAfter=4)
+    small_style = ParagraphStyle("MultiSmallRu", parent=styles["Normal"], fontName=font_name, fontSize=8, leading=10)
+    story = [Paragraph(f"Общий производственный отчёт {period.title}", title_style), Spacer(1, 6)]
+    story.append(Paragraph(f"Групп в отчёте: {len(scope_list)}", small_style))
+    story.append(Spacer(1, 8))
+    for index, scope_chat_id in enumerate(scope_list, start=1):
+        if index > 1:
+            story.append(PageBreak())
+        title = _scope_title(scope_chat_id, titles)
+        story.append(Paragraph(f"{index}. {title}", title_style))
+        sections = report_sections(scope_chat_id, request_text, user_id=user_id, selected=_full_export_selected())
+        if not sections:
+            sections = [("Отчёт", ["Раздел", "Состояние"], [["Отчёт", "Нет данных"]])]
+        for section_index, (section_title, header, rows) in enumerate(sections):
+            if section_index and section_title in {"По датам", "Журнал"}:
+                story.append(PageBreak())
+                story.append(Paragraph(title, section_style))
+            story.append(Paragraph(section_title, section_style))
+            if section_title == "По датам" and len(header) > 12:
+                story.append(Paragraph("Широкая таблица разделена на удобные части.", small_style))
+                story.append(Spacer(1, 3))
+            for table_index, table in enumerate(_pdf_section_tables(section_title, header, rows or [_empty_row(len(header))], font_name)):
+                if table_index:
+                    story.append(Spacer(1, 6))
+                story.append(table)
+            story.append(Spacer(1, 8))
+    doc.build(story)
+    return path
