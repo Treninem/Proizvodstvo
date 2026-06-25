@@ -140,8 +140,58 @@ def reports_quick_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Сегодня", callback_data="reportquick:отчёт за сегодня"), InlineKeyboardButton(text="Неделя", callback_data="reportquick:отчёт за неделю")],
         [InlineKeyboardButton(text="Месяц", callback_data="reportquick:отчёт за месяц")],
+        [InlineKeyboardButton(text="Отчёт из нескольких групп", callback_data="reportmulti:start")],
         [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
     ])
+
+
+HELP_TOPIC_LABELS: dict[str, str] = {
+    "start": "С чего начать",
+    "what": "Что для чего нужно",
+    "setup": "Настройка",
+    "jobs": "Должности",
+    "items": "Изделия и склад",
+    "work": "Ввод данных",
+    "reports": "Отчёты",
+    "examples": "Примеры",
+}
+
+
+def help_topic_keyboard(current: str = "start") -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for key, label in HELP_TOPIC_LABELS.items():
+        mark = "✅ " if key == current else ""
+        row.append(InlineKeyboardButton(text=mark + label, callback_data=f"help:{key}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="В меню", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def report_multi_keyboard(token: str, chats: list[dict], selected_scope_ids: set[int]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in chats[:60]:
+        scope_id = int(item["scope_chat_id"])
+        title = str(item.get("title") or scope_id)[:42]
+        mark = "✅ " if scope_id in selected_scope_ids else "⬜ "
+        rows.append([InlineKeyboardButton(text=mark + title, callback_data=f"reportmulti:toggle:{token}:{scope_id}")])
+    rows.append([
+        InlineKeyboardButton(text="Сегодня", callback_data=f"reportmulti:period:{token}:today"),
+        InlineKeyboardButton(text="Неделя", callback_data=f"reportmulti:period:{token}:week"),
+        InlineKeyboardButton(text="Месяц", callback_data=f"reportmulti:period:{token}:month"),
+    ])
+    rows.append([
+        InlineKeyboardButton(text="Показать", callback_data=f"reportmulti:show:{token}"),
+        InlineKeyboardButton(text="Excel", callback_data=f"reportmulti:file:{token}:xlsx"),
+        InlineKeyboardButton(text="PDF", callback_data=f"reportmulti:file:{token}:pdf"),
+    ])
+    rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:reports"), InlineKeyboardButton(text="В меню", callback_data="menu:main")])
+    rows.append([InlineKeyboardButton(text="Отмена", callback_data=f"reportmulti:cancel:{token}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def workers_menu() -> InlineKeyboardMarkup:
