@@ -218,6 +218,17 @@ def _private_title(callback: CallbackQuery) -> str:
     return getattr(chat, "full_name", None) or getattr(chat, "title", None) or "Личный чат"
 
 
+
+
+def _selected_group_chat_id(private_chat_id: int) -> int | None:
+    account = repo.get_active_account(private_chat_id)
+    if not account:
+        return None
+    chat = repo.get_chat_info(account.owner_chat_id)
+    if chat and str(chat.get("chat_type") or "") in {"group", "supergroup"}:
+        return int(account.owner_chat_id)
+    return None
+
 @router.message(CommandStart())
 async def start(message: Message) -> None:
     repo.upsert_chat(message.chat.id, message.chat.title or message.chat.full_name or "", message.chat.type)
@@ -277,10 +288,11 @@ async def menu_setup(callback: CallbackQuery) -> None:
             await callback.answer()
             return
         if len(groups) > 1:
+            selected_chat_id = _selected_group_chat_id(callback.message.chat.id)
             await safe_edit_text(
                 callback.message,
-                "Выберите группу для настройки.",
-                reply_markup=chat_list_keyboard(groups),
+                "Выберите одну группу для настройки.",
+                reply_markup=chat_list_keyboard(groups, selected_chat_id=selected_chat_id),
             )
             await callback.answer()
             return

@@ -42,6 +42,17 @@ def _private_title(callback: CallbackQuery) -> str:
     chat = callback.message.chat
     return getattr(chat, 'full_name', None) or getattr(chat, 'title', None) or 'Личный чат'
 
+
+
+def _selected_group_chat_id(private_chat_id: int) -> int | None:
+    account = repo.get_active_account(private_chat_id)
+    if not account:
+        return None
+    chat = repo.get_chat_info(account.owner_chat_id)
+    if chat and str(chat.get("chat_type") or "") in {"group", "supergroup"}:
+        return int(account.owner_chat_id)
+    return None
+
 async def _visible_chats(bot, user_id: int | None) -> list[dict]:
     result: list[dict] = []
     for chat in repo.list_known_group_chats(limit=200):
@@ -60,9 +71,10 @@ async def _send_chats(message: Message) -> None:
             reply_markup=main_menu(),
         )
         return
+    selected_chat_id = _selected_group_chat_id(message.chat.id)
     await message.answer(
-        "Ваши группы\n\nВыберите группу для настройки.",
-        reply_markup=chat_list_keyboard(chats),
+        "Ваши группы\n\nВыберите одну группу для настройки.",
+        reply_markup=chat_list_keyboard(chats, selected_chat_id=selected_chat_id),
     )
 
 
@@ -101,10 +113,11 @@ async def my_chats_callback(callback: CallbackQuery) -> None:
             reply_markup=main_menu(),
         )
     else:
+        selected_chat_id = _selected_group_chat_id(callback.message.chat.id)
         await safe_edit_text(
             callback.message,
-            "Ваши группы\n\nВыберите группу для настройки.",
-            reply_markup=chat_list_keyboard(chats),
+            "Ваши группы\n\nВыберите одну группу для настройки.",
+            reply_markup=chat_list_keyboard(chats, selected_chat_id=selected_chat_id),
         )
     await callback.answer()
 
@@ -126,10 +139,20 @@ async def chat_pick(callback: CallbackQuery) -> None:
         return
     title = chat.get("title") or str(chat_id)
     connected = bool(chat.get("is_connected"))
+    user_id = callback.from_user.id if callback.from_user else None
+    if await _can_manage_selected_chat(callback.bot, chat_id, user_id):
+        repo.ensure_group_account_context(
+            chat_id,
+            str(title),
+            str(chat.get("chat_type") or "supergroup"),
+            int(user_id or 0),
+            private_chat_id=callback.message.chat.id,
+            private_title=_private_title(callback),
+        )
     account = repo.get_active_account(chat_id)
     bound = repo.get_bound_area(chat_id)
     text = (
-        f"Группа: {title}\n\n"
+        f"Выбрана группа: {title}\n\n"
         f"Состояние: {'подключена' if connected else 'не подключена'}\n"
         f"Учёт: {(account.name if account else 'не выбран')}\n"
         f"Участок: {(bound.name if bound else 'не выбран')}"

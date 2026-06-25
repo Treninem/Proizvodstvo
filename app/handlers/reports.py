@@ -149,11 +149,11 @@ def _format_multi_selection_text(state: ReportState) -> str:
     lines = [
         "Отчёт из нескольких групп",
         "",
-        "Отметьте нужные группы галочками.",
+        "Отметьте только те группы, которые нужны в этом отчёте.",
         f"Выбрано: {checked}",
         f"Период: {state.request_text}",
         "",
-        "После выбора нажмите «Показать», «Excel» или «PDF».",
+        "Ничего не выбрано заранее. После выбора нажмите «Показать», «Excel» или «PDF».",
     ]
     return "\n".join(lines)
 
@@ -175,7 +175,7 @@ async def _start_multi_report_selection(message: Message, request_text: str, use
         await message.answer("Нет доступных групп для общего отчёта.", reply_markup=reports_quick_menu())
         return None, None
     token = _token()
-    selected_scope_ids = {int(item["scope_chat_id"]) for item in scopes[:1]}
+    selected_scope_ids: set[int] = set()
     titles = {int(item["scope_chat_id"]): str(item.get("title") or item["scope_chat_id"]) for item in scopes}
     state = ReportState(
         chat_id=message.chat.id,
