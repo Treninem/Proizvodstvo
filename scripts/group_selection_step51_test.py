@@ -31,7 +31,7 @@ sys.modules.setdefault("aiogram.types", aiogram_types)
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-os.environ["BOT_DATA_DIR"] = tempfile.mkdtemp(prefix="prod_bot_step50_")
+os.environ["BOT_DATA_DIR"] = tempfile.mkdtemp(prefix="prod_bot_step51_")
 
 from app.db import init_db
 from app.services import repository as repo
@@ -49,18 +49,17 @@ def main() -> None:
     repo.set_chat_connected(-1003, "Другая", "supergroup", True)
     chats = repo.list_known_group_chats()
 
-    plain = keyboard_text(chat_list_keyboard(chats))
-    assert "🔘" not in plain, plain
-    assert plain.count("⚪") == 3, plain
+    setup_plain = keyboard_text(chat_list_keyboard(chats))
+    assert "chatpick:" not in setup_plain, setup_plain
+    assert setup_plain.count("⚪") == 3, setup_plain
+    assert "chatselect:-1001" in setup_plain and "chatselect:-1002" in setup_plain, setup_plain
+    assert "chatsetup:selected" in setup_plain, setup_plain
+    assert "reportmulti:start" in setup_plain, setup_plain
 
-    selected = keyboard_text(chat_list_keyboard(chats, selected_chat_id=-1002))
-    assert selected.count("🔘") == 1, selected
-    assert selected.count("⚪") == 2, selected
-    assert "Группа · 1" in selected and "Группа · 2" in selected, selected
-    assert "chatselect:-1002" in selected, selected
-    assert "chatsetup:selected" in selected, selected
-    assert "reportmulti:start" in selected, selected
-    assert "Выбрать группы для отчёта" in selected, selected
+    setup_selected = keyboard_text(chat_list_keyboard(chats, selected_chat_id=-1002))
+    assert setup_selected.count("🔘") == 1, setup_selected
+    assert setup_selected.count("⚪") == 2, setup_selected
+    assert "Группа · 1" in setup_selected and "Группа · 2" in setup_selected, setup_selected
 
     scopes = [
         {"scope_chat_id": -9001, "title": "Учёт"},
@@ -70,10 +69,11 @@ def main() -> None:
     multi_plain = keyboard_text(report_multi_keyboard("tok", scopes, set()))
     assert "✅" not in multi_plain, multi_plain
     assert multi_plain.count("⬜") == 3, multi_plain
-    assert "Учёт · 1" in multi_plain and "Учёт · 2" in multi_plain, multi_plain
-    multi_selected = keyboard_text(report_multi_keyboard("tok", scopes, {-9002}))
-    assert multi_selected.count("✅") == 1, multi_selected
-    assert multi_selected.count("⬜") == 2, multi_selected
+    assert "reportmulti:toggle:tok:-9001" in multi_plain, multi_plain
+
+    multi_selected = keyboard_text(report_multi_keyboard("tok", scopes, {-9001, -9003}))
+    assert multi_selected.count("✅") == 2, multi_selected
+    assert multi_selected.count("⬜") == 1, multi_selected
     print("OK")
 
 
