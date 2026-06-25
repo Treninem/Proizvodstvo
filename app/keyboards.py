@@ -41,6 +41,12 @@ def main_menu() -> InlineKeyboardMarkup:
 
 
 def chat_list_keyboard(chats: list[dict], selected_chat_id: int | None = None) -> InlineKeyboardMarkup:
+    """Список групп для настройки.
+
+    Здесь можно выбрать только одну активную группу. Это не экран общего
+    отчёта, поэтому используем понятные радио-метки, а не галочки. Нажатие
+    по группе только ставит/снимает выбор и не открывает настройку само.
+    """
     rows: list[list[InlineKeyboardButton]] = []
     titles = [str(chat.get("title") or chat.get("chat_id")) for chat in chats[:80]]
     duplicate_titles = {title for title in titles if titles.count(title) > 1}
@@ -51,8 +57,10 @@ def chat_list_keyboard(chats: list[dict], selected_chat_id: int | None = None) -
         if title in duplicate_titles:
             duplicate_index[title] = duplicate_index.get(title, 0) + 1
             title = f"{title} · {duplicate_index[title]}"
-        mark = "✅" if selected_chat_id is not None and chat_id == int(selected_chat_id) else "▫️"
-        rows.append([InlineKeyboardButton(text=f"{mark} {title[:42]}", callback_data=f"chatpick:{chat_id}")])
+        mark = "🔘" if selected_chat_id is not None and chat_id == int(selected_chat_id) else "⚪"
+        rows.append([InlineKeyboardButton(text=f"{mark} {title[:42]}", callback_data=f"chatselect:{chat_id}")])
+    rows.append([InlineKeyboardButton(text="Открыть настройку", callback_data="chatsetup:selected")])
+    rows.append([InlineKeyboardButton(text="Выбрать группы для отчёта", callback_data="reportmulti:start")])
     rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
