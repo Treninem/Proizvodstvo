@@ -40,12 +40,18 @@ def main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def chat_list_keyboard(chats: list[dict]) -> InlineKeyboardMarkup:
+def chat_list_keyboard(chats: list[dict], selected_chat_id: int | None = None) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
+    titles = [str(chat.get("title") or chat.get("chat_id")) for chat in chats[:80]]
+    duplicate_titles = {title for title in titles if titles.count(title) > 1}
+    duplicate_index: dict[str, int] = {}
     for chat in chats[:80]:
         title = str(chat.get("title") or chat.get("chat_id"))
         chat_id = int(chat["chat_id"])
-        mark = "✅" if chat.get("is_connected") else "▫️"
+        if title in duplicate_titles:
+            duplicate_index[title] = duplicate_index.get(title, 0) + 1
+            title = f"{title} · {duplicate_index[title]}"
+        mark = "✅" if selected_chat_id is not None and chat_id == int(selected_chat_id) else "▫️"
         rows.append([InlineKeyboardButton(text=f"{mark} {title[:42]}", callback_data=f"chatpick:{chat_id}")])
     rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -174,9 +180,16 @@ def help_topic_keyboard(current: str = "start") -> InlineKeyboardMarkup:
 
 def report_multi_keyboard(token: str, chats: list[dict], selected_scope_ids: set[int]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
+    titles = [str(item.get("title") or item["scope_chat_id"]) for item in chats[:60]]
+    duplicate_titles = {title for title in titles if titles.count(title) > 1}
+    duplicate_index: dict[str, int] = {}
     for item in chats[:60]:
         scope_id = int(item["scope_chat_id"])
-        title = str(item.get("title") or scope_id)[:42]
+        title = str(item.get("title") or scope_id)
+        if title in duplicate_titles:
+            duplicate_index[title] = duplicate_index.get(title, 0) + 1
+            title = f"{title} · {duplicate_index[title]}"
+        title = title[:42]
         mark = "✅ " if scope_id in selected_scope_ids else "⬜ "
         rows.append([InlineKeyboardButton(text=mark + title, callback_data=f"reportmulti:toggle:{token}:{scope_id}")])
     rows.append([
