@@ -73,7 +73,7 @@ async def _send_chats(message: Message) -> None:
         return
     selected_chat_id = _selected_group_chat_id(message.chat.id)
     await message.answer(
-        "Ваши группы\n\nВыберите одну группу для настройки.",
+        "Ваши группы\n\nДля настройки выберите одну группу. Нажатие по группе только ставит или снимает выбор. После выбора нажмите «Открыть настройку».\n\nДля отчёта по нескольким группам нажмите «Выбрать группы для отчёта».",
         reply_markup=chat_list_keyboard(chats, selected_chat_id=selected_chat_id),
     )
 
@@ -116,9 +116,88 @@ async def my_chats_callback(callback: CallbackQuery) -> None:
         selected_chat_id = _selected_group_chat_id(callback.message.chat.id)
         await safe_edit_text(
             callback.message,
-            "Ваши группы\n\nВыберите одну группу для настройки.",
+            "Ваши группы\n\nДля настройки выберите одну группу. Нажатие по группе только ставит или снимает выбор. После выбора нажмите «Открыть настройку».\n\nДля отчёта по нескольким группам нажмите «Выбрать группы для отчёта».",
             reply_markup=chat_list_keyboard(chats, selected_chat_id=selected_chat_id),
         )
+    await callback.answer()
+
+
+async def _refresh_chat_list(callback: CallbackQuery, text: str | None = None) -> None:
+    user_id = callback.from_user.id if callback.from_user else None
+    chats = await _visible_chats(callback.bot, user_id)
+    selected_chat_id = _selected_group_chat_id(callback.message.chat.id)
+    await safe_edit_text(
+        callback.message,
+        text or "Ваши группы\n\nДля настройки выберите одну группу. Нажатие по группе только ставит или снимает выбор. После выбора нажмите «Открыть настройку».\n\nДля отчёта по нескольким группам нажмите «Выбрать группы для отчёта».",
+        reply_markup=chat_list_keyboard(chats, selected_chat_id=selected_chat_id),
+    )
+
+
+@router.callback_query(F.data.startswith("chatselect:"))
+async def chat_select_for_setup(callback: CallbackQuery) -> None:
+    raw_chat_id = callback.data.split(":", 1)[1]
+    try:
+        chat_id = int(raw_chat_id)
+    except ValueError:
+        await callback.answer("Группа не найдена.", show_alert=True)
+        return
+    user_id = callback.from_user.id if callback.from_user else None
+    if not await _can_see_chat(callback.bot, chat_id, user_id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    selected_now = _selected_group_chat_id(callback.message.chat.id)
+    if selected_now == chat_id:
+        repo.clear_active_account(callback.message.chat.id)
+        await _refresh_chat_list(callback, "Ваши группы\n\nВыбор снят. Можно выбрать другую группу для настройки или открыть отчёт по нескольким группам.")
+        await callback.answer("Выбор снят")
+        return
+    chat = repo.get_chat_info(chat_id)
+    if not chat:
+        await callback.answer("Группа не найдена.", show_alert=True)
+        return
+    if not await _can_manage_selected_chat(callback.bot, chat_id, user_id):
+        await callback.answer("Настройку может открыть владелец учёта или человек с правом настройки.", show_alert=True)
+        return
+    title = str(chat.get("title") or chat_id)
+    account = repo.ensure_group_account_context(
+        chat_id,
+        title,
+        str(chat.get("chat_type") or "supergroup"),
+        int(user_id or 0),
+        private_chat_id=callback.message.chat.id,
+        private_title=_private_title(callback),
+    )
+    if not account:
+        await callback.answer("Не удалось подготовить учёт.", show_alert=True)
+        return
+    await _refresh_chat_list(callback, f"Ваши группы\n\nВыбрана группа для настройки: {title}\n\nНажмите «Открыть настройку» или выберите другую группу.")
+    await callback.answer("Группа выбрана")
+
+
+@router.callback_query(F.data == "chatsetup:selected")
+async def chat_setup_selected(callback: CallbackQuery) -> None:
+    chat_id = _selected_group_chat_id(callback.message.chat.id)
+    if not chat_id:
+        await callback.answer("Сначала отметьте одну группу.", show_alert=True)
+        return
+    user_id = callback.from_user.id if callback.from_user else None
+    if not await _can_manage_selected_chat(callback.bot, chat_id, user_id):
+        await callback.answer("Настройку может открыть владелец учёта или человек с правом настройки.", show_alert=True)
+        return
+    chat = repo.get_chat_info(chat_id) or {"title": str(chat_id), "chat_type": "supergroup"}
+    title = str(chat.get("title") or chat_id)
+    account = repo.ensure_group_account_context(
+        chat_id,
+        title,
+        str(chat.get("chat_type") or "supergroup"),
+        int(user_id or 0),
+        private_chat_id=callback.message.chat.id,
+        private_title=_private_title(callback),
+    )
+    if not account:
+        await callback.answer("Не удалось подготовить учёт.", show_alert=True)
+        return
+    await safe_edit_text(callback.message, f"Настройка учёта\n\nГруппа: {title}", reply_markup=setup_menu())
     await callback.answer()
 
 
