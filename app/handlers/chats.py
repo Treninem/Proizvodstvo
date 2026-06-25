@@ -74,14 +74,9 @@ async def bot_chat_member(update: ChatMemberUpdated) -> None:
     new_status = str(update.new_chat_member.status)
     connected = new_status not in {"left", "kicked"}
     repo.upsert_chat(chat.id, chat.title or "", chat.type, connected=connected)
-    if connected:
-        try:
-            await update.bot.send_message(
-                chat.id,
-                "Бот добавлен. Для настройки откройте бота в личке и нажмите «Группы».",
-            )
-        except Exception:
-            pass
+    # В группе бот не пишет приветствие сам. Он только запоминает группу,
+    # чтобы она появилась в личке в разделе «Группы». Так обычная переписка
+    # в чате не засоряется повторными сообщениями от бота.
 
 
 @router.message(F.text.lower().in_({"мои группы", "группы", "мои чаты", "чаты"}))
