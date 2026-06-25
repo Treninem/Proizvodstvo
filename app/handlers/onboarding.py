@@ -57,7 +57,7 @@ async def stock_open(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "menu:reports")
 async def reports_open(callback: CallbackQuery) -> None:
-    if not await can_view_reports(callback.bot, callback.message.chat, callback.from_user):
+    if callback.message.chat.type != "private" and not await can_view_reports(callback.bot, callback.message.chat, callback.from_user):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     await safe_edit_text(callback.message, "Выберите период отчёта.", reply_markup=reports_quick_menu())
