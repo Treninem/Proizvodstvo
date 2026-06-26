@@ -19,6 +19,7 @@ python3 scripts/multi_report_step48_test.py
 python3 scripts/group_silence_step49_test.py
 python3 scripts/group_intake_filter_step52_test.py
 python3 scripts/pdf_user_message_step53_test.py
+python3 scripts/plan_settings_step54_test.py
 python3 scripts/group_single_selection_step50_test.py
 python3 scripts/group_selection_step51_test.py
 python3 scripts/owner_test_mode_step41_test.py
