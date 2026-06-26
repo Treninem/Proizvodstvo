@@ -263,6 +263,22 @@ CREATE TABLE IF NOT EXISTS export_preferences (
     PRIMARY KEY(chat_id, user_id)
 );
 
+
+
+CREATE TABLE IF NOT EXISTS assembly_plan_targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    product_id INTEGER NOT NULL,
+    target_qty REAL NOT NULL,
+    is_archived INTEGER NOT NULL DEFAULT 0,
+    is_notified INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(chat_id, product_id, target_qty),
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(product_id) REFERENCES entities(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS setup_sessions (
     chat_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,

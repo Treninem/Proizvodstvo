@@ -154,6 +154,7 @@ def reports_quick_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Сегодня", callback_data="reportquick:отчёт за сегодня"), InlineKeyboardButton(text="Неделя", callback_data="reportquick:отчёт за неделю")],
         [InlineKeyboardButton(text="Месяц", callback_data="reportquick:отчёт за месяц")],
+        [InlineKeyboardButton(text="План сборки", callback_data="plan:start")],
         [InlineKeyboardButton(text="Отчёт из нескольких групп", callback_data="reportmulti:start")],
         [InlineKeyboardButton(text="Назад", callback_data="menu:main")],
     ])
@@ -348,3 +349,21 @@ def resolve_operation_keyboard(pending_id: str, op_index: int, choices: list[dic
     rows.append([InlineKeyboardButton(text="Исправить сообщением", callback_data=f"edit:{pending_id}")])
     rows.append([InlineKeyboardButton(text="Отмена", callback_data=f"cancel:{pending_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+
+def assembly_plan_product_keyboard(products: list[dict]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in products[:80]:
+        rows.append([InlineKeyboardButton(text=str(item.get("name") or "Изделие")[:48], callback_data=f"plan:pick:{int(item['id'])}")])
+    rows.append([InlineKeyboardButton(text="Посчитать", callback_data="plan:show"), InlineKeyboardButton(text="Очистить план", callback_data="plan:clear")])
+    rows.append([InlineKeyboardButton(text="Назад", callback_data="menu:reports"), InlineKeyboardButton(text="В меню", callback_data="menu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def assembly_plan_after_save_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Добавить изделие", callback_data="plan:start"), InlineKeyboardButton(text="Посчитать", callback_data="plan:show")],
+        [InlineKeyboardButton(text="Очистить план", callback_data="plan:clear")],
+        [InlineKeyboardButton(text="Назад", callback_data="menu:reports"), InlineKeyboardButton(text="В меню", callback_data="menu:main")],
+    ])
