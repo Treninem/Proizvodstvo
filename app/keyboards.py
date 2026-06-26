@@ -344,6 +344,7 @@ def resolve_operation_keyboard(pending_id: str, op_index: int, choices: list[dic
         if not target_type or not target_id:
             continue
         rows.append([InlineKeyboardButton(text=name, callback_data=f"resolveop:{pending_id}:{op_index}:{target_type}:{target_id}")])
+    rows.append([InlineKeyboardButton(text="Пропустить строку", callback_data=f"skipop:{pending_id}:{op_index}")])
     rows.append([InlineKeyboardButton(text="Исправить сообщением", callback_data=f"edit:{pending_id}")])
     rows.append([InlineKeyboardButton(text="Отмена", callback_data=f"cancel:{pending_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
