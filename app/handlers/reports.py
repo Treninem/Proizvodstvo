@@ -11,7 +11,7 @@ from ..services.normalize import normalize_key
 from ..services import reporting
 from ..services import repository as repo
 from ..access import can_view_reports, is_chat_creator, is_global_owner
-from ..keyboards import report_sections_keyboard, report_download_keyboard, report_multi_keyboard, EXPORT_SECTION_LABELS, reports_quick_menu
+from ..keyboards import report_sections_keyboard, report_download_keyboard, report_multi_keyboard, EXPORT_SECTION_LABELS, reports_quick_menu, assembly_plan_product_keyboard, assembly_plan_after_save_keyboard
 
 router = Router()
 
@@ -266,6 +266,112 @@ def _start_selection(message: Message, scope_chat_id: int, text: str, mode: str,
 
 
 
+
+
+
+def _plan_scope(chat_id: int) -> int:
+    return repo.resolve_scope_chat_id(chat_id)
+
+
+def _plan_products(chat_id: int) -> list[dict]:
+    return [{"id": item.id, "name": item.name} for item in repo.list_entities(chat_id, {"product"})]
+
+
+async def _open_plan_menu(message: Message) -> None:
+    scope_chat_id = _plan_scope(message.chat.id)
+    products = _plan_products(scope_chat_id)
+    if not products:
+        await message.answer("Изделия пока не созданы.", reply_markup=reports_quick_menu())
+        return
+    text = reporting.build_saved_plan_text(scope_chat_id)
+    await message.answer(text + "\n\nВыберите изделие для цели.", reply_markup=assembly_plan_product_keyboard(products))
+
+
+async def _handle_plan_targets_message(message: Message, session: dict) -> bool:
+    if not message.from_user:
+        return False
+    state = session.get("state")
+    if state != "await_assembly_plan_targets":
+        return False
+    data = session.get("data") or {}
+    product_id = int(data.get("product_id") or 0)
+    product_name = str(data.get("product_name") or "Изделие")
+    targets = reporting.parse_target_quantities(message.text or "")
+    if not targets:
+        await message.answer("Введите количество числом. Можно несколько значений через пробел или запятую.", reply_markup=assembly_plan_after_save_keyboard())
+        return True
+    scope_chat_id = _plan_scope(message.chat.id)
+    saved = repo.set_assembly_plan_targets(scope_chat_id, product_id, targets)
+    repo.clear_setup_session(message.chat.id, message.from_user.id)
+    if saved <= 0:
+        await message.answer("Цель не сохранена. Выберите изделие заново.", reply_markup=reports_quick_menu())
+        return True
+    values = ", ".join(reporting._fmt_number(item) for item in targets)
+    await message.answer(f"План сохранён: {product_name} — {values} шт", reply_markup=assembly_plan_after_save_keyboard())
+    return True
+
+
+
+@router.callback_query(F.data == "plan:start")
+async def plan_start_callback(callback: CallbackQuery) -> None:
+    if not await can_view_reports(callback.bot, callback.message.chat, callback.from_user, need_export=False):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    scope_chat_id = _plan_scope(callback.message.chat.id)
+    products = _plan_products(scope_chat_id)
+    if not products:
+        await safe_edit_text(callback.message, "Изделия пока не созданы.", reply_markup=reports_quick_menu())
+        await callback.answer()
+        return
+    await safe_edit_text(callback.message, reporting.build_saved_plan_text(scope_chat_id) + "\n\nВыберите изделие для цели.", reply_markup=assembly_plan_product_keyboard(products))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("plan:pick:"))
+async def plan_pick_callback(callback: CallbackQuery) -> None:
+    if not callback.from_user:
+        await callback.answer()
+        return
+    if not await can_view_reports(callback.bot, callback.message.chat, callback.from_user, need_export=False):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    try:
+        product_id = int((callback.data or "").split(":", 2)[2])
+    except ValueError:
+        await callback.answer("Изделие не найдено.", show_alert=True)
+        return
+    product = repo.get_entity(product_id)
+    scope_chat_id = _plan_scope(callback.message.chat.id)
+    if not product or product.chat_id != scope_chat_id or product.entity_type != "product":
+        await callback.answer("Изделие не найдено.", show_alert=True)
+        return
+    repo.set_setup_session(callback.message.chat.id, callback.from_user.id, "await_assembly_plan_targets", {"product_id": product_id, "product_name": product.name})
+    await safe_edit_text(callback.message, f"{product.name}\n\nВведите нужное количество. Можно одно или несколько значений.", reply_markup=assembly_plan_after_save_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "plan:show")
+async def plan_show_callback(callback: CallbackQuery) -> None:
+    if not await can_view_reports(callback.bot, callback.message.chat, callback.from_user, need_export=False):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    scope_chat_id = _plan_scope(callback.message.chat.id)
+    await safe_edit_text(callback.message, reporting.build_assembly_capacity_report(scope_chat_id, "план сборки"), reply_markup=assembly_plan_after_save_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "plan:clear")
+async def plan_clear_callback(callback: CallbackQuery) -> None:
+    if not await can_view_reports(callback.bot, callback.message.chat, callback.from_user, need_export=False):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    scope_chat_id = _plan_scope(callback.message.chat.id)
+    repo.clear_assembly_plan(scope_chat_id)
+    products = _plan_products(scope_chat_id)
+    await safe_edit_text(callback.message, "План очищен.", reply_markup=assembly_plan_product_keyboard(products) if products else reports_quick_menu())
+    await callback.answer()
+
+
 @router.callback_query(F.data == "reportmulti:start")
 async def report_multi_start_callback(callback: CallbackQuery) -> None:
     if callback.message.chat.type != "private":
@@ -445,6 +551,10 @@ async def report_selection_callback(callback: CallbackQuery) -> None:
 
 async def try_handle_report(message: Message) -> bool:
     text = message.text or ""
+    if message.from_user:
+        session = repo.get_setup_session(message.chat.id, message.from_user.id)
+        if session and session.get("state") == "await_assembly_plan_targets":
+            return await _handle_plan_targets_message(message, session)
     if not _looks_like_report_request(text):
         return False
     if message.chat.type in {"group", "supergroup"} and not repo.is_connected_chat(message.chat.id):

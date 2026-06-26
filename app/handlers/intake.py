@@ -8,7 +8,7 @@ from aiogram.types import Message, CallbackQuery
 
 from ..keyboards import confirm_keyboard, resolve_operation_keyboard
 from ..access import can_submit_operations
-from ..services import accounting
+from ..services import accounting, reporting
 from ..services import parser
 from ..services import repository as repo
 from ..services.normalize import format_amount, normalize_key
@@ -198,6 +198,9 @@ async def try_handle_confirmation_text(message: Message) -> bool:
         await message.answer("Запись не сохранена. Уточните название позиции или отправьте данные заново.")
         return True
     await message.answer(_saved_text(saved, bool(payload.get("is_test"))))
+    if not payload.get("is_test"):
+        for line in reporting.completed_plan_messages(scope_chat_id):
+            await message.answer(line)
     return True
 
 
@@ -320,6 +323,9 @@ async def confirm_pending(callback: CallbackQuery) -> None:
         await callback.answer("Нужно уточнить запись", show_alert=True)
         return
     await safe_edit_text(callback.message, _saved_text(saved, bool(payload.get("is_test"))))
+    if not payload.get("is_test"):
+        for line in reporting.completed_plan_messages(scope_chat_id):
+            await callback.message.answer(line)
     await callback.answer()
 
 
