@@ -233,6 +233,17 @@ def _download_path(state: ReportState, file_type: str):
     return reporting.create_xlsx_report(state.scope_chat_id, state.request_text, user_id=state.user_id)
 
 
+async def _send_report_file(message: Message, state: ReportState, file_type: str, caption: str) -> None:
+    try:
+        path = _download_path(state, file_type)
+    except reporting.PdfUnavailableError:
+        if file_type != "pdf":
+            raise
+        path = _download_path(state, "xlsx")
+        caption = "PDF сейчас недоступен. Отправил отчёт в Excel."
+    await message.answer_document(FSInputFile(path), caption=caption)
+
+
 def _start_selection(message: Message, scope_chat_id: int, text: str, mode: str, user_id: int | None = None) -> tuple[str, ReportState]:
     if user_id is None:
         user_id = message.from_user.id if message.from_user else 0
@@ -344,12 +355,9 @@ async def report_multi_callback(callback: CallbackQuery) -> None:
             return
         file_type = parts[3]
         try:
-            path = _download_path(state, file_type)
+            await _send_report_file(callback.message, state, file_type, "Общий отчёт готов.")
         except ValueError as exc:
             await callback.message.answer(str(exc))
-            await callback.answer()
-            return
-        await callback.message.answer_document(FSInputFile(path), caption="Общий отчёт готов.")
         await callback.answer()
         return
     await callback.answer()
@@ -427,12 +435,9 @@ async def report_selection_callback(callback: CallbackQuery) -> None:
         _save_selected(state)
         file_type = parts[3]
         try:
-            path = _download_path(state, file_type)
+            await _send_report_file(callback.message, state, file_type, "Отчёт готов.")
         except ValueError as exc:
             await callback.message.answer(str(exc))
-            await callback.answer()
-            return
-        await callback.message.answer_document(FSInputFile(path), caption="Отчёт готов.")
         await callback.answer()
         return
     await callback.answer()
@@ -478,11 +483,9 @@ async def try_handle_report(message: Message) -> bool:
             mode="download",
         )
         try:
-            path = _download_path(state, requested_file_type)
+            await _send_report_file(message, state, requested_file_type, "Отчёт готов.")
         except ValueError as exc:
             await message.answer(str(exc))
-            return True
-        await message.answer_document(FSInputFile(path), caption="Отчёт готов.")
         return True
 
     mode = "download" if _looks_like_file_request(text) else "show"
