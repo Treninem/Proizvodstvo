@@ -48,6 +48,13 @@ ENTITY_LABELS: dict[str, str] = {
 }
 
 
+class PdfUnavailableError(ValueError):
+    """PDF нельзя собрать в текущем окружении. Пользователю показывается мягкая замена на Excel."""
+
+
+PDF_UNAVAILABLE_TEXT = "PDF сейчас недоступен."
+
+
 def _fmt_number(value: object, decimals: int = 3) -> str:
     """Показывает числа обычным видом: 4 000 000, а не 4e+06."""
     if value is None or value == "":
@@ -660,7 +667,7 @@ def _register_pdf_font() -> str:
             return font_name
         except Exception:
             continue
-    raise ValueError("PDF не собран: на сервере нет русского шрифта. Запустите start_linux.sh заново или установите fonts-dejavu-core. Ещё можно положить DejaVuSans.ttf или NotoSans-Regular.ttf в папку fonts рядом с ботом.")
+    raise PdfUnavailableError(PDF_UNAVAILABLE_TEXT)
 
 
 def pdf_font_status() -> tuple[bool, str]:
