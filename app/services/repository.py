@@ -102,6 +102,10 @@ def resolve_scope_chat_id(chat_id: int) -> int:
     return account.scope_chat_id if account else chat_id
 
 
+def clear_active_account(chat_id: int) -> None:
+    db.execute("DELETE FROM chat_active_account WHERE chat_id=?", (chat_id,))
+
+
 def create_account(owner_user_id: int, owner_chat_id: int, name: str, is_general: bool = False) -> tuple[bool, str, int | None]:
     key = normalize_key(name)
     if not key:
@@ -673,6 +677,91 @@ def find_job_title(chat_id: int, name: str) -> dict | None:
     key = normalize_key(name)
     row = db.fetchone("SELECT * FROM job_titles WHERE chat_id=? AND normalized=? AND is_archived=0", (chat_id, key))
     return dict(row) if row else None
+
+
+
+# --- Настраиваемый план сборки ---
+
+def set_assembly_plan_targets(chat_id: int, product_id: int, targets: list[int | float]) -> int:
+    scope = resolve_scope_chat_id(chat_id)
+    product = get_entity(product_id)
+    if not product or product.chat_id != scope or product.entity_type != "product":
+        return 0
+    saved = 0
+    with db.connect() as conn:
+        conn.execute("PRAGMA foreign_keys=ON")
+        for raw in targets:
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if value <= 0:
+                continue
+            # При изменении цели уведомление начинается заново только для новой цели.
+            conn.execute(
+                """
+                INSERT INTO assembly_plan_targets(chat_id,product_id,target_qty,is_archived,is_notified,updated_at)
+                VALUES(?,?,?,?,0,CURRENT_TIMESTAMP)
+                ON CONFLICT(chat_id,product_id,target_qty) DO UPDATE SET
+                    is_archived=0,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (scope, int(product_id), value, 0),
+            )
+            saved += 1
+        conn.commit()
+    return saved
+
+
+def list_assembly_plan_targets(chat_id: int) -> list[dict]:
+    scope = resolve_scope_chat_id(chat_id)
+    rows = db.fetchall(
+        """
+        SELECT p.id,p.chat_id,p.product_id,p.target_qty,p.is_notified,e.name AS product_name,e.default_unit
+        FROM assembly_plan_targets p
+        JOIN entities e ON e.id=p.product_id
+        WHERE p.chat_id=? AND p.is_archived=0 AND e.is_archived=0
+        ORDER BY e.name,p.target_qty
+        """,
+        (scope,),
+    )
+    return [dict(r) for r in rows]
+
+
+def list_assembly_plan_products(chat_id: int) -> list[dict]:
+    scope = resolve_scope_chat_id(chat_id)
+    rows = db.fetchall(
+        """
+        SELECT DISTINCT e.id,e.name
+        FROM assembly_plan_targets p
+        JOIN entities e ON e.id=p.product_id
+        WHERE p.chat_id=? AND p.is_archived=0 AND e.is_archived=0
+        ORDER BY e.name
+        """,
+        (scope,),
+    )
+    return [dict(r) for r in rows]
+
+
+def clear_assembly_plan(chat_id: int) -> int:
+    scope = resolve_scope_chat_id(chat_id)
+    rows = db.fetchall("SELECT id FROM assembly_plan_targets WHERE chat_id=? AND is_archived=0", (scope,))
+    db.execute("UPDATE assembly_plan_targets SET is_archived=1,updated_at=CURRENT_TIMESTAMP WHERE chat_id=? AND is_archived=0", (scope,))
+    return len(rows)
+
+
+def clear_assembly_plan_product(chat_id: int, product_id: int) -> int:
+    scope = resolve_scope_chat_id(chat_id)
+    rows = db.fetchall("SELECT id FROM assembly_plan_targets WHERE chat_id=? AND product_id=? AND is_archived=0", (scope, int(product_id)))
+    db.execute(
+        "UPDATE assembly_plan_targets SET is_archived=1,updated_at=CURRENT_TIMESTAMP WHERE chat_id=? AND product_id=? AND is_archived=0",
+        (scope, int(product_id)),
+    )
+    return len(rows)
+
+
+def mark_assembly_plan_notified(plan_id: int) -> None:
+    db.execute("UPDATE assembly_plan_targets SET is_notified=1,updated_at=CURRENT_TIMESTAMP WHERE id=?", (int(plan_id),))
 
 
 def set_setup_session(chat_id: int, user_id: int, state: str, data: dict | None = None) -> None:

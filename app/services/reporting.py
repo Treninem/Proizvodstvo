@@ -234,10 +234,14 @@ def raw_operation_rows(chat_id: int, period: PeriodFilter, limit: int = 5000) ->
     rows = db.fetchall(
         f"""
         SELECT o.created_at,o.operation_type,o.entity_type,e.name AS entity_name,a.name AS area_name,
-               o.quantity,o.unit,o.user_id,o.group_chat_id,o.raw_text
+               o.quantity,o.unit,o.user_id,o.group_chat_id,o.raw_text,
+               COALESCE(NULLIF(w.display_name,''), CAST(o.user_id AS TEXT)) AS worker_name,
+               COALESCE(NULLIF(c.title,''), CAST(o.group_chat_id AS TEXT)) AS group_title
         FROM operations o
         LEFT JOIN entities e ON e.id=o.entity_id
         LEFT JOIN areas a ON a.id=o.area_id
+        LEFT JOIN workers w ON w.chat_id=o.chat_id AND w.user_id=o.user_id AND w.is_active=1
+        LEFT JOIN chats c ON c.chat_id=o.group_chat_id
         WHERE o.chat_id=? AND {period.where_sql}
         ORDER BY o.created_at DESC
         LIMIT ?
@@ -947,7 +951,7 @@ def build_all_assembly_capacity_report(chat_id: int, targets: list[int] | None =
             lines.append(f"• {row['component_name']}: есть {_fmt_number(row['stock'])}, нужно {_fmt_number(row['need'])}{extra}")
         else:
             lines.append("• Состав пока не задан.")
-    target_rows = _product_target_rows(chat_id, targets or DEFAULT_ASSEMBLY_TARGETS)
+    target_rows = _product_target_rows(chat_id, targets or [])
     if target_rows:
         lines.append("\n" + _format_target_rows_text(target_rows))
     return "\n".join(lines)
@@ -1281,7 +1285,7 @@ def _period_totals_table(chat_id: int, period: PeriodFilter) -> list[list[object
     ] for row in operation_rows(chat_id, period)]
 
 
-DEFAULT_ASSEMBLY_TARGETS = [10000, 50000, 100000]
+DEFAULT_ASSEMBLY_TARGETS: list[int] = []
 
 
 _TARGET_NUMBER_RE = re.compile(r"(?<!\d)(\d{1,3}(?:[ \u00A0]\d{3})+|\d{3,12})(?!\d)")
@@ -1310,7 +1314,7 @@ def _target_quantities_from_text(text: str, include_defaults: bool = True) -> li
                 found.append(value)
     if found:
         return found
-    return list(DEFAULT_ASSEMBLY_TARGETS) if include_defaults else []
+    return []
 
 
 def _strip_target_numbers(text: str) -> str:
@@ -1342,6 +1346,99 @@ def _custom_product_targets_from_text(chat_id: int, request_text: str) -> dict[i
             if target not in bucket:
                 bucket.append(target)
     return result
+
+
+
+
+def _saved_product_targets(chat_id: int) -> dict[int, list[int]]:
+    from . import repository as repo
+
+    result: dict[int, list[int]] = {}
+    for row in repo.list_assembly_plan_targets(chat_id):
+        product_id = int(row.get("product_id") or 0)
+        qty = int(float(row.get("target_qty") or 0))
+        if product_id and qty > 0:
+            bucket = result.setdefault(product_id, [])
+            if qty not in bucket:
+                bucket.append(qty)
+    return result
+
+
+def saved_plan_rows(chat_id: int) -> list[list[object]]:
+    saved = _saved_product_targets(chat_id)
+    if not saved:
+        return []
+    return _product_target_rows(chat_id, [], product_ids=set(saved), per_product_targets=saved)
+
+
+def parse_target_quantities(text: str) -> list[int]:
+    return _target_quantities_from_text(text, include_defaults=False)
+
+
+def build_saved_plan_text(chat_id: int) -> str:
+    from . import repository as repo
+
+    rows = repo.list_assembly_plan_targets(chat_id)
+    if not rows:
+        return "План сборки пуст. Выберите изделие и укажите количество."
+    grouped: dict[str, list[str]] = {}
+    for row in rows:
+        grouped.setdefault(str(row.get("product_name") or "Изделие"), []).append(_fmt_number(row.get("target_qty")))
+    lines = ["План сборки"]
+    for product, targets in grouped.items():
+        lines.append(f"• {product}: {', '.join(targets)} шт")
+    return "\n".join(lines)
+
+
+_GOAL_TEMPLATES = [
+    "Цель выполнена: {product} — {target} шт. Отличная работа!",
+    "План закрыт: {product} — {target} шт. Можно выдохнуть, но недолго.",
+    "Готово: {product} — {target} шт. Производство сегодня в ударе.",
+    "Цель достигнута: {product} — {target} шт. Красиво сработали.",
+    "План выполнен: {product} — {target} шт. Чай можно наливать смелее.",
+    "Есть результат: {product} — {target} шт. Склад улыбается.",
+    "Цель закрыта: {product} — {target} шт. Детали собрались как надо.",
+    "Партия готова: {product} — {target} шт. Команда сработала чётко.",
+    "План взят: {product} — {target} шт. Можно ставить следующую цель.",
+    "Граница пройдена: {product} — {target} шт. Производство не подвело.",
+    "Цель добита: {product} — {target} шт. Без лишнего шума, но мощно.",
+    "План закрылся: {product} — {target} шт. Таблица довольна.",
+    "Готово по плану: {product} — {target} шт. Счёт красивый.",
+    "Цель взята: {product} — {target} шт. Можно коротко порадоваться.",
+    "План выполнен: {product} — {target} шт. Детали пришли к согласию.",
+    "Есть победа: {product} — {target} шт. Работа пошла как надо.",
+    "Цель закрыта: {product} — {target} шт. Нормально навалили.",
+    "План готов: {product} — {target} шт. Производственный котёл кипит.",
+    "Выполнено: {product} — {target} шт. Можно хлопнуть ладонью по столу, но аккуратно.",
+    "Цель достигнута: {product} — {target} шт. Следующий план уже нервничает.",
+]
+
+
+def completed_plan_messages(chat_id: int) -> list[str]:
+    from . import repository as repo
+
+    messages: list[str] = []
+    rows = repo.list_assembly_plan_targets(chat_id)
+    if not rows:
+        return messages
+    by_product = {int(item.id): item for item in repo.list_entities(chat_id, {"product"})}
+    for row in rows:
+        if int(row.get("is_notified") or 0):
+            continue
+        product_id = int(row.get("product_id") or 0)
+        target = int(float(row.get("target_qty") or 0))
+        if product_id <= 0 or target <= 0:
+            continue
+        plan_rows = _product_target_rows(chat_id, [target], product_ids={product_id})
+        if not plan_rows:
+            continue
+        if any(float(item[7] or 0) > 0 for item in plan_rows):
+            continue
+        product_name = str(row.get("product_name") or (by_product.get(product_id).name if product_id in by_product else "Изделие"))
+        template = _GOAL_TEMPLATES[(int(row.get("id") or product_id) + target) % len(_GOAL_TEMPLATES)]
+        messages.append(template.format(product=product_name, target=_fmt_number(target)))
+        repo.mark_assembly_plan_notified(int(row.get("id") or 0))
+    return messages
 
 def _component_stock_rows(chat_id: int) -> list[list[object]]:
     rows = db.fetchall(
@@ -1505,12 +1602,14 @@ def _product_target_rows_for_request(chat_id: int, request_text: str, include_de
     if custom:
         return _product_target_rows(chat_id, [], product_ids=set(custom), per_product_targets=custom)
 
-    targets = _target_quantities_from_text(request_text, include_defaults=include_defaults)
+    targets = _target_quantities_from_text(request_text, include_defaults=False)
     product_text = _strip_target_numbers(request_text)
     match, _ = confident_match(chat_id, product_text.strip() or request_text, allowed_types={"product"})
-    if match:
+    if match and targets:
         return _product_target_rows(chat_id, targets, product_ids={int(match.target_id)})
-    return _product_target_rows(chat_id, targets)
+    if targets:
+        return _product_target_rows(chat_id, targets)
+    return saved_plan_rows(chat_id)
 
 def _assembly_shipping_summary_table(chat_id: int, period: PeriodFilter) -> list[list[object]]:
     rows = db.fetchall(
@@ -1562,8 +1661,8 @@ def _journal_table(chat_id: int, period: PeriodFilter, limit: int = 5000) -> lis
         row.get("area_name") or "",
         float(row.get("quantity") or 0),
         row.get("unit") or "",
-        row.get("user_id") or "",
-        row.get("group_chat_id") or "",
+        row.get("worker_name") or row.get("user_id") or "",
+        row.get("group_title") or str(row.get("group_chat_id") or ""),
     ] for row in raw_operation_rows(chat_id, period, limit=limit)]
 
 
@@ -1607,7 +1706,7 @@ def report_sections(
         sections.append(("Сборка и отправка по датам", ["Операция", "Изделие", "Ед.", *move_labels, "Итого"], move_rows))
     if prefs.get("capacity"):
         sections.append(("Расчёт сборки", ["Изделие", "Можно собрать", "Комплектующая", "Есть", "Нужно на 1", "Не хватает для ещё 1", "Ед."], _capacity_table(chat_id)))
-        sections.append(("План сборки", ["Изделие", "Цель", "Можно собрать", "Комплектующая", "Есть", "Нужно на 1", "Нужно на цель", "Не хватает", "Ед."], _product_target_rows_for_request(chat_id, request_text, include_defaults=True)))
+        sections.append(("План сборки", ["Изделие", "Цель", "Можно собрать", "Комплектующая", "Есть", "Нужно на 1", "Нужно на цель", "Не хватает", "Ед."], _product_target_rows_for_request(chat_id, request_text, include_defaults=False)))
         sections.append(("Собрано и отправлено", ["Изделие", "Собрано", "Отправлено/продано", "Ед."], _assembly_shipping_summary_table(chat_id, period)))
     if prefs.get("journal"):
         sections.append(("Журнал", ["Дата", "Операция", "Тип", "Название", "Участок", "Количество", "Ед.", "Работник", "Группа"], _journal_table(chat_id, period)))
