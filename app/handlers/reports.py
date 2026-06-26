@@ -64,24 +64,36 @@ def _state_for(token: str) -> ReportState | None:
 
 def _looks_like_capacity_request(text: str) -> bool:
     key = normalize_key(text)
-    if any(word in key for word in ("собрать", "сбор", "сборки", "сбора", "комплект", "не хватает", "нужно")) and any(
-        marker in key for marker in ("сколько", "план", "цель", "цели", "расчет", "расчёт", "нужно", "хватает")
-    ):
+    if not key:
+        return False
+    starts = (
+        "план сборки", "расчет сборки", "расчёт сборки", "сколько можно собрать",
+        "сколько собрать", "сколько нужно для сборки", "чего не хватает",
+    )
+    if key.startswith(starts):
         return True
-    return False
+    # Длинная беседа со словом «нужно» не должна открывать расчёт. Нужны
+    # одновременно явный маркер расчёта и слово сборки/комплектации.
+    has_calc_marker = any(marker in key for marker in ("сколько", "план", "цель", "цели", "расчет", "расчёт", "не хватает"))
+    has_build_marker = any(word in key for word in ("собрать", "сбор", "сборки", "сбора", "комплект"))
+    return bool(has_calc_marker and has_build_marker)
 
 
 def _looks_like_report_request(text: str) -> bool:
     key = normalize_key(text)
+    if not key:
+        return False
     if key in _REPORT_TRIGGERS:
         return True
-    if reporting.looks_like_period_text(text):
+    if key.startswith(("отчет", "отчёт", "покажи отчет", "покажи отчёт", "общий отчет", "общий отчёт")):
+        return True
+    if reporting.looks_like_period_text(text) and any(word in key for word in ("отчет", "отчёт", "excel", "pdf", "эксель", "пдф")):
         return True
     if _looks_like_capacity_request(text):
         return True
-    if any(word in key for word in _FILE_WORDS):
+    if any(word in key for word in _FILE_WORDS) and any(word in key for word in ("отчет", "отчёт", "склад", "остатки", "сборк", "план")):
         return True
-    return any(word in key for word in _REPORT_WORDS)
+    return key in _REPORT_WORDS
 
 
 def _looks_like_file_request(text: str) -> bool:

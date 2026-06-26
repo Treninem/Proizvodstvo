@@ -96,16 +96,16 @@ def _choice_text(operation: dict, choices: list[dict]) -> str:
     unit = operation.get("unit") or "шт"
     qty_line = f"Количество: {format_amount(qty)} {unit}" if isinstance(qty, (int, float)) else "Количество нужно уточнить"
     lines = [
-        "Нужно уточнить позицию",
+        "К чему отнести запись?",
         "",
         f"Строка: {raw_line}",
         qty_line,
         "",
     ]
     if choices:
-        lines.append("Выберите подходящее сохранённое название.")
+        lines.append("Выберите сохранённое название.")
     else:
-        lines.append("Подходящих сохранённых названий пока нет. Исправьте сообщение или сначала добавьте позицию в настройке учёта.")
+        lines.append("Подходящих сохранённых названий пока нет. Исправьте сообщение или добавьте позицию в настройке учёта.")
     return "\n".join(lines)
 
 
@@ -262,6 +262,40 @@ async def resolve_operation(callback: CallbackQuery) -> None:
     accounting.update_pending(pending_id, payload)
     await _show_unresolved_or_confirm(callback.message, pending_id, payload)
     await callback.answer("Выбрано")
+
+
+@router.callback_query(F.data.startswith("skipop:"))
+async def skip_operation(callback: CallbackQuery) -> None:
+    parts = (callback.data or "").split(":")
+    if len(parts) < 3:
+        await callback.answer("Откройте запись заново.", show_alert=True)
+        return
+    pending_id = parts[1]
+    try:
+        op_index = int(parts[2])
+    except ValueError:
+        await callback.answer("Откройте запись заново.", show_alert=True)
+        return
+    scope_chat_id = repo.resolve_scope_chat_id(callback.message.chat.id)
+    found = accounting.get_pending(scope_chat_id, callback.message.chat.id, callback.from_user.id)
+    if not found or found[0] != pending_id:
+        await callback.answer("Запись не найдена или устарела.", show_alert=True)
+        return
+    _, payload = found
+    operations = list(payload.get("operations") or [])
+    if op_index < 0 or op_index >= len(operations):
+        await callback.answer("Строка не найдена.", show_alert=True)
+        return
+    operations.pop(op_index)
+    payload["operations"] = operations
+    accounting.update_pending(pending_id, payload)
+    if not operations:
+        accounting.clear_pending(pending_id)
+        await safe_edit_text(callback.message, "Запись отменена.")
+        await callback.answer("Строка пропущена")
+        return
+    await _show_unresolved_or_confirm(callback.message, pending_id, payload)
+    await callback.answer("Строка пропущена")
 
 
 @router.callback_query(F.data.startswith("confirm:"))
