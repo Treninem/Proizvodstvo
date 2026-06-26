@@ -22,12 +22,24 @@ from .vocabulary import (
     YES_WORDS,
 )
 
-NUMBER_RE = re.compile(r"(?P<num>\d+(?:[.,]\d+)?)\s*(?P<unit>кг|г|т|шт|квт|квтч|квт⋅ч)?", re.IGNORECASE)
+NUMBER_RE = re.compile(r"(?P<num>\d+(?:[.,]\d+)?)\s*(?P<unit>кг|г|т|шт|штук|квт|квтч|квт⋅ч)?", re.IGNORECASE)
 
-NON_FACT_HINTS = {
-    "надо", "нужно", "нужна", "нужен", "завтра", "план", "планируем",
-    "хотели", "может", "можем", "будем", "собираемся", "если", "кто",
+# Слова, которые часто встречаются в обычной переписке. Если сообщение с такими
+# словами не начинается с явного учётного действия, бот не должен влезать в чат.
+DISCUSSION_HINTS = {
+    "надо", "нужно", "нужна", "нужен", "помните", "помнить", "говорил",
+    "думаю", "возможно", "наверное", "может", "можем", "будем", "будет", "если",
+    "купить", "проверить", "посмотреть", "касается", "оставлять", "нельзя",
+    "вроде", "странно", "показывает", "показал",
+    "хорошие", "случай", "всякий", "готовым", "готовы", "готовыми",
 }
+
+LINE_FILLER_WORDS = {
+    "сегодня", "вчера", "за", "смену", "смена", "день", "ночь", "утро",
+    "вечер", "сейчас", "только", "ещё", "еще", "итого", "всего", "штук",
+}
+
+ACCOUNTING_PREFIXES = ("учет:", "учёт:", "учет ", "учёт ")
 
 
 @dataclass
@@ -63,27 +75,108 @@ def _has_any(text: str, words: set[str]) -> bool:
     return any(w in key.split() or w in key for w in words)
 
 
-def looks_like_accounting(text: str) -> bool:
-    key = normalize_key(text)
+def _strip_accounting_prefix(text: str) -> tuple[str, bool]:
+    clean = text.strip()
+    lowered = clean.lower()
+    for prefix in ACCOUNTING_PREFIXES:
+        if lowered.startswith(prefix):
+            return clean[len(prefix):].strip(), True
+    return text, False
+
+
+def _line_starts_with_action(line: str, words: set[str]) -> bool:
+    key = normalize_key(line)
     if not key:
         return False
-    words = set(key.split())
-    has_report = _has_any(key, REPORT_WORDS)
-    has_operation = _has_any(key, ALL_OPERATION_WORDS)
-    has_number = bool(NUMBER_RE.search(key))
-    if has_operation and has_number and words.intersection(NON_FACT_HINTS) and not has_report:
-        # Фразы обсуждения, планов и вопросов не являются фактом учёта.
+    tokens = key.split()
+    for word in sorted(words, key=len, reverse=True):
+        w_tokens = normalize_key(word).split()
+        if not w_tokens:
+            continue
+        if tokens[:len(w_tokens)] == w_tokens:
+            return True
+    return False
+
+
+def _has_strong_energy_action(line: str) -> bool:
+    key = normalize_key(line)
+    tokens = key.split()
+    if not tokens:
         return False
-    if has_operation:
-        return bool(has_number or has_report)
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    if len(lines) >= 2 and sum(1 for l in lines if NUMBER_RE.search(l)) >= 2:
+    # Одного слова «счётчик» мало: в группах его часто обсуждают. Для ввода
+    # нужны показание/электроэнергия/ээ или короткая форма с явным числом.
+    strong_starts = {
+        "показание", "показания", "электроэнергия", "электрика", "энергия",
+        "ээ", "э э", "эл", "квт", "квтч", "свет",
+    }
+    key = normalize_key(line)
+    if any(_line_starts_with_action(line, {w}) for w in strong_starts):
         return True
+    if any(w in key.split() or w in key for w in strong_starts):
+        return True
+    # Точная короткая запись сохранённого счётчика часто выглядит как
+    # «Счётчик 1 1356» или «Участок 2 Счётчик 1 1356».
+    if _line_starts_with_action(line, {"счетчик", "счётчик"}) and bool(NUMBER_RE.search(line)):
+        return True
+    if ("счетчик" in key or "счётчик" in key) and len(list(NUMBER_RE.finditer(line))) >= 2:
+        return True
+    return False
+
+
+def _line_has_accounting_action(line: str) -> bool:
+    if _line_starts_with_action(line, PRODUCTION_WORDS | MATERIAL_IN_WORDS | MATERIAL_OUT_WORDS | STOCK_IN_WORDS | STOCK_OUT_WORDS | ASSEMBLY_WORDS | SHIPMENT_WORDS):
+        return True
+    return _has_strong_energy_action(line)
+
+
+def _is_discussion_line(line: str) -> bool:
+    key = normalize_key(line)
+    if not key:
+        return False
+    tokens = set(key.split())
+    if "?" in line:
+        return True
+    if tokens.intersection(DISCUSSION_HINTS):
+        # Для слов про счётчики особенно важно не путать обсуждение с вводом
+        # показаний. Рабочие записи обычно начинаются с производственного действия.
+        if not _line_starts_with_action(line, PRODUCTION_WORDS | MATERIAL_IN_WORDS | MATERIAL_OUT_WORDS | STOCK_IN_WORDS | STOCK_OUT_WORDS | ASSEMBLY_WORDS | SHIPMENT_WORDS):
+            return True
+    return False
+
+
+def looks_like_accounting(text: str) -> bool:
+    clean, forced = _strip_accounting_prefix(text)
+    key = normalize_key(clean)
+    if not key:
+        return False
+    lines = [l.strip() for l in clean.splitlines() if l.strip()]
+    if not lines:
+        return False
+
+    # Явный префикс разрешает короткий ввод, но всё равно нужна цифра или команда отчёта.
+    if forced:
+        return bool(NUMBER_RE.search(clean) or _has_any(key, REPORT_WORDS))
+
+    first_line = lines[0]
+    if _is_discussion_line(first_line):
+        return False
+
+    # Отчёты обрабатывает отдельный модуль. Здесь пропускаем только рабочие факты.
+    if _line_has_accounting_action(first_line) and NUMBER_RE.search(clean):
+        return True
+
+    # Многострочный ввод принимается только если первая строка задаёт действие
+    # вроде «Сделали сегодня:», а следующие строки содержат количества.
+    if len(lines) >= 2 and _line_has_accounting_action(first_line):
+        return any(NUMBER_RE.search(line) for line in lines[1:])
+
     return False
 
 
 def detect_header_context(line: str) -> str | None:
     key = normalize_key(line)
+    if _has_strong_energy_action(line):
+        return "energy"
     if _has_any(key, PRODUCTION_WORDS):
         return "production"
     if _has_any(key, MATERIAL_IN_WORDS):
@@ -111,7 +204,7 @@ def _extract_number_unit(line: str) -> tuple[float | None, str, str]:
         value = float(raw)
     except ValueError:
         value = None
-    unit = (m.group("unit") or "шт").lower().replace("квтч", "кВт⋅ч").replace("квт", "кВт⋅ч")
+    unit = (m.group("unit") or "шт").lower().replace("штук", "шт").replace("квтч", "кВт⋅ч").replace("квт", "кВт⋅ч")
     rest = (line[:m.start()] + " " + line[m.end():]).strip(" ,.-")
     return value, unit, rest
 
@@ -121,6 +214,13 @@ def _remove_intent_words(text: str, words: set[str]) -> str:
     for w in sorted(words, key=len, reverse=True):
         key = re.sub(rf"\b{re.escape(w)}\b", " ", key, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", key).strip()
+
+
+def _clean_entity_name_part(text: str) -> str:
+    key = _remove_intent_words(text, LINE_FILLER_WORDS)
+    key = re.sub(r"\b(?:шт|штук|кг|г|т|квт|квтч)\b", " ", key, flags=re.IGNORECASE)
+    key = re.sub(r"\s+", " ", key).strip(" ,.-:")
+    return key
 
 
 def _detect_area(chat_id: int, line: str, current_area_id: int | None, current_area_name: str | None, group_chat_id: int | None) -> tuple[int | None, str | None, str]:
@@ -158,6 +258,7 @@ def _parse_entity_quantity(chat_id: int, line: str, operation_type: str, area_id
     elif operation_type == "shipment":
         allowed = {"product"}
     name_part = _remove_intent_words(name_part, PRODUCTION_WORDS | MATERIAL_IN_WORDS | MATERIAL_OUT_WORDS | STOCK_IN_WORDS | STOCK_OUT_WORDS | ENERGY_WORDS | ASSEMBLY_WORDS | SHIPMENT_WORDS)
+    name_part = _clean_entity_name_part(name_part)
     if operation_type == "energy" and not name_part:
         return ParsedOperation(operation_type, None, None, "Электроэнергия", quantity, unit if unit != "шт" else "кВт⋅ч", area_id, area_name, line, 0.8)
     match, variants = confident_match(chat_id, name_part, allowed_types=allowed)
@@ -206,8 +307,11 @@ def _parse_entity_quantity(chat_id: int, line: str, operation_type: str, area_id
 def parse_message(chat_id: int, group_chat_id: int, text: str) -> tuple[list[ParsedOperation], list[str]]:
     errors: list[str] = []
     operations: list[ParsedOperation] = []
+    text, _forced = _strip_accounting_prefix(text)
     raw_lines = [l.strip() for l in text.splitlines() if l.strip()]
     if not raw_lines:
+        return [], []
+    if not _forced and _is_discussion_line(raw_lines[0]):
         return [], []
 
     context: str | None = None
@@ -215,20 +319,25 @@ def parse_message(chat_id: int, group_chat_id: int, text: str) -> tuple[list[Par
     current_area_name: str | None = None
 
     for raw_line in raw_lines:
-        line = raw_line.strip()
+        line = raw_line.strip().strip(":")
+        if not line:
+            continue
         header = detect_header_context(line)
         has_number = bool(NUMBER_RE.search(line))
         if header:
+            # Строка с действием задаёт контекст для следующих строк. Так работает
+            # ввод вроде «Сделали сегодня:» и список позиций ниже.
+            context = header
             a_id, a_name, clean_for_header = _detect_area(chat_id, line, current_area_id, current_area_name, group_chat_id)
             clean_for_header = _remove_intent_words(
                 clean_for_header,
                 PRODUCTION_WORDS | MATERIAL_IN_WORDS | MATERIAL_OUT_WORDS | ENERGY_WORDS | ASSEMBLY_WORDS | SHIPMENT_WORDS,
             )
-            header_quantity, _header_unit, _header_name = _extract_number_unit(clean_for_header)
-            # A header like "Производство Участок 1" contains a digit in the area name,
-            # but it is still a context line, not a production amount.
-            if not has_number or header_quantity is None:
-                context = header
+            clean_for_header = _clean_entity_name_part(clean_for_header)
+            header_quantity, _header_unit, header_name = _extract_number_unit(clean_for_header)
+            # «Производство Участок 1» или «Сделали сегодня:» — только заголовок.
+            # «Сделали Деталь 100» — полноценная запись.
+            if not has_number or header_quantity is None or (header != "energy" and not _clean_entity_name_part(header_name)):
                 if a_id:
                     current_area_id, current_area_name = a_id, a_name
                 continue
@@ -236,27 +345,17 @@ def parse_message(chat_id: int, group_chat_id: int, text: str) -> tuple[list[Par
         # line may contain several material items separated by commas
         chunks = [c.strip() for c in line.split(",") if c.strip()] if "," in line else [line]
         for chunk in chunks:
-            local_context = detect_header_context(chunk) or context
+            chunk_header = detect_header_context(chunk)
+            local_context = chunk_header or context
+            if chunk_header:
+                context = chunk_header
             if not local_context:
-                if _has_any(chunk, ENERGY_WORDS):
-                    local_context = "energy"
-                elif _has_any(chunk, MATERIAL_IN_WORDS):
-                    local_context = "material_in"
-                elif _has_any(chunk, MATERIAL_OUT_WORDS):
-                    local_context = "material_out"
-                elif _has_any(chunk, STOCK_IN_WORDS):
-                    local_context = "stock_in"
-                elif _has_any(chunk, STOCK_OUT_WORDS):
-                    local_context = "stock_out"
-                elif _has_any(chunk, ASSEMBLY_WORDS):
-                    local_context = "assembly"
-                elif _has_any(chunk, SHIPMENT_WORDS):
-                    local_context = "shipment"
-                elif context == "production" and has_number:
-                    local_context = "production"
-                elif has_number:
-                    local_context = "production"
-            if not local_context:
+                # Без явного действия строка принимается только внутри ранее заданного
+                # контекста. Это защищает обычную переписку от случайных ответов бота.
+                continue
+            if local_context == "energy" and not _has_strong_energy_action(chunk) and not context == "energy":
+                continue
+            if not NUMBER_RE.search(chunk):
                 continue
             a_id, a_name, cleaned = _detect_area(chat_id, chunk, current_area_id, current_area_name, group_chat_id)
             if a_id:
