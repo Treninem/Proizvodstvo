@@ -30,7 +30,7 @@ DISCUSSION_HINTS = {
     "надо", "нужно", "нужна", "нужен", "помните", "помнить", "говорил",
     "думаю", "возможно", "наверное", "может", "можем", "будем", "будет", "если",
     "купить", "проверить", "посмотреть", "касается", "оставлять", "нельзя",
-    "вроде", "странно", "показывает", "показал",
+    "вроде", "странно", "показывает", "показал", "дорого", "дорогая", "дорогой", "стала", "стал", "стало",
     "хорошие", "случай", "всякий", "готовым", "готовы", "готовыми",
 }
 
@@ -40,6 +40,92 @@ LINE_FILLER_WORDS = {
 }
 
 ACCOUNTING_PREFIXES = ("учет:", "учёт:", "учет ", "учёт ")
+
+
+def _token_list(text: str) -> list[str]:
+    return normalize_key(text).split()
+
+
+def _looks_like_rate_or_discussion_calc(text: str) -> bool:
+    key = normalize_key(text)
+    if not key:
+        return False
+    has_energy_unit = any(unit in key for unit in ("квт", "квтч", "киловатт", "электроэнерг"))
+    if not has_energy_unit:
+        return False
+    if re.search(r"\bза\s+\d+(?:[.,]\d+)?\s*(?:час|часа|часов|ч|смену|смены|день|сутки)\b", key):
+        return True
+    if re.search(r"\bв\s*(?:час|ч|минуту|смену|сутки)\b", key):
+        return True
+    if any(marker in key for marker in ("т е", "то есть", "итого", "получается", "значит", "равно")):
+        return True
+    if "/" in text or "=" in text:
+        return True
+    return False
+
+
+def _is_energy_consumption_action(line: str) -> bool:
+    key = normalize_key(line)
+    tokens = key.split()
+    if not tokens:
+        return False
+    starts_as_out = _line_starts_with_action(line, MATERIAL_OUT_WORDS | STOCK_OUT_WORDS)
+    has_energy_object = any(x in key for x in ("электроэнерг", "электрик", "электрич", "энергия", "свет", "квтч", "квт ч", "квт"))
+    return starts_as_out and has_energy_object
+
+
+def _safe_split_items(line: str) -> list[str]:
+    parts: list[str] = []
+    for chunk in re.split(r"\s*(?:;|\||•)\s*", line):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        subparts = [p.strip() for p in re.split(r"(?<!\d),(?!\d)", chunk) if p.strip()]
+        parts.extend(subparts or [chunk])
+    return parts
+
+
+def _starts_with_number_or_formula(line: str) -> bool:
+    return bool(re.match(r"^\s*[+-]?\d", line or ""))
+
+
+def _number_count(line: str) -> int:
+    return len(NUMBER_RE.findall(line or ""))
+
+
+def _has_math_or_rate_marker(line: str) -> bool:
+    key = normalize_key(line)
+    if any(mark in (line or "") for mark in ("=", "/")):
+        return True
+    if re.search(r"\bза\s+\d+(?:[.,]\d+)?\s*(?:час|часа|часов|ч|смену|смены|день|сутки)\b", key):
+        return True
+    if re.search(r"\bв\s*(?:час|ч|минуту|смену|сутки|день)\b", key):
+        return True
+    if any(marker in key for marker in ("т е", "то есть", "получается", "значит", "равно", "руб", "ндс")):
+        return True
+    return False
+
+
+def _should_ignore_line_before_parse(line: str, forced: bool = False) -> bool:
+    if forced:
+        return False
+    key = normalize_key(line)
+    if not key:
+        return True
+    if _line_has_accounting_action(line):
+        return False
+    if _starts_with_number_or_formula(line):
+        return True
+    if _has_math_or_rate_marker(line):
+        return True
+    if "?" in line:
+        return True
+    energy_words = ("квт", "квтч", "электроэнерг", "электрич", "счетчик", "счётчик", "показани")
+    if any(w in key for w in energy_words) and not _has_strong_energy_action(line):
+        return True
+    if _number_count(line) >= 2 and not _line_has_accounting_action(line):
+        return True
+    return False
 
 
 @dataclass
@@ -103,22 +189,18 @@ def _has_strong_energy_action(line: str) -> bool:
     tokens = key.split()
     if not tokens:
         return False
-    # Одного слова «счётчик» мало: в группах его часто обсуждают. Для ввода
-    # нужны показание/электроэнергия/ээ или короткая форма с явным числом.
+    # Слова «счётчик», «показания», «кВт» часто встречаются в разговоре.
+    # Поэтому они запускают учёт только как явное действие в начале строки
+    # или как короткая рабочая метка «ээ».
     strong_starts = {
         "показание", "показания", "электроэнергия", "электрика", "энергия",
-        "ээ", "э э", "эл", "квт", "квтч", "свет",
+        "ээ", "э э", "эл",
     }
-    key = normalize_key(line)
     if any(_line_starts_with_action(line, {w}) for w in strong_starts):
         return True
-    if any(w in key.split() or w in key for w in strong_starts):
+    if "ээ" in tokens and bool(NUMBER_RE.search(line)):
         return True
-    # Точная короткая запись сохранённого счётчика часто выглядит как
-    # «Счётчик 1 1356» или «Участок 2 Счётчик 1 1356».
-    if _line_starts_with_action(line, {"счетчик", "счётчик"}) and bool(NUMBER_RE.search(line)):
-        return True
-    if ("счетчик" in key or "счётчик" in key) and len(list(NUMBER_RE.finditer(line))) >= 2:
+    if _is_energy_consumption_action(line):
         return True
     return False
 
@@ -153,12 +235,15 @@ def looks_like_accounting(text: str) -> bool:
     if not lines:
         return False
 
+    if not forced and _looks_like_rate_or_discussion_calc(clean):
+        return False
+
     # Явный префикс разрешает короткий ввод, но всё равно нужна цифра или команда отчёта.
     if forced:
         return bool(NUMBER_RE.search(clean) or _has_any(key, REPORT_WORDS))
 
     first_line = lines[0]
-    if _is_discussion_line(first_line):
+    if _is_discussion_line(first_line) or _should_ignore_line_before_parse(first_line, forced=False):
         return False
 
     # Отчёты обрабатывает отдельный модуль. Здесь пропускаем только рабочие факты.
@@ -168,7 +253,7 @@ def looks_like_accounting(text: str) -> bool:
     # Многострочный ввод принимается только если первая строка задаёт действие
     # вроде «Сделали сегодня:», а следующие строки содержат количества.
     if len(lines) >= 2 and _line_has_accounting_action(first_line):
-        return any(NUMBER_RE.search(line) for line in lines[1:])
+        return any(NUMBER_RE.search(line) and not _should_ignore_line_before_parse(line, forced=False) for line in lines[1:])
 
     return False
 
@@ -181,6 +266,8 @@ def detect_header_context(line: str) -> str | None:
         return "production"
     if _has_any(key, MATERIAL_IN_WORDS):
         return "material_in"
+    if _is_energy_consumption_action(line):
+        return "energy"
     if _has_any(key, MATERIAL_OUT_WORDS):
         return "material_out"
     if _has_any(key, STOCK_IN_WORDS):
@@ -259,8 +346,16 @@ def _parse_entity_quantity(chat_id: int, line: str, operation_type: str, area_id
         allowed = {"product"}
     name_part = _remove_intent_words(name_part, PRODUCTION_WORDS | MATERIAL_IN_WORDS | MATERIAL_OUT_WORDS | STOCK_IN_WORDS | STOCK_OUT_WORDS | ENERGY_WORDS | ASSEMBLY_WORDS | SHIPMENT_WORDS)
     name_part = _clean_entity_name_part(name_part)
-    if operation_type == "energy" and not name_part:
-        return ParsedOperation(operation_type, None, None, "Электроэнергия", quantity, unit if unit != "шт" else "кВт⋅ч", area_id, area_name, line, 0.8)
+    if operation_type == "energy" and unit == "шт":
+        unit = "кВт⋅ч"
+    if operation_type == "energy":
+        energy_key = normalize_key(name_part)
+        if (
+            not name_part
+            or energy_key in {"электроэнергии", "электроэнергия", "электричество", "свет", "квт", "квтч", "квт ч"}
+            or ("электроэнерг" in energy_key and len(energy_key.split()) <= 3)
+        ):
+            return ParsedOperation(operation_type, None, None, "Электроэнергия", quantity, unit, area_id, area_name, line, 0.8)
     match, variants = confident_match(chat_id, name_part, allowed_types=allowed)
     if match:
         final_operation = operation_type
@@ -307,11 +402,12 @@ def _parse_entity_quantity(chat_id: int, line: str, operation_type: str, area_id
 def parse_message(chat_id: int, group_chat_id: int, text: str) -> tuple[list[ParsedOperation], list[str]]:
     errors: list[str] = []
     operations: list[ParsedOperation] = []
+    original_text = text
     text, _forced = _strip_accounting_prefix(text)
     raw_lines = [l.strip() for l in text.splitlines() if l.strip()]
     if not raw_lines:
         return [], []
-    if not _forced and _is_discussion_line(raw_lines[0]):
+    if not _forced and (_is_discussion_line(raw_lines[0]) or _looks_like_rate_or_discussion_calc(original_text) or _should_ignore_line_before_parse(raw_lines[0], forced=False)):
         return [], []
 
     context: str | None = None
@@ -342,8 +438,7 @@ def parse_message(chat_id: int, group_chat_id: int, text: str) -> tuple[list[Par
                     current_area_id, current_area_name = a_id, a_name
                 continue
 
-        # line may contain several material items separated by commas
-        chunks = [c.strip() for c in line.split(",") if c.strip()] if "," in line else [line]
+        chunks = _safe_split_items(line)
         for chunk in chunks:
             chunk_header = detect_header_context(chunk)
             local_context = chunk_header or context
@@ -353,8 +448,14 @@ def parse_message(chat_id: int, group_chat_id: int, text: str) -> tuple[list[Par
                 # Без явного действия строка принимается только внутри ранее заданного
                 # контекста. Это защищает обычную переписку от случайных ответов бота.
                 continue
-            if local_context == "energy" and not _has_strong_energy_action(chunk) and not context == "energy":
+            if local_context == "energy" and not (_forced or _has_strong_energy_action(chunk) or _is_energy_consumption_action(chunk)):
                 continue
+            if not _forced and not _line_has_accounting_action(chunk):
+                # Внутри заголовка производства/сырья/склада строки могут быть короткими
+                # названиями вроде «Деталь 1 300». Но расчёты и строки, начинающиеся
+                # с числа, всё равно не считаем рабочим вводом.
+                if _starts_with_number_or_formula(chunk) or _has_math_or_rate_marker(chunk):
+                    continue
             if not NUMBER_RE.search(chunk):
                 continue
             a_id, a_name, cleaned = _detect_area(chat_id, chunk, current_area_id, current_area_name, group_chat_id)

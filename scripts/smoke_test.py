@@ -62,7 +62,8 @@ def main() -> None:
     assert looks_like_accounting("Изготовили Деталь 1 10")
     assert not looks_like_accounting("Нужно завтра сделать Комплектующая 1")
     assert looks_like_accounting("Потрачено Сырьё 1 2 кг")
-    assert looks_like_accounting("Свет 1555")
+    assert not looks_like_accounting("Свет 1555")
+    assert looks_like_accounting("Ээ 1555")
     assert looks_like_accounting("Оприходовали Позиция склада 1 4")
     ops, errors = parse_message(chat_id, chat_id, "Производство Участок 1\nДеталь 1 300\nДеталь 2 600\nРасход Сырьё 1 25 кг")
     assert len(ops) == 3, ops
@@ -75,9 +76,10 @@ def main() -> None:
     assert not errors3
     ops4, errors4 = parse_message(chat_id, chat_id, "Уход Позиция склада 1 3")
     assert len(ops4) == 1 and ops4[0].operation_type == "stock_out", ops4
-    ops5, errors5 = parse_message(chat_id, chat_id, "Счётчик 1 1356.7")
+    ops5, errors5 = parse_message(chat_id, chat_id, "Показание Счётчик 1 1356.7")
     assert len(ops5) == 1 and ops5[0].area_id == area.id, ops5
     assert not errors5, errors5
+    assert not looks_like_accounting("Счётчик 1 1356.7")
 
     # Складская позиция может быть общей: даже в группе участка она остаётся без участка.
     stock_item = repo.list_entities(chat_id, {"stock_item"})[0]
@@ -97,7 +99,7 @@ def main() -> None:
     assert ok
     area2 = [a for a in repo.list_areas(chat_id) if a.name == "Участок 2"][0]
     repo.bind_meter_to_areas(chat_id, meter.id, [area.id, area2.id])
-    ops8, errors8 = parse_message(chat_id, chat_id, "Счётчик 1 1400")
+    ops8, errors8 = parse_message(chat_id, chat_id, "Показание Счётчик 1 1400")
     assert len(ops8) == 1 and ops8[0].area_id == area.id, ops8
     assert not errors8, errors8
 

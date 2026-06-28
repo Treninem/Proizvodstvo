@@ -106,7 +106,7 @@ def main() -> None:
 
     _apply(group_a, group_a, user_submit, "Сделали Комплектующая 1 40\nКомплектующая 2 30")
     _apply(group_a, group_a, user_submit, "Привезли\nУчасток 1 Сырьё 1 500 кг\nСырьё 2 100 кг")
-    _apply(group_a, group_b, user_submit, "Участок 2 Счётчик 1 1550.5")
+    _apply(group_a, group_b, user_submit, "Показание Участок 2 Счётчик 1 1550.5")
     _apply(group_a, group_a, user_submit, "Собрано Изделие 1 5")
     _apply(group_a, group_a, user_submit, "Отправлено Изделие 1 2")
 
