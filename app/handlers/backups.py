@@ -4,48 +4,32 @@ from aiogram import Router
 from aiogram.types import FSInputFile, Message
 
 from ..access import can_view_reports, is_global_owner
-from ..services.normalize import normalize_key
+from ..services.command_intents import backup_request_kind
 from ..services import backups
 
 router = Router()
 
-_BACKUP_WORDS = {"копия", "копию", "бэкап", "backup", "резерв"}
-_FULL_WORDS = {"полная", "полный", "полностью", "база", "базы", "вся"}
-_LIST_WORDS = {"список", "последние", "история", "показать"}
-
-
-def _looks_like_backup(text: str) -> bool:
-    key = normalize_key(text)
-    return any(word in key for word in _BACKUP_WORDS)
-
-
-def _wants_full(text: str) -> bool:
-    key = normalize_key(text)
-    return any(word in key for word in _FULL_WORDS)
-
-
-def _wants_list(text: str) -> bool:
-    key = normalize_key(text)
-    return any(word in key for word in _LIST_WORDS)
-
 
 async def try_handle_backup(message: Message) -> bool:
-    text = message.text or ""
-    if not _looks_like_backup(text):
+    kind = backup_request_kind(message.text or "")
+    if kind is None:
         return False
-    if _wants_list(text):
+
+    if kind == "list":
         if not await can_view_reports(message.bot, message.chat, message.from_user, need_export=True):
             await message.answer("Этот раздел доступен только участнику с подходящей должностью.")
             return True
         await message.answer(backups.format_backup_list())
         return True
-    if _wants_full(text):
+
+    if kind == "full":
         if not message.from_user or not is_global_owner(message.from_user.id):
             await message.answer("Команда не распознана.")
             return True
         path = backups.create_full_backup()
         await message.answer_document(FSInputFile(path), caption="Полная копия базы готова.")
         return True
+
     if not await can_view_reports(message.bot, message.chat, message.from_user, need_export=True):
         await message.answer("Этот раздел доступен только участнику с подходящей должностью.")
         return True

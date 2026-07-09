@@ -28,9 +28,22 @@ def looks_like_inventory_adjustment(text: str) -> bool:
     key = normalize_key(text)
     if not key or not NUMBER_RE.search(text):
         return False
-    if any(word in key for word in _INVENTORY_WORDS):
-        return True
-    return "остаток" in key and "остатки" not in key and bool(NUMBER_RE.search(text))
+
+    # Инвентаризация меняет фактический остаток, поэтому двусмысленное слово
+    # «остаток» внутри обычной фразы не является командой. Нужна явная рабочая
+    # формулировка в начале сообщения.
+    explicit_starts = {
+        "инвентаризация",
+        "сверка",
+        "пересчет",
+        "пересчёт",
+        "факт",
+        "фактически",
+        "установить остаток",
+        "новый остаток",
+        "остаток факт",
+    }
+    return any(key == marker or key.startswith(marker + " ") for marker in explicit_starts)
 
 
 def _remove_inventory_words(text: str) -> str:
