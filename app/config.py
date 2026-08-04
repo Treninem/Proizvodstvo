@@ -7,7 +7,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+_ROOT = Path(__file__).resolve().parents[1]
+# Переменные панели хостинга имеют наивысший приоритет.
+# Локальный .env используется при наличии, runtime.defaults.env — запасные значения.
+load_dotenv(_ROOT / ".env", override=False)
+load_dotenv(_ROOT / "runtime.defaults.env", override=False)
 
 _TOKEN_PLACEHOLDERS = {"", "PASTE_NEW_TOKEN_HERE", "PUT_TELEGRAM_BOT_TOKEN_HERE"}
 _TOKEN_RE = re.compile(r"^\d{6,14}:[A-Za-z0-9_-]{20,}$")
