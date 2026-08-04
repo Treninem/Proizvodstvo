@@ -5,7 +5,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 
 from ..access import is_global_owner
 from ..services import repository as repo
@@ -38,7 +38,7 @@ def _owner_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
         rows.append([
             InlineKeyboardButton(
                 text="Открыть Mini App",
-                url=settings.public_base_url.rstrip("/") + "/mini",
+                web_app=WebAppInfo(url=settings.public_base_url.rstrip("/") + "/mini"),
             )
         ])
     rows.append([InlineKeyboardButton(text="Обновить", callback_data="owner:panel")])

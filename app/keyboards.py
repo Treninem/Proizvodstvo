@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 from .config import settings
 
@@ -50,7 +50,10 @@ def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Работники", callback_data="menu:workers")],
         ])
     if settings.public_base_url:
-        rows.append([InlineKeyboardButton(text="Открыть рабочую панель", url=settings.public_base_url.rstrip("/") + "/mini")])
+        rows.append([InlineKeyboardButton(
+            text="Открыть рабочую панель",
+            web_app=WebAppInfo(url=settings.public_base_url.rstrip("/") + "/mini"),
+        )])
     rows.append([InlineKeyboardButton(text="Как пользоваться", callback_data="menu:help")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
