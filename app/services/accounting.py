@@ -83,24 +83,39 @@ def _apply_inventory_effect(chat_id: int, op: dict[str, Any]) -> None:
         return
     qty = float(quantity)
     if operation_type == "production" and entity_type and entity_id:
-        _inventory_delta(chat_id, None, entity_type, int(entity_id), unit, qty)
+        # Выпуск теперь попадает в остатки выбранной площадки.
+        # Если площадка не указана, сохраняется прежнее общее поведение.
+        _inventory_delta(chat_id, area_id, entity_type, int(entity_id), unit, qty)
     elif operation_type == "material_in" and entity_type == "material" and entity_id:
         _inventory_delta(chat_id, area_id, "material", int(entity_id), unit, qty)
     elif operation_type == "material_out" and entity_type == "material" and entity_id:
         _inventory_delta(chat_id, area_id, "material", int(entity_id), unit, -qty)
     elif operation_type == "assembly" and entity_type == "product" and entity_id:
-        _inventory_delta(chat_id, None, "product", int(entity_id), unit, qty)
+        # Сборка хранится там, где её указали, а комплектующие списываются
+        # с этой же площадки. Без площадки остаётся общий склад.
+        _inventory_delta(chat_id, area_id, "product", int(entity_id), unit, qty)
         for comp in repo.list_product_components(int(entity_id)):
             comp_id = int(comp["component_id"])
             need = float(comp["quantity"] or 0) * qty
             comp_unit = comp.get("default_unit") or "шт"
-            _inventory_delta(chat_id, None, "component", comp_id, comp_unit, -need)
-    elif operation_type == "shipment" and entity_type == "product" and entity_id:
-        _inventory_delta(chat_id, None, "product", int(entity_id), unit, -qty)
+            _inventory_delta(chat_id, area_id, "component", comp_id, comp_unit, -need)
+    elif operation_type in {"shipment", "shipment_client", "shipment_fulfillment"} and entity_type == "product" and entity_id:
+        _inventory_delta(chat_id, area_id, "product", int(entity_id), unit, -qty)
+    elif operation_type == "return" and entity_type == "product" and entity_id:
+        _inventory_delta(chat_id, area_id, "product", int(entity_id), unit, qty)
+    elif operation_type in {"movement", "transfer_to_assembly"} and entity_type and entity_id:
+        from_area_id = op.get("from_area_id")
+        to_area_id = op.get("to_area_id") or area_id
+        if from_area_id:
+            _inventory_delta(chat_id, int(from_area_id), str(entity_type), int(entity_id), unit, -qty)
+        if to_area_id:
+            _inventory_delta(chat_id, int(to_area_id), str(entity_type), int(entity_id), unit, qty)
     elif operation_type == "stock_in" and entity_type == "stock_item" and entity_id:
         _inventory_delta(chat_id, area_id, "stock_item", int(entity_id), unit, qty)
     elif operation_type == "stock_out" and entity_type == "stock_item" and entity_id:
         _inventory_delta(chat_id, area_id, "stock_item", int(entity_id), unit, -qty)
+    elif operation_type == "write_off" and entity_type and entity_id:
+        _inventory_delta(chat_id, area_id, str(entity_type), int(entity_id), unit, -qty)
     elif operation_type == "inventory_adjust" and entity_type and entity_id:
         # Количество в такой записи — это разница между фактическим остатком
         # и тем, что было в базе до сверки.
@@ -111,8 +126,8 @@ def _insert_operation(chat_id: int, group_chat_id: int, user_id: int, op: dict[s
     with db.connect() as conn:
         cur = conn.execute(
             """
-            INSERT INTO operations(chat_id,group_chat_id,area_id,user_id,operation_type,entity_type,entity_id,quantity,unit,raw_text)
-            VALUES(?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO operations(chat_id,group_chat_id,area_id,user_id,operation_type,entity_type,entity_id,quantity,unit,raw_text,from_area_id,to_area_id,destination_type,storage_place)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 chat_id,
@@ -125,11 +140,23 @@ def _insert_operation(chat_id: int, group_chat_id: int, user_id: int, op: dict[s
                 op.get("quantity"),
                 op.get("unit") or "шт",
                 raw_text,
+                op.get("from_area_id"),
+                op.get("to_area_id"),
+                op.get("destination_type") or "",
+                op.get("storage_place") or "",
             ),
         )
         conn.commit()
         operation_id = int(cur.lastrowid)
     _apply_inventory_effect(chat_id, op)
+    try:
+        from . import stock_risk
+        if not op.get("skip_risk_observation"):
+            source = "mini" if str(raw_text or "").strip().lower().startswith("mini app") else "bot"
+            stock_risk.record_operation_observation(chat_id, user_id, op, operation_id, raw_text, source=source)
+    except Exception:
+        # Учётная операция важнее аналитики: сбой расчёта риска не должен потерять запись.
+        pass
     return operation_id
 
 
@@ -151,9 +178,22 @@ def apply_operations(chat_id: int, group_chat_id: int, user_id: int, operations:
     for op in operations:
         if op.get("needs_attention") or op.get("quantity") is None:
             continue
+        department_allowed = repo.department_operation_allowed(
+            chat_id, user_id, str(op.get("operation_type") or ""), "submit",
+            str(op.get("entity_type") or "") or None,
+            int(op.get("entity_id")) if op.get("entity_id") else None,
+        )
+        if department_allowed is False:
+            continue
         _insert_operation(chat_id, group_chat_id, user_id, op, raw_text)
         _remember_confirmed_phrase(group_chat_id, op)
         saved += 1
+        try:
+            from . import stock_risk
+            stock_risk.evaluate_related_rules(chat_id, str(op.get("entity_type") or ""), int(op.get("entity_id") or 0), op.get("area_id"))
+        except Exception:
+            # Тревоги пересчитает планировщик; сохранение производства не блокируем.
+            pass
     return saved
 
 
@@ -169,6 +209,7 @@ def format_summary(operations: list[dict[str, Any]], errors: list[str] | None = 
         "shipment": "Отгрузка",
         "stock_in": "Склад: приход",
         "stock_out": "Склад: уход",
+        "write_off": "Списание",
         "inventory_adjust": "Инвентаризация",
     }
     for op in operations:
@@ -178,7 +219,7 @@ def format_summary(operations: list[dict[str, Any]], errors: list[str] | None = 
         unit = op.get("unit") or ""
         area = op.get("area_name")
         line = f"• {name} — {format_amount(qty)} {unit}" if isinstance(qty, (int, float)) else f"• {name}"
-        if area and op.get("operation_type") in {"material_in", "material_out", "energy", "stock_in", "stock_out"}:
+        if area and op.get("operation_type") in {"production", "material_in", "material_out", "energy", "assembly", "shipment", "shipment_client", "shipment_fulfillment", "return", "stock_in", "stock_out", "write_off"}:
             line += f" · {area}"
         if op.get("needs_attention"):
             line += " · нужно уточнить"
@@ -202,6 +243,10 @@ def _operation_to_dict(row: dict[str, Any]) -> dict[str, Any]:
         "quantity": row.get("quantity"),
         "unit": row.get("unit") or "шт",
         "area_id": row.get("area_id"),
+        "from_area_id": row.get("from_area_id"),
+        "to_area_id": row.get("to_area_id"),
+        "destination_type": row.get("destination_type") or "",
+        "storage_place": row.get("storage_place") or "",
     }
 
 
@@ -245,6 +290,7 @@ def format_recent_operations(rows: list[dict[str, Any]]) -> str:
         "shipment": "Отгрузка",
         "stock_in": "Склад: приход",
         "stock_out": "Склад: уход",
+        "write_off": "Списание",
         "inventory_adjust": "Инвентаризация",
     }
     lines = ["Последние записи:"]

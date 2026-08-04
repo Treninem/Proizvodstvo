@@ -8,7 +8,8 @@ from aiogram.types import Message
 
 from .config import settings
 from .db import init_db
-from .handlers import start, intake, setup, groups, owner, accounts, corrections, reports, backups, inventory, onboarding, chats
+from .services import report_scheduler
+from .handlers import start, intake, setup, groups, owner, accounts, corrections, reports, backups, inventory, onboarding, chats, risks
 from .handlers.groups import try_handle_group_command
 from .handlers.accounts import try_handle_account_command
 from .handlers.setup import try_handle_wizard_message, try_handle_setup_command
@@ -17,6 +18,7 @@ from .handlers.reports import try_handle_report
 from .handlers.corrections import try_handle_correction_command
 from .handlers.backups import try_handle_backup
 from .handlers.inventory import try_handle_inventory_adjustment
+from .handlers.risks import try_handle_risk_command
 from .handlers.onboarding import try_handle_onboarding
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
@@ -38,6 +40,7 @@ async def all_text(message: Message) -> None:
         try_handle_setup_command,
         try_handle_correction_command,
         try_handle_inventory_adjustment,
+        try_handle_risk_command,
         try_handle_report,
         try_handle_backup,
         try_handle_intake,
@@ -51,10 +54,7 @@ async def all_text(message: Message) -> None:
             return
 
 
-async def main() -> None:
-    settings.require_ready()
-    init_db()
-    bot = Bot(settings.bot_token)
+def build_dispatcher() -> Dispatcher:
     dp = Dispatcher()
     dp.include_router(start.router)
     dp.include_router(setup.router)
@@ -67,9 +67,33 @@ async def main() -> None:
     dp.include_router(reports.router)
     dp.include_router(backups.router)
     dp.include_router(onboarding.router)
+    dp.include_router(risks.router)
     dp.include_router(router)
+    return dp
+
+
+async def run_bot() -> None:
+    bot = Bot(settings.bot_token)
+    dp = build_dispatcher()
     log.info("Бот запущен")
-    await dp.start_polling(bot)
+    scheduler_task = asyncio.create_task(report_scheduler.schedule_loop(bot))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        scheduler_task.cancel()
+        try:
+            await scheduler_task
+        except asyncio.CancelledError:
+            pass
+        await bot.session.close()
+
+
+async def main() -> None:
+    settings.require_ready()
+    init_db()
+    if not settings.bot_enabled:
+        raise RuntimeError("BOT_ENABLED=false: используйте общий запуск app.runtime для Mini App без бота.")
+    await run_bot()
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ OPERATION_LABELS: dict[str, str] = {
     "shipment": "Отгрузка",
     "stock_in": "Склад: приход",
     "stock_out": "Склад: уход",
+    "write_off": "Списание",
     "inventory_adjust": "Инвентаризация",
 }
 
@@ -1862,4 +1863,340 @@ def create_multi_pdf_report(
                 story.append(table)
             story.append(Spacer(1, 8))
     doc.build(story)
+    return path
+
+# --- Отчёты по площадкам и местам хранения step64 ---
+
+OPERATION_LABELS.update({
+    "shipment_client": "Отгрузка клиенту",
+    "shipment_fulfillment": "Отгрузка на фулфилмент",
+    "return": "Возврат",
+    "movement": "Перемещение",
+    "transfer_to_assembly": "Передача на сборку",
+})
+
+_legacy_report_sections_step63 = report_sections
+
+
+def _report_area_names(chat_id: int, area_ids: set[int] | None) -> str:
+    if area_ids is None:
+        return "все площадки"
+    if not area_ids:
+        return "нет доступных площадок"
+    marks = ",".join("?" for _ in area_ids)
+    rows = db.fetchall(
+        f"SELECT name FROM areas WHERE chat_id=? AND id IN ({marks}) AND is_archived=0 ORDER BY name",
+        (chat_id, *sorted(area_ids)),
+    )
+    names = [str(row["name"]) for row in rows]
+    return ", ".join(names) if names else "нет доступных площадок"
+
+
+def _report_area_filter(columns: list[str], area_ids: set[int] | None) -> tuple[str, tuple[object, ...]]:
+    if area_ids is None:
+        return "", ()
+    if not area_ids:
+        return " AND 1=0", ()
+    ids = sorted(int(value) for value in area_ids)
+    marks = ",".join("?" for _ in ids)
+    checks = [f"{column} IN ({marks})" for column in columns]
+    params: list[object] = []
+    for _column in columns:
+        params.extend(ids)
+    return f" AND ({' OR '.join(checks)})", tuple(params)
+
+
+def _area_inventory_report_table(chat_id: int, area_ids: set[int] | None) -> list[list[object]]:
+    clause, params = _report_area_filter(["i.area_id"], area_ids)
+    rows = db.fetchall(
+        f"""
+        SELECT COALESCE(a.name,'Без площадки') AS area_name,i.entity_type,e.name AS entity_name,
+               COALESCE(SUM(i.quantity),0) AS quantity,i.unit
+        FROM inventory i
+        LEFT JOIN areas a ON a.id=i.area_id
+        LEFT JOIN entities e ON e.id=i.entity_id
+        WHERE i.chat_id=? AND e.is_archived=0 {clause}
+        GROUP BY i.area_id,a.name,i.entity_type,i.entity_id,e.name,i.unit
+        HAVING ABS(COALESCE(SUM(i.quantity),0))>0.000001
+        ORDER BY area_name,i.entity_type,e.name
+        """,
+        (chat_id, *params),
+    )
+    return [[
+        row["area_name"] or "Без площадки",
+        ENTITY_LABELS.get(str(row["entity_type"] or ""), str(row["entity_type"] or "")),
+        row["entity_name"] or "",
+        float(row["quantity"] or 0),
+        row["unit"] or "",
+    ] for row in rows]
+
+
+def _area_operation_totals_report_table(chat_id: int, period: PeriodFilter, area_ids: set[int] | None) -> list[list[object]]:
+    clause, params = _report_area_filter(["o.area_id", "o.from_area_id", "o.to_area_id"], area_ids)
+    rows = db.fetchall(
+        f"""
+        SELECT COALESCE(a.name,ta.name,fa.name,'Без площадки') AS area_name,
+               o.operation_type,o.entity_type,e.name AS entity_name,o.unit,
+               COALESCE(SUM(o.quantity),0) AS quantity,COUNT(o.id) AS rows_count
+        FROM operations o
+        LEFT JOIN entities e ON e.id=o.entity_id
+        LEFT JOIN areas a ON a.id=o.area_id
+        LEFT JOIN areas fa ON fa.id=o.from_area_id
+        LEFT JOIN areas ta ON ta.id=o.to_area_id
+        WHERE o.chat_id=? AND {period.where_sql} {clause}
+        GROUP BY area_name,o.operation_type,o.entity_type,o.entity_id,e.name,o.unit
+        ORDER BY area_name,o.operation_type,e.name
+        """,
+        (chat_id, *period.params, *params),
+    )
+    return [[
+        row["area_name"] or "Без площадки",
+        OPERATION_LABELS.get(str(row["operation_type"] or ""), str(row["operation_type"] or "")),
+        ENTITY_LABELS.get(str(row["entity_type"] or ""), str(row["entity_type"] or "")),
+        row["entity_name"] or "",
+        float(row["quantity"] or 0),
+        row["unit"] or "",
+        int(row["rows_count"] or 0),
+    ] for row in rows]
+
+
+def _area_movement_report_table(chat_id: int, period: PeriodFilter, area_ids: set[int] | None) -> list[list[object]]:
+    clause, params = _report_area_filter(["o.from_area_id", "o.to_area_id"], area_ids)
+    rows = db.fetchall(
+        f"""
+        SELECT o.created_at,fa.name AS from_area,ta.name AS to_area,o.entity_type,e.name AS entity_name,
+               o.quantity,o.unit,COALESCE(NULLIF(w.display_name,''),CAST(o.user_id AS TEXT)) AS worker_name
+        FROM operations o
+        LEFT JOIN areas fa ON fa.id=o.from_area_id
+        LEFT JOIN areas ta ON ta.id=o.to_area_id
+        LEFT JOIN entities e ON e.id=o.entity_id
+        LEFT JOIN workers w ON w.chat_id=o.chat_id AND w.user_id=o.user_id AND w.is_active=1
+        WHERE o.chat_id=? AND {period.where_sql}
+          AND o.operation_type IN ('movement','transfer_to_assembly') {clause}
+        ORDER BY o.created_at DESC
+        """,
+        (chat_id, *period.params, *params),
+    )
+    return [[
+        row["created_at"] or "",
+        row["from_area"] or "Без площадки",
+        row["to_area"] or "Без площадки",
+        ENTITY_LABELS.get(str(row["entity_type"] or ""), str(row["entity_type"] or "")),
+        row["entity_name"] or "",
+        float(row["quantity"] or 0),
+        row["unit"] or "",
+        row["worker_name"] or "",
+    ] for row in rows]
+
+
+def _area_destination_report_table(chat_id: int, period: PeriodFilter, area_ids: set[int] | None) -> list[list[object]]:
+    clause, params = _report_area_filter(["o.area_id", "o.from_area_id", "o.to_area_id"], area_ids)
+    rows = db.fetchall(
+        f"""
+        SELECT o.created_at,o.operation_type,COALESCE(a.name,ta.name,fa.name,'Без площадки') AS area_name,
+               e.name AS entity_name,o.quantity,o.unit,o.destination_type,o.storage_place,
+               COALESCE(NULLIF(w.display_name,''),CAST(o.user_id AS TEXT)) AS worker_name
+        FROM operations o
+        LEFT JOIN areas a ON a.id=o.area_id
+        LEFT JOIN areas fa ON fa.id=o.from_area_id
+        LEFT JOIN areas ta ON ta.id=o.to_area_id
+        LEFT JOIN entities e ON e.id=o.entity_id
+        LEFT JOIN workers w ON w.chat_id=o.chat_id AND w.user_id=o.user_id AND w.is_active=1
+        WHERE o.chat_id=? AND {period.where_sql} {clause}
+          AND (COALESCE(o.storage_place,'')<>'' OR COALESCE(o.destination_type,'')<>'')
+        ORDER BY o.created_at DESC
+        """,
+        (chat_id, *period.params, *params),
+    )
+    destination_labels = {
+        "storage": "Место хранения",
+        "client": "Клиент",
+        "fulfillment": "Фулфилмент",
+        "shipment_client": "Клиент",
+        "shipment_fulfillment": "Фулфилмент",
+        "other": "Другое",
+    }
+    return [[
+        row["created_at"] or "",
+        OPERATION_LABELS.get(str(row["operation_type"] or ""), str(row["operation_type"] or "")),
+        row["area_name"] or "Без площадки",
+        row["entity_name"] or "",
+        float(row["quantity"] or 0),
+        row["unit"] or "",
+        destination_labels.get(str(row["destination_type"] or ""), str(row["destination_type"] or "")),
+        row["storage_place"] or "",
+        row["worker_name"] or "",
+    ] for row in rows]
+
+
+def _area_report_sections(chat_id: int, request_text: str, area_ids: set[int] | None) -> list[tuple[str, list[str], list[list[object]]]]:
+    period = _period_for_export(request_text)
+    return [
+        ("Остатки по площадкам", ["Площадка", "Тип", "Название", "Количество", "Ед."], _area_inventory_report_table(chat_id, area_ids)),
+        ("Итоги по площадкам", ["Площадка", "Операция", "Тип", "Название", "Количество", "Ед.", "Строк"], _area_operation_totals_report_table(chat_id, period, area_ids)),
+        ("Перемещения площадок", ["Дата", "Откуда", "Куда", "Тип", "Название", "Количество", "Ед.", "Работник"], _area_movement_report_table(chat_id, period, area_ids)),
+        ("Места и направления", ["Дата", "Операция", "Площадка", "Название", "Количество", "Ед.", "Назначение", "Место", "Работник"], _area_destination_report_table(chat_id, period, area_ids)),
+    ]
+
+
+def report_sections(
+    chat_id: int,
+    request_text: str = "отчёт",
+    user_id: int | None = None,
+    selected: dict[str, bool] | None = None,
+    area_ids: set[int] | None = None,
+) -> list[tuple[str, list[str], list[list[object]]]]:
+    if area_ids is not None:
+        return _area_report_sections(chat_id, request_text, area_ids)
+    return _legacy_report_sections_step63(chat_id, request_text, user_id=user_id, selected=selected)
+
+
+def create_xlsx_report(
+    chat_id: int,
+    request_text: str = "отчёт",
+    user_id: int | None = None,
+    area_ids: set[int] | None = None,
+) -> Path:
+    period = _date_bounds_for_text(request_text)
+    if period.error:
+        raise ValueError(period.error)
+    wb = Workbook()
+    sections = report_sections(chat_id, request_text, user_id=user_id, selected=_full_export_selected(), area_ids=area_ids)
+    if area_ids is None:
+        sections.extend(_area_report_sections(chat_id, request_text, None))
+    if not sections:
+        sections = [("Отчёт", ["Раздел", "Состояние"], [["Отчёт", "Нет данных"]])]
+    summary = wb.active
+    summary.title = "Отчёт"
+    max_width = max((len(header) for _, header, _ in sections), default=2)
+    scope_note = _report_area_names(chat_id, area_ids)
+    summary.cell(row=1, column=1, value=f"Производственный отчёт {period.title} · {scope_note}")
+    if max_width > 1:
+        summary.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_width)
+    header_rows: set[int] = set()
+    section_rows: set[int] = set()
+    current_row = 3
+    for title, header, rows in sections:
+        section_row, header_row, current_row = _append_report_section(summary, title, header, rows, current_row)
+        section_rows.add(section_row)
+        header_rows.add(header_row)
+    _style_used_range(summary, header_rows=header_rows, section_rows=section_rows)
+    used_names = {summary.title}
+    for title, header, rows in sections:
+        base = title[:31] or "Раздел"
+        sheet_name = base
+        index = 2
+        while sheet_name in used_names:
+            suffix = f" {index}"
+            sheet_name = (base[:31 - len(suffix)] + suffix)[:31]
+            index += 1
+        used_names.add(sheet_name)
+        ws = wb.create_sheet(sheet_name)
+        ws.append(header)
+        for row in rows or [_empty_row(len(header))]:
+            ws.append(row)
+        for col_index, header_name in enumerate(header, start=1):
+            number_format = _number_format_for_header(str(header_name))
+            for cell in ws.iter_cols(min_col=col_index, max_col=col_index, min_row=2, max_row=ws.max_row):
+                for item in cell:
+                    item.number_format = number_format
+        _style_sheet(ws)
+    filename = f"uchet_{_safe_name(period.title)}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+    path = reports_dir() / filename
+    wb.save(path)
+    return path
+
+
+def create_pdf_report(
+    chat_id: int,
+    request_text: str = "отчёт",
+    user_id: int | None = None,
+    area_ids: set[int] | None = None,
+) -> Path:
+    period = _date_bounds_for_text(request_text)
+    if period.error:
+        raise ValueError(period.error)
+    font_name = _register_pdf_font()
+    filename = f"uchet_{_safe_name(period.title)}_{datetime.now():%Y%m%d_%H%M%S}.pdf"
+    path = reports_dir() / filename
+    doc = SimpleDocTemplate(str(path), pagesize=landscape(A3), rightMargin=8*mm, leftMargin=8*mm, topMargin=8*mm, bottomMargin=8*mm)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("TitleRuReadable64", parent=styles["Title"], fontName=font_name, fontSize=16, leading=20)
+    section_style = ParagraphStyle("SectionRuReadable64", parent=styles["Heading2"], fontName=font_name, fontSize=11, leading=14, spaceBefore=6, spaceAfter=4)
+    small_style = ParagraphStyle("SmallRuReadable64", parent=styles["Normal"], fontName=font_name, fontSize=8, leading=10)
+    scope_note = _report_area_names(chat_id, area_ids)
+    story = [Paragraph(f"Производственный отчёт {period.title}", title_style), Paragraph(f"Площадки: {scope_note}", small_style), Spacer(1, 6)]
+    sections = report_sections(chat_id, request_text, user_id=user_id, selected=_full_export_selected(), area_ids=area_ids)
+    if area_ids is None:
+        sections.extend(_area_report_sections(chat_id, request_text, None))
+    if not sections:
+        sections = [("Отчёт", ["Раздел", "Состояние"], [["Отчёт", "Нет данных"]])]
+    for section_index, (title, header, rows) in enumerate(sections):
+        if section_index and title in {"По датам", "Журнал", "Перемещения площадок"}:
+            story.append(PageBreak())
+        story.append(Paragraph(title, section_style))
+        if title == "По датам" and len(header) > 12:
+            story.append(Paragraph("Широкая таблица разделена на удобные части.", small_style))
+            story.append(Spacer(1, 3))
+        for table_index, table in enumerate(_pdf_section_tables(title, header, rows or [_empty_row(len(header))], font_name)):
+            if table_index:
+                story.append(Spacer(1, 6))
+            story.append(table)
+        story.append(Spacer(1, 8))
+    doc.build(story)
+    return path
+
+
+# --- Выгрузка посещаемости step68 ---
+
+def create_attendance_xlsx_report(
+    chat_id: int, start_date: str, end_date: str, user_id: int | None = None, area_id: int | None = None
+) -> Path:
+    from . import repository as repo
+    summary = repo.attendance_summary(chat_id, start_date, end_date, user_id, area_id)
+    details = repo.attendance_detail_rows(chat_id, start_date, end_date, user_id, area_id)
+    path = reports_dir() / f"poseschaemost_{_safe_name(start_date)}_{_safe_name(end_date)}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+    wb = Workbook()
+    ws = wb.active; ws.title = "Сводка"
+    headers=["Сотрудник","Плановых смен","С фактом","Пропущено","Фактических смен","Часов","Опозданий","Минут опоздания","Ранних уходов","Минут раннего ухода","Минут переработки"]
+    ws.append(headers)
+    for item in summary:
+        ws.append([item["worker_name"],item["planned_shifts"],item["completed_plans"],item["missed_shifts"],item["actual_shifts"],round(item["worked_minutes"]/60,2),item["late_count"],round(item["late_minutes"],1),item["early_departure_count"],round(item["early_departure_minutes"],1),round(item["overtime_minutes"],1)])
+    ws.freeze_panes="A2"; ws.auto_filter.ref=ws.dimensions
+    for cell in ws[1]: cell.font=Font(bold=True)
+    widths=[28,15,12,12,17,11,12,18,15,22,20]
+    for idx,width in enumerate(widths,1): ws.column_dimensions[get_column_letter(idx)].width=width
+    detail=wb.create_sheet("Смены")
+    detail_headers=["Сотрудник","Площадка","План начала","План окончания","Факт начала","Факт окончания","Статус","Начало, мин","Окончание, мин","Пропуск"]
+    detail.append(detail_headers)
+    for row in details:
+        detail.append([row.get("worker_name"),row.get("area_name") or "",row.get("planned_start"),row.get("planned_end"),row.get("started_at") or "",row.get("ended_at") or "",row.get("plan_status"),row.get("start_deviation_minutes"),row.get("end_deviation_minutes"),"Да" if row.get("missed") else "Нет"])
+    detail.freeze_panes="A2"; detail.auto_filter.ref=detail.dimensions
+    for cell in detail[1]: cell.font=Font(bold=True)
+    for idx,width in enumerate([28,24,20,20,20,20,16,14,16,10],1): detail.column_dimensions[get_column_letter(idx)].width=width
+    wb.save(path)
+    return path
+
+
+def create_attendance_pdf_report(
+    chat_id: int, start_date: str, end_date: str, user_id: int | None = None, area_id: int | None = None
+) -> Path:
+    from . import repository as repo
+    font_name=_register_pdf_font()
+    summary=repo.attendance_summary(chat_id,start_date,end_date,user_id,area_id)
+    details=repo.attendance_detail_rows(chat_id,start_date,end_date,user_id,area_id)
+    path=reports_dir()/f"poseschaemost_{_safe_name(start_date)}_{_safe_name(end_date)}_{datetime.now():%Y%m%d_%H%M%S}.pdf"
+    doc=SimpleDocTemplate(str(path),pagesize=landscape(A3),rightMargin=8*mm,leftMargin=8*mm,topMargin=8*mm,bottomMargin=8*mm)
+    styles=getSampleStyleSheet(); title=ParagraphStyle("AttendanceTitle",parent=styles["Title"],fontName=font_name,fontSize=16,leading=20)
+    story=[Paragraph(f"Посещаемость с {start_date} по {end_date}",title),Spacer(1,6)]
+    data=[["Сотрудник","План","С фактом","Пропуск","Факт. смен","Часы","Опоздания","Ранние уходы","Переработка, мин"]]
+    for item in summary:
+        data.append([str(item["worker_name"]),str(item["planned_shifts"]),str(item["completed_plans"]),str(item["missed_shifts"]),str(item["actual_shifts"]),_fmt_number(item["worked_minutes"]/60,2),f"{item['late_count']} / {_fmt_number(item['late_minutes'],1)} мин",f"{item['early_departure_count']} / {_fmt_number(item['early_departure_minutes'],1)} мин",_fmt_number(item["overtime_minutes"],1)])
+    if len(data)==1: data.append(["Данных нет","","","","","","","",""])
+    story.append(_pdf_table(data,font_name)); story.append(PageBreak())
+    detail_data=[["Сотрудник","Площадка","План начала","План окончания","Факт начала","Факт окончания","Начало, мин","Окончание, мин","Пропуск"]]
+    for row in details[:500]:
+        detail_data.append([str(row.get("worker_name") or ""),str(row.get("area_name") or ""),str(row.get("planned_start") or ""),str(row.get("planned_end") or ""),str(row.get("started_at") or ""),str(row.get("ended_at") or ""),_fmt_number(row.get("start_deviation_minutes"),1),_fmt_number(row.get("end_deviation_minutes"),1),"Да" if row.get("missed") else "Нет"])
+    if len(detail_data)==1: detail_data.append(["Данных нет","","","","","","","",""])
+    story.append(_pdf_table(detail_data,font_name)); doc.build(story)
     return path

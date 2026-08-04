@@ -51,13 +51,13 @@ async def stock_open(callback: CallbackQuery) -> None:
         return
     scope_chat_id = repo.resolve_scope_chat_id(callback.message.chat.id)
     text = reporting.build_stock_text(scope_chat_id)
-    await safe_edit_text(callback.message, text, reply_markup=main_menu())
+    await safe_edit_text(callback.message, text, reply_markup=main_menu(callback.from_user.id if callback.from_user else None))
     await callback.answer()
 
 
 @router.callback_query(F.data == "menu:reports")
 async def reports_open(callback: CallbackQuery) -> None:
-    if callback.message.chat.type != "private" and not await can_view_reports(callback.bot, callback.message.chat, callback.from_user):
+    if not await can_view_reports(callback.bot, callback.message.chat, callback.from_user):
         await callback.answer("Нет доступа.", show_alert=True)
         return
     await safe_edit_text(callback.message, "Выберите период отчёта.", reply_markup=reports_quick_menu())

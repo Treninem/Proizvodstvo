@@ -7,7 +7,13 @@ from .config import settings
 
 
 def is_global_owner(user_id: int | None) -> bool:
-    return bool(user_id and user_id in settings.global_owner_ids)
+    if not user_id:
+        return False
+    try:
+        from .services import repository as repo
+        return repo.is_global_owner_id(user_id)
+    except Exception:
+        return bool(settings.primary_owner_id and int(user_id) == int(settings.primary_owner_id))
 
 
 async def is_chat_creator(bot: Bot, chat_id: int, user_id: int | None) -> bool:
@@ -36,10 +42,8 @@ async def can_manage_accounting(bot: Bot, chat: Chat, user: User | None) -> bool
             return True
     except Exception:
         pass
-    if chat.type in {"group", "supergroup"}:
-        return await is_chat_creator(bot, chat.id, user.id)
-    # В личке создать новый учёт может сам пользователь, но настройки уже выбранного
-    # учёта открываются только при наличии прав в этом учёте.
+    # Административная настройка не наследуется от прав создателя Telegram-группы.
+    # Она доступна только системным администраторам из .env.
     return False
 
 
@@ -50,8 +54,14 @@ OPERATION_PERMISSION = {
     "energy": "energy",
     "assembly": "assembly",
     "shipment": "shipment",
+    "shipment_client": "shipment",
+    "shipment_fulfillment": "fulfillment",
+    "return": "returns",
+    "movement": "movement",
+    "transfer_to_assembly": "movement",
     "stock_in": "stock",
     "stock_out": "stock",
+    "write_off": "stock",
     "inventory_adjust": "stock",
 }
 
@@ -70,7 +80,13 @@ async def can_submit_operations(bot: Bot, chat: Chat, user: User | None, operati
         permissions = {}
     if not permissions:
         return False
+    from .services import repository as repo
     for op in operation_types:
+        department_allowed = repo.department_operation_allowed(chat.id, user.id, op, "submit")
+        if department_allowed is False:
+            return False
+        if department_allowed is True:
+            continue
         key = OPERATION_PERMISSION.get(op)
         if key and not permissions.get(key):
             return False
@@ -86,6 +102,8 @@ async def can_view_reports(bot: Bot, chat: Chat, user: User | None, need_export:
         return True
     try:
         from .services import repository as repo
+        if repo.user_has_department_membership(chat.id, user.id):
+            return False
         permissions = repo.user_permissions_current_context(chat.id, user.id)
     except Exception:
         permissions = {}

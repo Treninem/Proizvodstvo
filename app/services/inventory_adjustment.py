@@ -19,6 +19,8 @@ _INVENTORY_WORDS = {
     "установить остаток",
     "новый остаток",
     "остаток факт",
+    "остаток",
+    "осталось",
 }
 
 _ALLOWED_TYPES = {"component", "product", "material", "stock_item"}
@@ -42,6 +44,8 @@ def looks_like_inventory_adjustment(text: str) -> bool:
         "установить остаток",
         "новый остаток",
         "остаток факт",
+        "остаток",
+        "осталось",
     }
     return any(key == marker or key.startswith(marker + " ") for marker in explicit_starts)
 

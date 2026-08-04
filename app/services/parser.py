@@ -13,6 +13,9 @@ from .vocabulary import (
     ENERGY_WORDS,
     MATERIAL_IN_WORDS,
     MATERIAL_OUT_WORDS,
+    MOVEMENT_WORDS,
+    FULFILLMENT_WORDS,
+    RETURN_WORDS,
     NO_WORDS,
     PRODUCTION_WORDS,
     REPORT_WORDS,
@@ -143,6 +146,9 @@ class ParsedOperation:
     needs_attention: bool = False
     variants: list[dict[str, Any]] | None = None
     learning_phrase: str | None = None
+    from_area_id: int | None = None
+    to_area_id: int | None = None
+    destination_type: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -206,7 +212,7 @@ def _has_strong_energy_action(line: str) -> bool:
 
 
 def _line_has_accounting_action(line: str) -> bool:
-    if _line_starts_with_action(line, PRODUCTION_WORDS | MATERIAL_IN_WORDS | MATERIAL_OUT_WORDS | STOCK_IN_WORDS | STOCK_OUT_WORDS | ASSEMBLY_WORDS | SHIPMENT_WORDS):
+    if _line_starts_with_action(line, PRODUCTION_WORDS | MATERIAL_IN_WORDS | MATERIAL_OUT_WORDS | STOCK_IN_WORDS | STOCK_OUT_WORDS | ASSEMBLY_WORDS | SHIPMENT_WORDS | MOVEMENT_WORDS | FULFILLMENT_WORDS | RETURN_WORDS):
         return True
     return _has_strong_energy_action(line)
 
@@ -221,7 +227,7 @@ def _is_discussion_line(line: str) -> bool:
     if tokens.intersection(DISCUSSION_HINTS):
         # Для слов про счётчики особенно важно не путать обсуждение с вводом
         # показаний. Рабочие записи обычно начинаются с производственного действия.
-        if not _line_starts_with_action(line, PRODUCTION_WORDS | MATERIAL_IN_WORDS | MATERIAL_OUT_WORDS | STOCK_IN_WORDS | STOCK_OUT_WORDS | ASSEMBLY_WORDS | SHIPMENT_WORDS):
+        if not _line_starts_with_action(line, PRODUCTION_WORDS | MATERIAL_IN_WORDS | MATERIAL_OUT_WORDS | STOCK_IN_WORDS | STOCK_OUT_WORDS | ASSEMBLY_WORDS | SHIPMENT_WORDS | MOVEMENT_WORDS | FULFILLMENT_WORDS | RETURN_WORDS):
             return True
     return False
 
@@ -276,8 +282,14 @@ def detect_header_context(line: str) -> str | None:
         return "stock_out"
     if _has_any(key, ASSEMBLY_WORDS):
         return "assembly"
+    if _has_any(key, FULFILLMENT_WORDS):
+        return "shipment_fulfillment"
+    if _has_any(key, RETURN_WORDS):
+        return "return"
     if _has_any(key, SHIPMENT_WORDS):
         return "shipment"
+    if _has_any(key, MOVEMENT_WORDS):
+        return "transfer_to_assembly" if "сбор" in key else "movement"
     return None
 
 
@@ -342,9 +354,11 @@ def _parse_entity_quantity(chat_id: int, line: str, operation_type: str, area_id
         allowed = {"meter"}
     elif operation_type == "assembly":
         allowed = {"product"}
-    elif operation_type == "shipment":
-        allowed = {"product"}
-    name_part = _remove_intent_words(name_part, PRODUCTION_WORDS | MATERIAL_IN_WORDS | MATERIAL_OUT_WORDS | STOCK_IN_WORDS | STOCK_OUT_WORDS | ENERGY_WORDS | ASSEMBLY_WORDS | SHIPMENT_WORDS)
+    elif operation_type in {"shipment", "shipment_client", "shipment_fulfillment", "return"}:
+        allowed = {"product", "stock_item"}
+    elif operation_type in {"movement", "transfer_to_assembly"}:
+        allowed = {"component", "product", "stock_item"}
+    name_part = _remove_intent_words(name_part, PRODUCTION_WORDS | MATERIAL_IN_WORDS | MATERIAL_OUT_WORDS | STOCK_IN_WORDS | STOCK_OUT_WORDS | ENERGY_WORDS | ASSEMBLY_WORDS | SHIPMENT_WORDS | MOVEMENT_WORDS | FULFILLMENT_WORDS | RETURN_WORDS)
     name_part = _clean_entity_name_part(name_part)
     if operation_type == "energy" and unit == "шт":
         unit = "кВт⋅ч"
@@ -398,6 +412,21 @@ def _parse_entity_quantity(chat_id: int, line: str, operation_type: str, area_id
         name_part,
     )
 
+
+
+def _detect_transfer_areas(chat_id: int, line: str) -> tuple[int | None, int | None]:
+    key = normalize_key(line)
+    from_area_id: int | None = None
+    to_area_id: int | None = None
+    for area in list_areas(chat_id):
+        area_key = area.normalized
+        if not area_key:
+            continue
+        if re.search(rf"\b(?:из|с|со)\s+{re.escape(area_key)}\b", key):
+            from_area_id = area.id
+        if re.search(rf"\b(?:в|на|к)\s+{re.escape(area_key)}\b", key):
+            to_area_id = area.id
+    return from_area_id, to_area_id
 
 def parse_message(chat_id: int, group_chat_id: int, text: str) -> tuple[list[ParsedOperation], list[str]]:
     errors: list[str] = []
@@ -462,6 +491,12 @@ def parse_message(chat_id: int, group_chat_id: int, text: str) -> tuple[list[Par
             if a_id:
                 current_area_id, current_area_name = a_id, a_name
             op = _parse_entity_quantity(chat_id, cleaned, local_context, a_id, a_name)
+
+            if op.operation_type in {"movement", "transfer_to_assembly"}:
+                from_area_id, to_area_id = _detect_transfer_areas(chat_id, chunk)
+                op.from_area_id = from_area_id
+                op.to_area_id = to_area_id or op.area_id
+                op.destination_type = "assembly" if op.operation_type == "transfer_to_assembly" else "storage"
 
             if op.operation_type == "energy":
                 if op.entity_id and op.area_id:

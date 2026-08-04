@@ -56,15 +56,18 @@ def _allowed_entity_types(operation_type: str | None) -> set[str]:
     return {"component", "product", "stock_item", "material", "meter"}
 
 
-def _choices_for_operation(chat_id: int, operation: dict) -> list[dict]:
+def _choices_for_operation(chat_id: int, operation: dict, user_id: int | None = None) -> list[dict]:
     allowed = _allowed_entity_types(operation.get("operation_type"))
     result: list[dict] = []
     seen: set[tuple[str, int]] = set()
+    visible_ids = repo.visible_entity_ids_for_user(chat_id, user_id)
 
     for item in operation.get("variants") or []:
         target_type = str(item.get("target_type") or "")
         target_id = int(item.get("target_id") or 0)
         if target_type not in allowed or not target_id:
+            continue
+        if visible_ids is not None and target_id not in visible_ids:
             continue
         key = (target_type, target_id)
         if key in seen:
@@ -78,6 +81,8 @@ def _choices_for_operation(chat_id: int, operation: dict) -> list[dict]:
 
     if len(result) < 3:
         for entity in repo.list_entities(chat_id, allowed):
+            if visible_ids is not None and entity.id not in visible_ids:
+                continue
             key = (entity.entity_type, entity.id)
             if key in seen:
                 continue
@@ -109,7 +114,7 @@ def _choice_text(operation: dict, choices: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _apply_selected_entity(chat_id: int, payload: dict, op_index: int, target_type: str, target_id: int) -> bool:
+def _apply_selected_entity(chat_id: int, payload: dict, op_index: int, target_type: str, target_id: int, user_id: int | None = None) -> bool:
     operations = payload.get("operations") or []
     if op_index < 0 or op_index >= len(operations):
         return False
@@ -128,6 +133,8 @@ def _apply_selected_entity(chat_id: int, payload: dict, op_index: int, target_ty
     elif target_type == "material" and op_type == "stock_out":
         op_type = "material_out"
 
+    if repo.department_operation_allowed(chat_id, user_id, op_type, "submit", entity.entity_type, entity.id) is False:
+        return False
     op["operation_type"] = op_type
     op["entity_type"] = entity.entity_type
     op["entity_id"] = entity.id
@@ -159,7 +166,7 @@ async def _show_unresolved_or_confirm(message, pending_id: str, payload: dict) -
     if unresolved is None:
         await safe_edit_text(message, _summary_for_payload(payload), reply_markup=confirm_keyboard(pending_id))
         return
-    choices = _choices_for_operation(payload.get("chat_id") or repo.resolve_scope_chat_id(message.chat.id), operations[unresolved])
+    choices = _choices_for_operation(payload.get("chat_id") or repo.resolve_scope_chat_id(message.chat.id), operations[unresolved], message.from_user.id if message.from_user else None)
     markup = resolve_operation_keyboard(pending_id, unresolved, choices) if choices else confirm_keyboard(pending_id)
     if not choices:
         # Без вариантов кнопку «Да» не показываем, чтобы не сохранялось 0 записей.
@@ -186,7 +193,7 @@ async def try_handle_confirmation_text(message: Message) -> bool:
         return True
     unresolved = accounting.first_unresolved_index(payload.get("operations", []))
     if unresolved is not None:
-        choices = _choices_for_operation(scope_chat_id, payload.get("operations", [])[unresolved])
+        choices = _choices_for_operation(scope_chat_id, payload.get("operations", [])[unresolved], message.from_user.id if message.from_user else None)
         if choices:
             await message.answer(_choice_text(payload["operations"][unresolved], choices), reply_markup=resolve_operation_keyboard(pending_id, unresolved, choices))
         else:
@@ -219,13 +226,18 @@ async def try_handle_intake(message: Message) -> bool:
         return False
     operation_types = {op.operation_type for op in ops if op.operation_type}
     if not await can_submit_operations(message.bot, message.chat, message.from_user, operation_types):
-        await message.answer("Эти данные может сдавать только участник с подходящей должностью.")
+        await message.answer("У вас нет доступа к этому действию.")
         return True
+    user_id = message.from_user.id if message.from_user else 0
+    for op in ops:
+        if op.entity_id and repo.department_operation_allowed(scope_chat_id, user_id, op.operation_type, "submit", op.entity_type, op.entity_id) is False:
+            await message.answer("Эта позиция не назначена вашему отделу.")
+            return True
     payload = {"chat_id": scope_chat_id, "operations": [op.to_dict() for op in ops], "raw_text": raw_text, "is_test": is_test}
     pending_id = accounting.create_pending(scope_chat_id, message.chat.id, message.from_user.id if message.from_user else 0, payload)
     unresolved = accounting.first_unresolved_index(payload["operations"])
     if unresolved is not None:
-        choices = _choices_for_operation(scope_chat_id, payload["operations"][unresolved])
+        choices = _choices_for_operation(scope_chat_id, payload["operations"][unresolved], message.from_user.id if message.from_user else None)
         if choices:
             await message.answer(_choice_text(payload["operations"][unresolved], choices), reply_markup=resolve_operation_keyboard(pending_id, unresolved, choices))
         else:
@@ -259,7 +271,7 @@ async def resolve_operation(callback: CallbackQuery) -> None:
         return
     _, payload = found
     payload["chat_id"] = scope_chat_id
-    if not _apply_selected_entity(scope_chat_id, payload, op_index, target_type, target_id):
+    if not _apply_selected_entity(scope_chat_id, payload, op_index, target_type, target_id, callback.from_user.id if callback.from_user else None):
         await callback.answer("Позиция не найдена.", show_alert=True)
         return
     accounting.update_pending(pending_id, payload)

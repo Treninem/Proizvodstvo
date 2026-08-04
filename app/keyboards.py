@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from .config import settings
+
 
 PERMISSION_LABELS: dict[str, str] = {
     "production": "Сдавать производство",
@@ -9,6 +11,9 @@ PERMISSION_LABELS: dict[str, str] = {
     "energy": "Сдавать счётчики",
     "assembly": "Сдавать сборку",
     "shipment": "Сдавать отгрузку",
+    "movement": "Перемещения",
+    "fulfillment": "Фулфилмент",
+    "returns": "Возвраты",
     "reports": "Смотреть отчёты",
     "stock": "Смотреть склад",
     "edit": "Исправлять записи",
@@ -17,6 +22,7 @@ PERMISSION_LABELS: dict[str, str] = {
     "grant": "Назначать должности",
     "permissions": "Настраивать права должностей",
     "export": "Создавать файлы",
+    "site": "Резервные копии",
 }
 
 
@@ -29,14 +35,23 @@ ENTITY_LABELS: dict[str, str] = {
 }
 
 
-def main_menu() -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text="Настроить учёт", callback_data="menu:setup")],
-        [InlineKeyboardButton(text="Группы", callback_data="menu:chats")],
-        [InlineKeyboardButton(text="Склад", callback_data="menu:stock"), InlineKeyboardButton(text="Отчёты", callback_data="menu:reports")],
-        [InlineKeyboardButton(text="Работники", callback_data="menu:workers")],
-        [InlineKeyboardButton(text="Как пользоваться", callback_data="menu:help")],
-    ]
+def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    try:
+        from .services import repository as repo
+        has_full_access = repo.is_global_owner_id(user_id)
+    except Exception:
+        has_full_access = bool(user_id and settings.primary_owner_id and int(user_id) == int(settings.primary_owner_id))
+    if has_full_access:
+        rows.extend([
+            [InlineKeyboardButton(text="Настроить учёт", callback_data="menu:setup")],
+            [InlineKeyboardButton(text="Группы", callback_data="menu:chats")],
+            [InlineKeyboardButton(text="Склад", callback_data="menu:stock"), InlineKeyboardButton(text="Отчёты", callback_data="menu:reports")],
+            [InlineKeyboardButton(text="Работники", callback_data="menu:workers")],
+        ])
+    if settings.public_base_url:
+        rows.append([InlineKeyboardButton(text="Открыть рабочую панель", url=settings.public_base_url.rstrip("/") + "/mini")])
+    rows.append([InlineKeyboardButton(text="Как пользоваться", callback_data="menu:help")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -80,6 +95,7 @@ def setup_menu() -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="Быстрая настройка", callback_data="setup:quick")],
         [InlineKeyboardButton(text="Создать участок", callback_data="wizard:area")],
+        [InlineKeyboardButton(text="Создать место хранения", callback_data="wizard:destination")],
         [InlineKeyboardButton(text="Создать должность", callback_data="wizard:job")],
         [InlineKeyboardButton(text="Добавить изделие", callback_data="wizard:entity:product")],
         [InlineKeyboardButton(text="Состав изделия", callback_data="wizard:product_components")],

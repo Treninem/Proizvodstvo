@@ -68,7 +68,7 @@ async def _send_chats(message: Message) -> None:
     if not chats:
         await message.answer(
             "Групп пока нет. Добавьте бота в нужную группу и откройте этот раздел снова.",
-            reply_markup=main_menu(),
+            reply_markup=main_menu(user_id),
         )
         return
     selected_chat_id = _selected_group_chat_id(message.chat.id)
@@ -93,6 +93,9 @@ async def bot_chat_member(update: ChatMemberUpdated) -> None:
 
 @router.message(F.text.lower().in_({"мои группы", "группы", "мои чаты", "чаты"}))
 async def my_chats_text(message: Message) -> None:
+    if not repo.is_system_admin_id(message.from_user.id if message.from_user else None):
+        await message.answer("Нет доступа.")
+        return
     if message.chat.type != "private":
         await message.answer("Список групп открывается в личке бота.")
         return
@@ -101,6 +104,9 @@ async def my_chats_text(message: Message) -> None:
 
 @router.callback_query(F.data == "menu:chats")
 async def my_chats_callback(callback: CallbackQuery) -> None:
+    if not repo.is_system_admin_id(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
     if callback.message.chat.type != "private":
         await callback.answer("Откройте этот раздел в личке бота.", show_alert=True)
         return
@@ -110,7 +116,7 @@ async def my_chats_callback(callback: CallbackQuery) -> None:
         await safe_edit_text(
             callback.message,
             "Групп пока нет. Добавьте бота в нужную группу и откройте этот раздел снова.",
-            reply_markup=main_menu(),
+            reply_markup=main_menu(user_id),
         )
     else:
         selected_chat_id = _selected_group_chat_id(callback.message.chat.id)

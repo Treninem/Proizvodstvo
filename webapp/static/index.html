@@ -1,0 +1,808 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#07111f" />
+  <title>Производство</title>
+  <link rel="manifest" href="/static/manifest.webmanifest" />
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <main class="app-shell">
+    <section class="hero">
+      <div class="hero-text">
+        <p class="eyebrow">производственный учёт</p>
+        <h1>Панель производства</h1>
+        <p id="accountName">Выберите учёт в боте и откройте приложение из личных сообщений.</p>
+        <div class="hero-pills">
+          <span id="rolePill">Доступ проверяется</span>
+          <span id="syncPill">Обновление —</span><span id="loginPill">Telegram</span>
+        </div>
+      </div>
+      <img src="/static/img/factory-dashboard.svg" alt="" class="hero-img" />
+    </section>
+
+    <section class="cards">
+      <article class="card accent-blue" data-tab="production" data-section="production">
+        <img src="/static/img/production.svg" alt="" />
+        <span>Выпуск</span>
+        <strong id="productionCount">—</strong>
+      </article>
+      <article class="card accent-orange" data-tab="materials" data-section="material">
+        <img src="/static/img/materials.svg" alt="" />
+        <span>Сырьё</span>
+        <strong id="alertCount">—</strong>
+      </article>
+      <article class="card accent-green" data-tab="assembly" data-section="assembly">
+        <img src="/static/img/assembly.svg" alt="" />
+        <span>Сборка</span>
+        <strong id="assemblyCount">—</strong>
+      </article>
+      <article class="card accent-purple" data-tab="shipment" data-section="shipment">
+        <img src="/static/img/shipment.svg" alt="" />
+        <span>Отгрузки</span>
+        <strong id="shipmentCount">—</strong>
+      </article>
+    </section>
+
+    <nav class="tabs" aria-label="Разделы">
+      <button class="tab active" data-tab="overview">Обзор</button>
+      <button class="tab hidden" data-tab="work" data-work-entry="1">Рабочий ввод</button>
+      <button class="tab" data-tab="production" data-section="production">Выпуск</button>
+      <button class="tab" data-tab="materials" data-section="material">Сырьё</button>
+      <button class="tab" data-tab="assembly" data-section="assembly">Сборка</button>
+      <button class="tab" data-tab="movement" data-section="movement">Перемещение</button>
+      <button class="tab" data-tab="inventory" data-section="stock">Инвентаризация</button>
+      <button class="tab" data-tab="risks">Критические остатки</button>
+      <button class="tab" data-tab="shipment" data-section="shipment">Отгрузка</button>
+      <button class="tab" data-tab="returns" data-section="returns">Возврат</button>
+      <button class="tab" data-tab="plan" data-section="assembly">План</button>
+      <button class="tab" data-tab="reports" data-section="reports">Отчёты</button>
+      <button class="tab" data-tab="places" data-section="setup">Места</button>
+      <button class="tab" data-tab="departments" data-department-manage="1">Отделы</button>
+      <button class="tab" data-tab="team" data-section="workers" data-admin-only="1">Команда</button>
+      <button class="tab" data-tab="inbox">Входящие</button>
+      <button class="tab" data-tab="shifts">Смены</button>
+      <button class="tab" data-tab="area-access" data-section="permissions" data-admin-only="1">Доступы</button>
+            <button class="tab" data-tab="security" data-section="permissions" data-admin-only="1">Администрирование</button>
+    </nav>
+
+    <section id="notice" class="notice hidden"></section>
+
+    <section id="accountChooser" class="account-chooser hidden">
+      <div>
+        <h2>Учёт</h2>
+        <p>Выберите доступный производственный учёт.</p>
+      </div>
+      <div id="accountList" class="account-list"></div>
+    </section>
+
+    <section class="tab-page" id="page-work">
+      <article class="form-panel wide">
+        <img src="/static/img/production-form.svg" alt="" class="side-img" />
+        <div>
+          <h2>Рабочий ввод</h2>
+          <p>Выберите разрешённое действие и позицию. В списках отображается только то, что назначено вашему отделу.</p>
+          <label>Действие<select id="workOperation"></select></label>
+          <label>Позиция<select id="workEntity"></select></label>
+          <div id="workSingleArea">
+            <label>Площадка<select id="workArea"></select></label>
+          </div>
+          <div id="workMoveAreas" class="two-col hidden">
+            <label>Откуда<select id="workFromArea"></select></label>
+            <label>Куда<select id="workToArea"></select></label>
+          </div>
+          <label>Количество<input id="workQuantity" inputmode="decimal" placeholder="0" /></label>
+          <label>Комментарий<input id="workNote" maxlength="500" placeholder="Необязательно" /></label>
+          <button class="primary" data-action="save-work-entry">Сохранить</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="tab-page active" id="page-overview">
+      <div class="grid">
+        <article class="panel illustrated">
+          <div>
+            <h2>Запасы сырья</h2>
+            <div id="alerts" class="list empty">Нет данных</div>
+          </div>
+          <img src="/static/img/stock.svg" alt="" />
+        </article>
+        <article class="panel illustrated">
+          <div>
+            <h2>Остатки</h2>
+            <div id="stock" class="list empty">Нет данных</div>
+          </div>
+          <img src="/static/img/material-boxes.svg" alt="" />
+        </article>
+        <article class="panel illustrated">
+          <div>
+            <h2>Площадки</h2>
+            <div id="areaSummary" class="list empty">Нет данных</div>
+          </div>
+          <img src="/static/img/warehouse.svg" alt="" />
+        </article>
+        <article class="panel illustrated">
+          <div>
+            <h2>Сырьё по площадкам</h2>
+            <div id="materialAreaDays" class="list empty">Нет данных</div>
+          </div>
+          <img src="/static/img/raw-material.svg" alt="" />
+        </article>
+        <article class="panel wide illustrated security-card">
+          <div>
+            <h2>Последние записи</h2>
+            <div id="recent" class="timeline empty">Нет данных</div>
+          </div>
+          <img src="/static/img/chart.svg" alt="" />
+        </article>
+      </div>
+    </section>
+
+    <section class="tab-page" id="page-production" data-section="production">
+      <article class="form-panel">
+        <img src="/static/img/production-form.svg" alt="" class="side-img" />
+        <div>
+          <h2>Добавить выпуск</h2>
+          <p>Позиция, площадка и количество.</p>
+          <label>Позиция<select id="productionEntity"></select></label>
+          <label>Площадка<select id="productionArea"></select></label>
+          <label>Количество<input id="productionQty" inputmode="decimal" placeholder="0" /></label>
+          <label>Комментарий<input id="productionNote" placeholder="Необязательно" /></label>
+          <button class="primary" data-action="save-production">Сохранить</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="tab-page" id="page-materials" data-section="material">
+      <article class="form-panel">
+        <img src="/static/img/raw-material.svg" alt="" class="side-img" />
+        <div>
+          <h2>Сырьё</h2>
+          <p>Приход и расход по производственной площадке.</p>
+          <label>Сырьё<select id="materialEntity"></select></label>
+          <label>Площадка<select id="materialArea"></select></label>
+          <label>Количество<input id="materialQty" inputmode="decimal" placeholder="0" /></label>
+          <label>Комментарий<input id="materialNote" placeholder="Необязательно" /></label>
+          <div class="actions"><button class="primary" data-action="save-material-in">Приход</button><button data-action="save-material-out">Расход</button></div>
+          <div id="materialDays" class="list compact empty">Нет данных</div>
+        </div>
+      </article>
+    </section>
+
+    <section class="tab-page" id="page-assembly" data-section="assembly">
+      <article class="form-panel">
+        <img src="/static/img/assembly-form.svg" alt="" class="side-img" />
+        <div>
+          <h2>Сборка</h2>
+          <p>Собранная продукция попадёт в выбранное место хранения.</p>
+          <label>Изделие<select id="assemblyEntity"></select></label>
+          <label>Площадка<select id="assemblyArea"></select></label>
+          <label>Место хранения<select id="assemblyStorage"></select></label>
+          <label>Количество<input id="assemblyQty" inputmode="decimal" placeholder="0" /></label>
+          <label>Комментарий<input id="assemblyNote" placeholder="Необязательно" /></label>
+          <button class="primary" data-action="save-assembly">Сохранить</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="tab-page" id="page-movement" data-section="movement">
+      <article class="form-panel">
+        <img src="/static/img/transfer.svg" alt="" class="side-img" />
+        <div>
+          <h2>Перемещение</h2>
+          <p>Комплектующие, готовая продукция и складские позиции между площадками.</p>
+          <label>Тип<select id="moveType"><option value="component">Комплектующие</option><option value="product">Готовая продукция</option><option value="stock_item">Складская позиция</option></select></label>
+          <label>Позиция<select id="moveEntity"></select></label>
+          <label>Откуда<select id="moveFrom"></select></label>
+          <label>Куда<select id="moveTo"></select></label>
+          <label>Количество<input id="moveQty" inputmode="decimal" placeholder="0" /></label>
+          <label>Комментарий<input id="moveNote" placeholder="Необязательно" /></label>
+          <button class="primary" data-action="save-movement">Переместить</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="tab-page" id="page-inventory" data-section="stock">
+      <div class="grid">
+        <article class="form-panel">
+          <img src="/static/img/stock.svg" alt="" class="side-img" />
+          <div>
+            <h2>Фактические остатки</h2>
+            <p>Выберите площадку и позицию, затем укажите количество после пересчёта.</p>
+            <label>Площадка<select id="inventoryArea"></select></label>
+            <label>Тип<select id="inventoryType"><option value="component">Комплектующие</option><option value="product">Готовая продукция</option><option value="material">Сырьё</option><option value="stock_item">Складские позиции</option></select></label>
+            <label>Позиция<select id="inventoryEntity"></select></label>
+            <label>Сейчас<input id="inventoryCurrent" readonly value="0" /></label>
+            <label>Фактически<input id="inventoryActual" inputmode="decimal" placeholder="0" /></label>
+            <label>Причина<input id="inventoryNote" placeholder="Пересчёт, списание, найденный остаток" /></label>
+            <div class="actions"><button class="primary" data-action="save-inventory-correction">Сохранить корректировку</button><button data-action="refresh-inventory-history">Обновить журнал</button></div>
+          </div>
+        </article>
+        <article class="panel">
+          <h2>Остатки по площадкам</h2>
+          <div id="inventoryPositions" class="manager-list empty">Остатков пока нет</div>
+        </article>
+        <article class="panel wide">
+          <h2>История выбранной позиции</h2>
+          <div id="inventoryHistory" class="manager-list empty">Выберите площадку и позицию</div>
+        </article>
+        <article class="form-panel wide" data-admin-only="1">
+          <img src="/static/img/stock.svg" alt="" class="side-img" />
+          <div>
+            <h2>Массовая инвентаризация</h2>
+            <p>Создайте пересчёт площадки, добавьте все позиции и отправьте ответственному на подтверждение.</p>
+            <input id="inventorySessionId" type="hidden" />
+            <label>Площадка<select id="inventorySessionArea"></select></label>
+            <label>Комментарий<input id="inventorySessionNote" placeholder="Причина или участок пересчёта" /></label>
+            <div class="actions"><button class="primary" data-action="create-inventory-session">Начать пересчёт</button><button data-action="clear-inventory-session">Закрыть карточку</button></div>
+            <hr />
+            <label>Тип позиции<select id="inventorySessionType"><option value="component">Комплектующие</option><option value="product">Готовая продукция</option><option value="material">Сырьё</option><option value="stock_item">Складские позиции</option></select></label>
+            <label>Позиция<select id="inventorySessionEntity"></select></label>
+            <label>Фактически<input id="inventorySessionActual" inputmode="decimal" placeholder="0" /></label>
+            <label>Примечание<input id="inventorySessionItemNote" placeholder="Необязательно" /></label>
+            <div class="actions"><button data-action="add-inventory-session-item">Добавить позицию</button><button class="primary" data-action="submit-inventory-session">Отправить на подтверждение</button></div>
+            <div class="actions"><button data-action="approve-inventory-session">Подтвердить</button><button class="danger" data-action="reject-inventory-session">Отклонить</button><button class="danger" data-action="cancel-inventory-session">Отменить черновик</button></div>
+          </div>
+        </article>
+        <article class="panel" data-admin-only="1">
+          <h2>Позиции текущего пересчёта</h2>
+          <div id="inventorySessionItems" class="manager-list empty">Пересчёт не выбран</div>
+        </article>
+        <article class="panel wide" data-admin-only="1">
+          <h2>Сессии инвентаризации</h2>
+          <div id="inventorySessionList" class="manager-list empty">Сессий пока нет</div>
+        </article>
+      </div>
+    </section>
+
+    <section class="tab-page" id="page-shipment" data-section="shipment">
+      <article class="form-panel">
+        <img src="/static/img/shipment-form.svg" alt="" class="side-img" />
+        <div>
+          <h2>Отгрузка</h2>
+          <p>Клиентам и на фулфилмент — отдельно.</p>
+          <label>Куда<select id="shipKind"><option value="shipment_client">Клиенту</option><option value="shipment_fulfillment">Фулфилмент</option></select></label>
+          <label>Изделие<select id="shipEntity"></select></label>
+          <label>Площадка<select id="shipArea"></select></label>
+          <label>Клиент или склад<select id="shipDestination"></select></label>
+          <label>Количество<input id="shipQty" inputmode="decimal" placeholder="0" /></label>
+          <label>Комментарий<input id="shipNote" placeholder="Клиент, заказ или пометка" /></label>
+          <button class="primary" data-action="save-shipment">Сохранить</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="tab-page" id="page-returns" data-section="returns">
+      <article class="form-panel">
+        <img src="/static/img/return.svg" alt="" class="side-img" />
+        <div>
+          <h2>Возврат</h2>
+          <p>Верните продукцию в выбранное место хранения.</p>
+          <label>Изделие<select id="returnEntity"></select></label>
+          <label>Площадка<select id="returnArea"></select></label>
+          <label>Место хранения<select id="returnStorage"></select></label>
+          <label>Количество<input id="returnQty" inputmode="decimal" placeholder="0" /></label>
+          <label>Комментарий<input id="returnNote" placeholder="Причина или пометка" /></label>
+          <button class="primary" data-action="save-return">Сохранить</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="tab-page" id="page-plan" data-section="assembly">
+      <article class="form-panel">
+        <img src="/static/img/plan.svg" alt="" class="side-img" />
+        <div>
+          <h2>План сборки</h2>
+          <p>Изделие и любое количество целей.</p>
+          <label>Изделие<select id="planProduct"></select></label>
+          <label>Количество<input id="planTargets" placeholder="10000, 50000" /></label>
+          <div class="actions"><button class="primary" data-action="save-plan">Сохранить план</button><button data-action="clear-plan">Очистить</button></div>
+          <div id="planList" class="list compact empty">План не выбран</div>
+        </div>
+      </article>
+    </section>
+
+    <section class="tab-page" id="page-reports" data-section="reports">
+      <div class="grid">
+        <article class="form-panel">
+          <img src="/static/img/report.svg" alt="" class="side-img" />
+          <div>
+            <h2>Отчёты</h2>
+            <p>Excel для работы с таблицей, PDF для просмотра.</p>
+            <label>Период<input id="reportText" value="отчёт за месяц" /></label>
+            <label>Площадка<select id="reportArea"></select></label>
+            <div class="quick-periods">
+              <button data-period="отчёт за сегодня">Сегодня</button>
+              <button data-period="отчёт за неделю">Неделя</button>
+              <button data-period="отчёт за месяц">Месяц</button>
+            </div>
+            <div class="actions"><button class="primary" data-action="report-xlsx">Excel</button><button data-action="report-pdf">PDF</button></div>
+            <input id="reportPresetId" type="hidden" />
+            <label>Название шаблона<input id="reportPresetName" placeholder="Например, недельный отчёт цеха" /></label>
+            <label>Формат шаблона<select id="reportPresetFormat"><option value="xlsx">Excel</option><option value="pdf">PDF</option></select></label>
+            <div class="actions"><button data-action="save-report-preset">Сохранить шаблон</button><button data-action="clear-report-preset">Очистить шаблон</button></div>
+          </div>
+        </article>
+        <article class="panel">
+          <h2>Сохранённые шаблоны</h2>
+          <div id="reportPresetList" class="manager-list empty">Шаблонов пока нет</div>
+        </article>
+        <article class="form-panel">
+          <img src="/static/img/report.svg" alt="" class="side-img" />
+          <div>
+            <h2>Автоматическая отправка</h2>
+            <p>Бот отправит выбранный сохранённый шаблон в личный чат или указанную группу.</p>
+            <label>Шаблон<select id="schedulePreset"></select></label>
+            <label>Telegram ID получателя<input id="scheduleChatId" inputmode="numeric" placeholder="Ваш ID или ID группы" /></label>
+            <label>Периодичность<select id="scheduleFrequency"><option value="daily">Каждый день</option><option value="weekly">Каждую неделю</option><option value="monthly">Каждый месяц</option></select></label>
+            <div class="form-two"><label>Час<input id="scheduleHour" type="number" min="0" max="23" value="8" /></label><label>Минута<input id="scheduleMinute" type="number" min="0" max="59" value="0" /></label></div>
+            <label id="scheduleWeekdayWrap">День недели<select id="scheduleWeekday"><option value="0">Понедельник</option><option value="1">Вторник</option><option value="2">Среда</option><option value="3">Четверг</option><option value="4">Пятница</option><option value="5">Суббота</option><option value="6">Воскресенье</option></select></label>
+            <label id="scheduleMonthDayWrap">День месяца<input id="scheduleMonthDay" type="number" min="1" max="28" value="1" /></label>
+            <label>Часовой пояс<select id="scheduleTimezone"><option value="server">Время сервера</option><option value="Europe/Moscow">Москва</option><option value="Europe/Helsinki">Хельсинки</option><option value="Asia/Yekaterinburg">Екатеринбург</option><option value="Asia/Novosibirsk">Новосибирск</option><option value="Asia/Vladivostok">Владивосток</option><option value="UTC">UTC</option></select></label>
+            <label class="check-line"><input id="scheduleEnabled" type="checkbox" checked /> Расписание включено</label>
+            <button class="primary" data-action="save-report-schedule">Сохранить расписание</button>
+          </div>
+        </article>
+        <article class="panel">
+          <h2>Расписания отчётов</h2>
+          <div id="reportScheduleList" class="manager-list empty">Расписаний пока нет</div>
+        </article>
+        <article class="panel wide">
+          <h2>История доставки</h2>
+          <p>Ошибочную или нужную отправку можно повторить вручную, не меняя основное расписание.</p>
+          <div id="reportDeliveryHistory" class="manager-list empty">Отправок пока нет</div>
+        </article>
+      </div>
+    </section>
+
+
+    <section class="tab-page" id="page-places" data-section="setup">
+      <div class="grid">
+        <article class="form-panel">
+          <img src="/static/img/warehouse.svg" alt="" class="side-img" />
+          <div>
+            <h2>Места хранения и направления</h2>
+            <p>Создавайте склады, клиентов и точки фулфилмента для операций.</p>
+            <input id="destinationId" type="hidden" />
+            <label>Название<input id="destinationName" placeholder="Например, склад готовой продукции" /></label>
+            <label>Тип<select id="destinationType"><option value="storage">Место хранения</option><option value="client">Клиент</option><option value="fulfillment">Фулфилмент</option><option value="other">Другое</option></select></label>
+            <div class="actions"><button class="primary" data-action="save-destination">Сохранить</button><button data-action="clear-destination">Очистить</button></div>
+          </div>
+        </article>
+        <article class="panel">
+          <h2>Сохранённые места</h2>
+          <div id="destinationList" class="manager-list empty">Места ещё не созданы</div>
+        </article>
+      </div>
+    </section>
+
+    <section class="tab-page" id="page-team" data-section="workers">
+      <div class="grid">
+        <article class="form-panel">
+          <img src="/static/img/team.svg" alt="" class="side-img" />
+          <div>
+            <h2>Должности</h2>
+            <p>Настройте права должности. Доступ к площадкам задаётся в соседнем разделе.</p>
+            <input id="jobTitleId" type="hidden" />
+            <label>Название<input id="jobTitleName" placeholder="Оператор, мастер, кладовщик" /></label>
+            <div class="check-grid permission-grid">
+              <label class="check-line"><input type="checkbox" data-job-permission="production" /> Выпуск</label>
+              <label class="check-line"><input type="checkbox" data-job-permission="material" /> Сырьё</label>
+              <label class="check-line"><input type="checkbox" data-job-permission="assembly" /> Сборка</label>
+              <label class="check-line"><input type="checkbox" data-job-permission="movement" /> Перемещение</label>
+              <label class="check-line"><input type="checkbox" data-job-permission="shipment" /> Отгрузка</label>
+              <label class="check-line"><input type="checkbox" data-job-permission="fulfillment" /> Фулфилмент</label>
+              <label class="check-line"><input type="checkbox" data-job-permission="returns" /> Возвраты</label>
+              <label class="check-line"><input type="checkbox" data-job-permission="stock" /> Остатки</label>
+              <label class="check-line"><input type="checkbox" data-job-permission="reports" /> Отчёты</label>
+              <label class="check-line"><input type="checkbox" data-job-permission="export" /> Экспорт</label>
+              <label class="check-line"><input type="checkbox" data-job-permission="edit" /> Исправления</label>
+              <label class="check-line"><input type="checkbox" data-job-permission="workers" /> Сотрудники</label>
+              <label class="check-line"><input type="checkbox" data-job-permission="permissions" /> Доступы</label>
+              <label class="check-line"><input type="checkbox" data-job-permission="setup" /> Настройки</label>
+                                          <label class="check-line"><input type="checkbox" data-job-permission="energy" /> Энергия</label>
+            </div>
+            <div class="actions"><button class="primary" data-action="save-job-title">Сохранить должность</button><button data-action="clear-job-title">Очистить</button></div>
+          </div>
+        </article>
+        <article class="panel">
+          <h2>Список должностей</h2>
+          <div id="jobTitleList" class="manager-list empty">Должности ещё не созданы</div>
+        </article>
+        <article class="form-panel">
+          <img src="/static/img/shield.svg" alt="" class="side-img" />
+          <div>
+            <h2>Сотрудники</h2>
+            <p>Telegram ID можно узнать у сотрудника или из служебных данных бота.</p>
+            <label>Telegram ID<input id="workerUserId" inputmode="numeric" placeholder="123456789" /></label>
+            <label>Имя<input id="workerName" placeholder="Имя сотрудника" /></label>
+            <label>Должность<select id="workerJob"></select></label>
+            <div class="actions"><button class="primary" data-action="save-worker">Сохранить сотрудника</button><button data-action="clear-worker">Очистить</button></div>
+          </div>
+        </article>
+        <article class="panel">
+          <h2>Список сотрудников</h2>
+          <div id="workerList" class="manager-list empty">Сотрудники ещё не добавлены</div>
+        </article>
+      </div>
+    </section>
+
+
+    <section class="tab-page" id="page-inbox">
+      <div class="grid">
+        <article class="panel wide">
+          <h2>Входящие ответственного</h2>
+          <p>Здесь собраны инвентаризации, ожидающие решения, результаты проверок и назначенные смены.</p>
+          <div id="inboxList" class="manager-list empty">Новых сообщений нет</div>
+        </article>
+        <article class="form-panel wide">
+          <img src="/static/img/shield.svg" alt="" class="side-img" />
+          <div>
+            <h2>Мои уведомления</h2>
+            <div class="check-grid">
+              <label class="check-line"><input id="notifyInbox" type="checkbox" checked /> Показывать во входящих</label>
+              <label class="check-line"><input id="notifyTelegram" type="checkbox" checked /> Отправлять в Telegram</label>
+              <label class="check-line"><input id="notifyInventoryApproval" type="checkbox" checked /> Решения по инвентаризации</label>
+              <label class="check-line"><input id="notifyInventoryResult" type="checkbox" checked /> Результаты инвентаризации</label>
+              <label class="check-line"><input id="notifyShiftPlan" type="checkbox" checked /> Назначенные смены</label>
+              <label class="check-line"><input id="notifyApprovalReminders" type="checkbox" checked /> Напоминать о просроченных решениях</label>
+            </div>
+            <label>Первое напоминание через, минут<input id="notifyReminderAfter" type="number" min="5" max="10080" value="60" /></label>
+            <label>Повторять каждые, минут<input id="notifyRepeatEvery" type="number" min="5" max="10080" value="120" /></label>
+            <label>Максимум напоминаний<input id="notifyMaxReminders" type="number" min="0" max="10" value="3" /></label>
+            <button class="primary" data-action="save-notification-preferences">Сохранить уведомления</button>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="tab-page" id="page-shifts">
+      <div class="grid">
+        <article class="form-panel">
+          <img src="/static/img/team.svg" alt="" class="side-img" />
+          <div>
+            <h2>Рабочая смена</h2>
+            <p>Сотрудник может начать и завершить свою смену. Руководитель может выбрать сотрудника.</p>
+            <label>Сотрудник<select id="shiftWorker"></select></label>
+            <label>Площадка<select id="shiftArea"></select></label>
+            <label>Комментарий<input id="shiftNote" placeholder="Необязательно" /></label>
+            <div class="actions"><button class="primary" data-action="start-shift">Начать смену</button><button data-action="end-shift">Завершить смену</button></div>
+            <label>Период аналитики<select id="activityDays"><option value="7">7 дней</option><option value="30" selected>30 дней</option><option value="90">90 дней</option></select></label>
+            <button data-action="refresh-worker-activity">Обновить аналитику</button>
+          </div>
+        </article>
+        <article class="panel">
+          <h2>Активность сотрудников</h2>
+          <div id="workerActivityList" class="manager-list empty">Данных пока нет</div>
+        </article>
+        <article class="form-panel" data-section="workers">
+          <img src="/static/img/plan.svg" alt="" class="side-img" />
+          <div>
+            <h2>Плановая смена</h2>
+            <p>Руководитель назначает время, сотрудника и площадку. Фактическое начало и окончание сравниваются с планом.</p>
+            <label>Сотрудник<select id="shiftPlanWorker"></select></label>
+            <label>Площадка<select id="shiftPlanArea"></select></label>
+            <label>Начало<input id="shiftPlanStart" type="datetime-local" /></label>
+            <label>Окончание<input id="shiftPlanEnd" type="datetime-local" /></label>
+            <label>Комментарий<input id="shiftPlanNote" placeholder="Необязательно" /></label>
+            <button class="primary" data-action="save-shift-plan">Назначить смену</button>
+          </div>
+        </article>
+        <article class="panel">
+          <h2>План смен</h2>
+          <div id="shiftPlanList" class="manager-list empty">Плановых смен пока нет</div>
+        </article>
+        <article class="form-panel wide" data-section="workers">
+          <img src="/static/img/plan.svg" alt="" class="side-img" />
+          <div>
+            <h2>Повторяющийся график</h2>
+            <input id="shiftTemplateId" type="hidden" />
+            <label>Сотрудник<select id="shiftTemplateWorker"></select></label>
+            <label>Площадка<select id="shiftTemplateArea"></select></label>
+            <label>Вид графика<select id="shiftTemplatePattern"><option value="weekly">По дням недели</option><option value="cycle">Цикл рабочих и выходных дней</option></select></label>
+            <div id="shiftTemplateWeekdays" class="check-grid">
+              <label class="check-line"><input type="checkbox" data-shift-weekday="0" /> Пн</label>
+              <label class="check-line"><input type="checkbox" data-shift-weekday="1" /> Вт</label>
+              <label class="check-line"><input type="checkbox" data-shift-weekday="2" /> Ср</label>
+              <label class="check-line"><input type="checkbox" data-shift-weekday="3" /> Чт</label>
+              <label class="check-line"><input type="checkbox" data-shift-weekday="4" /> Пт</label>
+              <label class="check-line"><input type="checkbox" data-shift-weekday="5" /> Сб</label>
+              <label class="check-line"><input type="checkbox" data-shift-weekday="6" /> Вс</label>
+            </div>
+            <div id="shiftTemplateCycle" class="two-col" style="display:none">
+              <label>Рабочих дней<input id="shiftTemplateWorkDays" type="number" min="1" max="31" value="2" /></label>
+              <label>Выходных дней<input id="shiftTemplateRestDays" type="number" min="1" max="31" value="2" /></label>
+              <label>Начало цикла<input id="shiftTemplateAnchor" type="date" /></label>
+            </div>
+            <div class="two-col">
+              <label>Начало смены<input id="shiftTemplateStartTime" type="time" value="09:00" /></label>
+              <label>Окончание смены<input id="shiftTemplateEndTime" type="time" value="18:00" /></label>
+              <label>График действует с<input id="shiftTemplateValidFrom" type="date" /></label>
+              <label>Действует до<input id="shiftTemplateValidUntil" type="date" /></label>
+            </div>
+            <label>Комментарий<input id="shiftTemplateNote" placeholder="Например, график 2/2" /></label>
+            <div class="actions"><button class="primary" data-action="save-shift-template">Сохранить график</button><button data-action="clear-shift-template">Очистить</button></div>
+          </div>
+        </article>
+        <article class="panel wide">
+          <h2>Повторяющиеся графики</h2>
+          <div id="shiftTemplateList" class="manager-list empty">Графиков пока нет</div>
+        </article>
+        <article class="panel wide">
+          <h2>Календарь смен</h2>
+          <div class="two-col">
+            <label>С<input id="shiftCalendarFrom" type="date" /></label>
+            <label>По<input id="shiftCalendarTo" type="date" /></label>
+            <label>Сотрудник<select id="shiftCalendarWorker"></select></label>
+            <label>Площадка<select id="shiftCalendarArea"></select></label>
+          </div>
+          <button data-action="load-shift-calendar">Обновить календарь</button>
+          <div id="shiftCalendarList" class="manager-list empty">Смены не выбраны</div>
+        </article>
+        <article class="panel wide">
+          <h2>Отклонения от плана</h2>
+          <div id="attendanceDeviationList" class="manager-list empty">Отклонений пока нет</div>
+        </article>
+        <article class="panel wide">
+          <h2>Журнал смен</h2>
+          <div id="workerShiftList" class="manager-list empty">Смен пока нет</div>
+        </article>
+        <article class="panel wide">
+          <h2>Сводка посещаемости</h2>
+          <div class="two-col">
+            <label>С<input id="attendanceFrom" type="date" /></label>
+            <label>По<input id="attendanceTo" type="date" /></label>
+            <label>Сотрудник<select id="attendanceWorker"></select></label>
+            <label>Площадка<select id="attendanceArea"></select></label>
+          </div>
+          <div class="actions"><button data-action="load-attendance">Показать</button><button class="primary" data-action="attendance-xlsx">Excel</button><button data-action="attendance-pdf">PDF</button></div>
+          <div id="attendanceSummaryList" class="manager-list empty">Данных пока нет</div>
+        </article>
+      </div>
+    </section>
+
+    <section class="tab-page" id="page-risks">
+      <div class="grid">
+        <article class="panel wide">
+          <div class="section-title-row"><div><h2>Красные флаги</h2><p>Запас считается в сменах по норме, фактическому расходу и событиям.</p></div><button data-action="refresh-stock-risks">Пересчитать</button></div>
+          <div id="stockRiskSummary" class="manager-list empty">Правила ещё не настроены</div>
+        </article>
+        <article class="form-panel wide">
+          <img src="/static/img/material-boxes.svg" alt="" class="side-img" />
+          <div>
+            <h2>Фактические данные</h2>
+            <p>Сотрудник может внести остаток или расход за смену, день, неделю либо несколько периодов.</p>
+            <div class="two-col">
+              <label>Что вводим<select id="riskObservationMode"><option value="balance">Фактический остаток</option><option value="consumption">Фактический расход</option></select></label>
+              <label>Тип позиции<select id="riskObservationType"><option value="material">Сырьё</option><option value="component">Комплектующая</option><option value="product">Готовая продукция</option><option value="stock_item">Складская позиция</option></select></label>
+              <label>Позиция<select id="riskObservationEntity"></select></label>
+              <label>Площадка<select id="riskObservationArea"></select></label>
+              <label>Количество<input id="riskObservationQuantity" inputmode="decimal" placeholder="0" /></label>
+              <label>Период<select id="riskObservationPeriod"><option value="instant">Одно значение</option><option value="shift">Смена</option><option value="day">День</option><option value="week">Неделя</option></select></label>
+              <label>Количество периодов<input id="riskObservationPeriodCount" inputmode="decimal" value="1" /></label>
+              <label>Примечание<input id="riskObservationNote" maxlength="500" placeholder="Необязательно" /></label>
+            </div>
+            <button class="primary" data-action="save-stock-observation">Сохранить и пересчитать</button>
+          </div>
+        </article>
+        <article class="panel wide">
+          <h2>Активные тревоги</h2>
+          <div id="stockIncidentList" class="manager-list empty">Активных тревог нет</div>
+        </article>
+        <article class="form-panel wide">
+          <img src="/static/img/shield.svg" alt="" class="side-img" />
+          <div>
+            <h2>Событие или форс-мажор</h2>
+            <p>Поломка, больничный, задержка поставки, карантин запаса и другие события сразу учитываются в рисках.</p>
+            <div class="two-col">
+              <label>Тип события<select id="riskEventType"></select></label>
+              <label>Название<input id="riskEventTitle" maxlength="180" /></label>
+              <label>Важность<select id="riskEventSeverity"><option value="warning">Предупреждение</option><option value="critical">Критично</option><option value="emergency">Авария</option></select></label>
+              <label>Влияние<select id="riskEventImpact"><option value="info">Только уведомить</option><option value="capacity_loss">Потеря мощности, %</option><option value="lead_time_days">Задержка поставки, дней</option><option value="unavailable_stock">Недоступный запас</option><option value="demand_multiplier">Рост потребности, множитель</option></select></label>
+              <label>Значение влияния<input id="riskEventImpactValue" inputmode="decimal" value="0" /></label>
+              <label>Недоступное количество<input id="riskEventUnavailable" inputmode="decimal" value="0" /></label>
+              <small id="riskEventAccessNote" class="muted"></small>
+              <label>Площадка<select id="riskEventArea"></select></label>
+              <label>Отдел<select id="riskEventDepartment"></select></label>
+              <label>Позиция<select id="riskEventEntity"></select></label>
+              <label>Начало<input id="riskEventStart" type="datetime-local" /></label>
+              <label>Окончание<input id="riskEventEnd" type="datetime-local" /></label>
+            </div>
+            <label>Подробности<textarea id="riskEventNote" rows="3" maxlength="1000"></textarea></label>
+            <button class="primary" data-action="save-risk-event">Зарегистрировать событие</button>
+          </div>
+        </article>
+        <article class="panel wide">
+          <h2>Активные события</h2>
+          <div id="riskEventList" class="manager-list empty">Активных событий нет</div>
+        </article>
+        <article class="form-panel wide" data-admin-only="1">
+          <img src="/static/img/security.svg" alt="" class="side-img" />
+          <div>
+            <h2>Правило критического остатка</h2>
+            <input id="stockRuleId" type="hidden" />
+            <div class="two-col">
+              <label>Тип позиции<select id="stockRuleType"><option value="material">Сырьё</option><option value="component">Комплектующая</option><option value="product">Готовая продукция</option><option value="stock_item">Складская позиция</option></select></label>
+              <label>Позиция<select id="stockRuleEntity"></select></label>
+              <label>Площадка<select id="stockRuleArea"></select></label>
+              <label>Расчёт<select id="stockRuleMode"><option value="hybrid">Безопасный: максимум из норм и факта</option><option value="manual">Только заданная норма</option><option value="observed">Только фактические расходы</option><option value="historical">По операциям учёта</option><option value="planned">По плану выпуска и составу</option></select></label>
+              <label>Норма расхода<input id="stockRuleConsumption" inputmode="decimal" value="0" /></label>
+              <label>Период нормы<select id="stockRulePeriod"><option value="shift">За смену</option><option value="day">За день</option><option value="week">За неделю</option></select></label>
+              <label>Смен в день<input id="stockRuleShiftsDay" inputmode="decimal" value="1" /></label>
+              <label>Рабочих дней в неделю<input id="stockRuleWorkDays" inputmode="decimal" value="5" /></label>
+              <label>Жёлтый порог, смен<input id="stockRuleWarning" inputmode="decimal" value="10" /></label>
+              <label>Красный порог, смен<input id="stockRuleCritical" inputmode="decimal" value="5" /></label>
+              <label>Аварийный порог, смен<input id="stockRuleEmergency" inputmode="decimal" value="1" /></label>
+              <label>Неснижаемый остаток<input id="stockRuleBuffer" inputmode="decimal" value="0" /></label>
+              <label>Жёлтый порог, количество<input id="stockRuleAbsoluteWarning" inputmode="decimal" placeholder="Необязательно" /></label>
+              <label>Красный порог, количество<input id="stockRuleAbsoluteCritical" inputmode="decimal" placeholder="Необязательно" /></label>
+              <label>Коэффициент плановой потребности<input id="stockRuleDemandMultiplier" inputmode="decimal" value="1" /></label>
+              <label>Учиться за дней<input id="stockRuleWindow" type="number" value="28" /></label>
+              <label>Минимум фактических записей<input id="stockRuleMinSamples" type="number" min="1" max="100" value="2" /></label>
+              <label>Данные устарели через часов<input id="stockRuleStale" type="number" value="168" /></label>
+              <label>Скачок расхода, раз<input id="stockRuleAnomaly" inputmode="decimal" value="2" /></label>
+              <label>Повтор тревоги через минут<input id="stockRuleRepeat" type="number" value="180" /></label>
+              <label>Из этого количества<input id="stockRuleYieldInput" inputmode="decimal" value="0" /></label>
+              <label>Получается продукции<input id="stockRuleYieldOutput" inputmode="decimal" value="0" /></label>
+              <label>Выходная позиция для пересчёта<select id="stockRuleYieldEntity"></select></label>
+              <label>Плановая готовая позиция<select id="stockRulePlannedEntity"></select></label>
+              <label>Плановый выпуск<input id="stockRulePlannedQty" inputmode="decimal" value="0" /></label>
+              <label>Период плана<select id="stockRulePlannedPeriod"><option value="shift">За смену</option><option value="day">За день</option><option value="week">За неделю</option></select></label>
+              <label>Дополнительные Telegram ID<input id="stockRuleNotifyIds" placeholder="123, 456" /></label>
+            </div>
+            <div class="check-grid">
+              <label class="check-line"><input id="stockRuleEnabled" type="checkbox" checked /> Правило включено</label>
+              <label class="check-line"><input id="stockRuleNotifyOwner" type="checkbox" checked /> Уведомлять владельца</label>
+              <label class="check-line"><input id="stockRuleNotifyAdmins" type="checkbox" checked /> Уведомлять администраторов</label>
+              <label class="check-line"><input id="stockRuleNotifyHeads" type="checkbox" checked /> Уведомлять руководителей отделов</label>
+              <label class="check-line"><input id="stockRuleNotifyWorkChat" type="checkbox" /> Дублировать тревогу в рабочий чат</label>
+              <label class="check-line"><input id="stockRuleStaleAlert" type="checkbox" checked /> Тревога при старых данных</label>
+              <label class="check-line"><input id="stockRuleNegativeAlert" type="checkbox" checked /> Авария при минусовом остатке</label>
+              <label class="check-line"><input id="stockRuleAnomalyAlert" type="checkbox" checked /> Тревога при скачке расхода</label>
+            </div>
+            <div class="actions"><button class="primary" data-action="save-stock-rule">Сохранить правило</button><button data-action="clear-stock-rule">Очистить</button></div>
+          </div>
+        </article>
+        <article class="panel wide">
+          <h2>Настроенные правила</h2>
+          <div id="stockRuleList" class="manager-list empty">Правила ещё не настроены</div>
+        </article>
+        <article class="panel wide">
+          <h2>Последние фактические данные</h2>
+          <div id="stockObservationList" class="manager-list empty">Записей пока нет</div>
+        </article>
+      </div>
+    </section>
+
+    <section class="tab-page" id="page-departments">
+      <div class="grid">
+        <article class="form-panel wide" data-admin-only="1">
+          <img src="/static/img/team.svg" alt="" class="side-img" />
+          <div>
+            <h2>Отдел</h2>
+            <p>Название свободное. Отметьте действия и позиции, которые проходят через этот отдел.</p>
+            <input id="departmentId" type="hidden" />
+            <label>Название<input id="departmentName" maxlength="120" placeholder="Название отдела" /></label>
+            <label>Описание<input id="departmentDescription" maxlength="500" placeholder="Необязательно" /></label>
+            <div class="actions"><button class="primary" data-action="save-department">Сохранить отдел</button><button data-action="clear-department">Очистить</button></div>
+          </div>
+        </article>
+        <article class="form-panel wide" data-admin-only="1">
+          <img src="/static/img/production-form.svg" alt="" class="side-img" />
+          <div>
+            <h2>Действия отдела</h2>
+            <label>Отдел<select id="departmentOperationDepartment"></select></label>
+            <label>Действие<select id="departmentOperationKey"></select></label>
+            <div class="check-grid">
+              <label class="check-line"><input id="departmentOperationView" type="checkbox" checked /> Просмотр</label>
+              <label class="check-line"><input id="departmentOperationSubmit" type="checkbox" checked /> Ввод данных</label>
+              <label class="check-line"><input id="departmentOperationEdit" type="checkbox" /> Исправление</label>
+            </div>
+            <button class="primary" data-action="save-department-operation">Добавить действие</button>
+          </div>
+        </article>
+        <article class="form-panel wide" data-admin-only="1">
+          <img src="/static/img/material-boxes.svg" alt="" class="side-img" />
+          <div>
+            <h2>Позиции отдела</h2>
+            <p>Сотрудник увидит в списках только назначенные позиции.</p>
+            <label>Отдел<select id="departmentEntityDepartment"></select></label>
+            <label>Действие<select id="departmentEntityOperation"></select></label>
+            <label>Тип позиции<select id="departmentEntityType"><option value="component">Комплектующая</option><option value="product">Изделие</option><option value="material">Сырьё</option><option value="stock_item">Складская позиция</option><option value="meter">Счётчик</option></select></label>
+            <label>Позиция<select id="departmentEntityId"></select></label>
+            <button class="primary" data-action="save-department-entity">Назначить позицию</button>
+          </div>
+        </article>
+        <article class="form-panel wide">
+          <img src="/static/img/team.svg" alt="" class="side-img" />
+          <div>
+            <h2>Доступ сотрудников</h2>
+            <p>Руководитель может добавлять людей только в свой отдел и выдавать уровень не выше собственного.</p>
+            <label>Отдел<select id="departmentMemberDepartment"></select></label>
+            <label>Telegram ID<input id="departmentMemberUserId" inputmode="numeric" /></label>
+            <label>Имя<input id="departmentMemberName" maxlength="120" /></label>
+            <label>Уровень<select id="departmentMemberRole"><option value="10">Только просмотр</option><option value="20" selected>Ввод данных</option><option value="30">Ввод и исправление</option><option value="50">Руководитель</option></select></label>
+            <p class="muted">Пустой список даёт все действия в пределах ваших собственных прав. Чтобы ограничить человека, отметьте только нужные.</p>
+            <div id="departmentMemberOperations" class="check-grid"></div>
+            <button class="primary" data-action="save-department-member">Выдать доступ</button>
+          </div>
+        </article>
+        <article class="panel wide">
+          <h2>Созданные отделы</h2>
+          <div id="departmentList" class="manager-list empty">Отделы ещё не созданы</div>
+        </article>
+      </div>
+    </section>
+
+    <section class="tab-page" id="page-area-access" data-section="permissions">
+      <div class="grid">
+        <article class="form-panel">
+          <img src="/static/img/team.svg" alt="" class="side-img" />
+          <div>
+            <h2>Доступ должностей по площадкам</h2>
+            <p>Если для раздела создано хотя бы одно правило, должность работает только на указанных площадках.</p>
+            <label>Должность<select id="accessJob"></select></label>
+            <label>Площадка<select id="accessArea"></select></label>
+            <label>Раздел<select id="accessSection"><option value="overview">Обзор</option><option value="production">Выпуск</option><option value="material">Сырьё</option><option value="assembly">Сборка</option><option value="movement">Перемещение</option><option value="shipment">Отгрузка</option><option value="returns">Возврат</option><option value="reports">Отчёты</option><option value="inventory">Инвентаризация</option></select></label>
+            <div class="check-grid">
+              <label class="check-line"><input id="accessView" type="checkbox" checked /> Просмотр</label>
+              <label class="check-line"><input id="accessSubmit" type="checkbox" /> Добавление</label>
+              <label class="check-line"><input id="accessEdit" type="checkbox" /> Редактирование</label>
+            </div>
+            <button class="primary" data-action="save-area-access">Сохранить правило</button>
+          </div>
+        </article>
+        <article class="panel">
+          <h2>Действующие правила</h2>
+          <div id="areaAccessList" class="manager-list empty">Правила ещё не заданы</div>
+        </article>
+      </div>
+    </section>
+
+    <section class="tab-page" id="page-security" data-section="site">
+      <div class="grid">
+        <article class="panel illustrated">
+          <div>
+            <h2>Mini App и синхронизация</h2>
+            <div id="syncList" class="list empty">Нет данных</div>
+          </div>
+          <img src="/static/img/security.svg" alt="" />
+        </article>
+        <article class="panel illustrated">
+          <div>
+            <h2>Действия в Mini App</h2>
+            <div id="miniAppLog" class="list empty">Нет данных</div>
+          </div>
+          <img src="/static/img/team.svg" alt="" />
+        </article>
+        <article class="panel illustrated">
+          <div>
+            <h2>Защита</h2>
+            <div id="securityStatus" class="list empty">Нет данных</div>
+          </div>
+          <img src="/static/img/shield.svg" alt="" />
+        </article>
+        <article class="panel wide">
+          <h2>Резерв</h2>
+          <p>Копия создаётся для выбранного учёта и скачивается через Mini App.</p>
+          <div class="actions"><button class="primary" data-action="backup-account">Скачать копию учёта</button></div>
+        </article>
+        <article class="form-panel wide">
+          <img src="/static/img/security.svg" alt="" class="side-img" />
+          <div>
+            <h2>Восстановление учёта</h2>
+            <p>Доступно только владельцу. Перед восстановлением система автоматически создаёт страховочную копию. Подходит копия, созданная для этого же учёта.</p>
+            <label>Файл копии<input id="restoreBackupFile" type="file" accept=".zip,.enc" /></label>
+            <label>Подтверждение<input id="restoreConfirmation" placeholder="Введите ВОССТАНОВИТЬ" /></label>
+            <button class="danger" data-action="restore-account">Восстановить из копии</button>
+          </div>
+        </article>
+      </div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

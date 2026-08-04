@@ -14,7 +14,7 @@ router = Router()
 HELP_PAGES: dict[str, str] = {
     "start": """Как пользоваться
 
-Бот помогает вести учёт производства, комплектующих, склада, сборки, фасовки, отправки, продажи и отчётов.
+Бот помогает вести учёт производства, комплектующих, склада, производственных этапов, отправки, продажи и отчётов.
 
 С чего начать:
 1. Добавьте бота в рабочую группу.
@@ -141,8 +141,15 @@ HELP_PAGES: dict[str, str] = {
 Продано Изделие 1 200
 
 Сырьё:
-Приход Пластик 500 кг
-Расход Пластик 120 кг
+Приход Материал 500 кг
+Расход Материал 120 кг
+Расход Материал 250 кг за неделю
+
+Инвентаризация и критические остатки:
+Остаток Материал 80 кг
+Инвентаризация Материал 80 кг
+Красные флаги
+Поломка: кратко опишите событие
 
 Счётчик:
 Показание Счётчик 12500
@@ -176,7 +183,7 @@ PDF отчёт за неделю
 • сколько изделий можно собрать;
 • чего не хватает;
 • сколько собрано;
-• сколько зафасовано;
+• сколько подготовлено;
 • сколько отправлено или продано;
 • журнал записей.
 
@@ -199,8 +206,10 @@ PDF отчёт за неделю
 Зафасовали Изделие 1 500
 На отправку Изделие 1 300
 Продано Изделие 1 200
-Приход Пластик 500 кг
-Расход Пластик 120 кг
+Приход Материал 500 кг
+Расход Материал 120 кг за смену
+Остаток Материал 80 кг
+Красные флаги
 Отчёт за месяц
 Excel отчёт за месяц
 PDF отчёт за неделю
@@ -256,7 +265,7 @@ async def start(message: Message) -> None:
     if message.chat.type == "private":
         await message.answer(
             "Производственный учёт\n\nНачните с настройки или подключите рабочую группу. Подсказки есть в разделе «Как пользоваться».",
-            reply_markup=main_menu(),
+            reply_markup=main_menu(message.from_user.id if message.from_user else None),
         )
     else:
         await message.answer("Группа видна в личке бота у владельца и людей с правом управления. Откройте бота в личке и нажмите «Группы».")
@@ -282,12 +291,15 @@ async def help_text(message: Message) -> None:
 
 @router.callback_query(F.data == "menu:main")
 async def menu_main(callback: CallbackQuery) -> None:
-    await safe_edit_text(callback.message, "Главное меню", reply_markup=main_menu())
+    await safe_edit_text(callback.message, "Главное меню", reply_markup=main_menu(callback.from_user.id if callback.from_user else None))
     await callback.answer()
 
 
 @router.callback_query(F.data == "menu:setup")
 async def menu_setup(callback: CallbackQuery) -> None:
+    if not repo.is_system_admin_id(callback.from_user.id if callback.from_user else None):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
     if callback.message.chat.type == "private" and callback.from_user:
         groups = await _manageable_group_chats(callback.bot, callback.from_user.id)
         if len(groups) == 1:
