@@ -22,9 +22,11 @@ ACCOUNT_TABLES: dict[str, str] = {
     "job_titles": "chat_id",
     "workers": "chat_id",
     "entities": "chat_id",
+    "entity_codes": "chat_id",
     "aliases": "chat_id",
     "inventory": "chat_id",
     "operations": "chat_id",
+    "operation_presets": "chat_id",
     "setup_sessions": "chat_id",
     "export_preferences": "chat_id",
     "material_stock_settings": "chat_id",
@@ -39,6 +41,15 @@ ACCOUNT_TABLES: dict[str, str] = {
     "shift_plans": "chat_id",
     "report_delivery_history": "chat_id",
     "shift_templates": "chat_id",
+    "shift_sync_packages": "chat_id",
+    "shift_handovers": "chat_id",
+    "shift_continuity_settings": "chat_id",
+    "shift_continuity_reminders": "chat_id",
+    "supervisor_decisions": "chat_id",
+    "control_sla_settings": "chat_id",
+    "sla_breach_notifications": "chat_id",
+    "shift_handover_checklist_templates": "chat_id",
+    "label_templates": "chat_id",
     "notification_preferences": "chat_id",
     "inventory_approval_escalations": "chat_id",
     "departments": "chat_id",
@@ -46,6 +57,20 @@ ACCOUNT_TABLES: dict[str, str] = {
     "stock_observations": "chat_id",
     "operational_events": "chat_id",
     "stock_alert_incidents": "chat_id",
+    "production_tasks": "chat_id",
+    "interdepartment_requests": "chat_id",
+    "production_lots": "chat_id",
+    "equipment": "chat_id",
+    "equipment_downtimes": "chat_id",
+    "maintenance_records": "chat_id",
+    "workflow_notifications": "chat_id",
+    "quality_rules": "chat_id",
+    "quality_inspections": "chat_id",
+    "replenishment_settings": "chat_id",
+    "replenishment_requests": "chat_id",
+    "maintenance_plans": "chat_id",
+    "maintenance_work_orders": "chat_id",
+    "reliability_journal": "chat_id",
 }
 
 GLOBAL_ACCOUNT_TABLES = {
@@ -135,6 +160,27 @@ def create_account_backup(chat_id: int, user_id: int | None = None) -> Path:
     else:
         tables_payload["inventory_session_items"] = []
 
+    package_ids = [int(row["id"]) for row in tables_payload.get("shift_sync_packages", [])]
+    if package_ids:
+        marks = ",".join("?" for _ in package_ids)
+        tables_payload["shift_sync_items"] = _rows("shift_sync_items", f"package_id IN ({marks})", package_ids)
+    else:
+        tables_payload["shift_sync_items"] = []
+
+    handover_ids = [int(row["id"]) for row in tables_payload.get("shift_handovers", [])]
+    if handover_ids:
+        marks = ",".join("?" for _ in handover_ids)
+        tables_payload["shift_handover_checks"] = _rows("shift_handover_checks", f"handover_id IN ({marks})", handover_ids)
+    else:
+        tables_payload["shift_handover_checks"] = []
+
+    checklist_template_ids = [int(row["id"]) for row in tables_payload.get("shift_handover_checklist_templates", [])]
+    if checklist_template_ids:
+        marks = ",".join("?" for _ in checklist_template_ids)
+        tables_payload["shift_handover_checklist_items"] = _rows("shift_handover_checklist_items", f"template_id IN ({marks})", checklist_template_ids)
+    else:
+        tables_payload["shift_handover_checklist_items"] = []
+
     rule_ids = [int(row["id"]) for row in tables_payload.get("stock_alert_rules", [])]
     if rule_ids:
         marks = ",".join("?" for _ in rule_ids)
@@ -153,6 +199,70 @@ def create_account_backup(chat_id: int, user_id: int | None = None) -> Path:
         tables_payload["department_entity_rules"] = []
         tables_payload["department_members"] = []
 
+    task_ids = [int(row["id"]) for row in tables_payload.get("production_tasks", [])]
+    if task_ids:
+        marks = ",".join("?" for _ in task_ids)
+        tables_payload["production_task_events"] = _rows("production_task_events", f"task_id IN ({marks})", task_ids)
+    else:
+        tables_payload["production_task_events"] = []
+
+    request_ids = [int(row["id"]) for row in tables_payload.get("interdepartment_requests", [])]
+    if request_ids:
+        marks = ",".join("?" for _ in request_ids)
+        tables_payload["interdepartment_request_events"] = _rows("interdepartment_request_events", f"request_id IN ({marks})", request_ids)
+    else:
+        tables_payload["interdepartment_request_events"] = []
+
+    lot_ids = [int(row["id"]) for row in tables_payload.get("production_lots", [])]
+    if lot_ids:
+        marks = ",".join("?" for _ in lot_ids)
+        tables_payload["lot_inventory"] = _rows("lot_inventory", f"lot_id IN ({marks})", lot_ids)
+        tables_payload["lot_relations"] = _rows("lot_relations", f"parent_lot_id IN ({marks}) OR component_lot_id IN ({marks})", lot_ids + lot_ids)
+        operation_ids = [int(row["id"]) for row in tables_payload.get("operations", [])]
+        if operation_ids:
+            op_marks = ",".join("?" for _ in operation_ids)
+            tables_payload["lot_operation_links"] = _rows("lot_operation_links", f"operation_id IN ({op_marks})", operation_ids)
+        else:
+            tables_payload["lot_operation_links"] = []
+    else:
+        tables_payload["lot_inventory"] = []
+        tables_payload["lot_relations"] = []
+        tables_payload["lot_operation_links"] = []
+
+
+    inspection_ids = [int(row["id"]) for row in tables_payload.get("quality_inspections", [])]
+    if inspection_ids:
+        marks = ",".join("?" for _ in inspection_ids)
+        tables_payload["quality_defects"] = _rows("quality_defects", f"inspection_id IN ({marks})", inspection_ids)
+        tables_payload["quality_actions"] = _rows("quality_actions", f"inspection_id IN ({marks})", inspection_ids)
+    else:
+        tables_payload["quality_defects"] = []
+        tables_payload["quality_actions"] = []
+
+    replenishment_ids = [int(row["id"]) for row in tables_payload.get("replenishment_requests", [])]
+    if replenishment_ids:
+        marks = ",".join("?" for _ in replenishment_ids)
+        tables_payload["replenishment_request_events"] = _rows("replenishment_request_events", f"request_id IN ({marks})", replenishment_ids)
+    else:
+        tables_payload["replenishment_request_events"] = []
+
+    maintenance_plan_ids = [int(row["id"]) for row in tables_payload.get("maintenance_plans", [])]
+    if maintenance_plan_ids:
+        marks = ",".join("?" for _ in maintenance_plan_ids)
+        tables_payload["maintenance_checklist_items"] = _rows("maintenance_checklist_items", f"plan_id IN ({marks})", maintenance_plan_ids)
+        tables_payload["maintenance_spare_parts"] = _rows("maintenance_spare_parts", f"plan_id IN ({marks})", maintenance_plan_ids)
+    else:
+        tables_payload["maintenance_checklist_items"] = []
+        tables_payload["maintenance_spare_parts"] = []
+
+    maintenance_work_ids = [int(row["id"]) for row in tables_payload.get("maintenance_work_orders", [])]
+    if maintenance_work_ids:
+        marks = ",".join("?" for _ in maintenance_work_ids)
+        tables_payload["maintenance_work_checks"] = _rows("maintenance_work_checks", f"work_order_id IN ({marks})", maintenance_work_ids)
+        tables_payload["maintenance_work_parts"] = _rows("maintenance_work_parts", f"work_order_id IN ({marks})", maintenance_work_ids)
+    else:
+        tables_payload["maintenance_work_checks"] = []
+        tables_payload["maintenance_work_parts"] = []
 
     if account:
         tables_payload["account_user_access"] = _rows("account_user_access", "account_id=?", (account.id,))
@@ -244,9 +354,12 @@ def format_backup_list(limit: int = 10) -> str:
 
 RESTORE_ALLOWED_TABLES = set(ACCOUNT_TABLES) | {
     "product_components", "meter_area_bindings", "stock_item_area_bindings",
-    "chat_area_bindings", "inventory_session_items",
-    "department_operation_rules", "department_entity_rules", "department_members",
+    "chat_area_bindings", "inventory_session_items", "shift_sync_items", "shift_handover_checks",
+    "shift_handover_checklist_items", "department_operation_rules", "department_entity_rules", "department_members",
     "account_user_access", "account_chat_access", "stock_alert_snoozes",
+    "production_task_events", "interdepartment_request_events", "lot_inventory", "lot_operation_links", "lot_relations",
+    "quality_defects", "quality_actions", "replenishment_request_events",
+    "maintenance_checklist_items", "maintenance_spare_parts", "maintenance_work_checks", "maintenance_work_parts",
 }
 
 
@@ -312,6 +425,9 @@ def restore_account_backup(chat_id: int, user_id: int, data: bytes, filename: st
         entity_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM entities WHERE chat_id=?",(scope,)).fetchall()]
         area_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM areas WHERE chat_id=?",(scope,)).fetchall()]
         session_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM inventory_sessions WHERE chat_id=?",(scope,)).fetchall()]
+        package_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM shift_sync_packages WHERE chat_id=?",(scope,)).fetchall()]
+        handover_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM shift_handovers WHERE chat_id=?",(scope,)).fetchall()]
+        checklist_template_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM shift_handover_checklist_templates WHERE chat_id=?",(scope,)).fetchall()]
         department_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM departments WHERE chat_id=?",(scope,)).fetchall()]
         stock_rule_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM stock_alert_rules WHERE chat_id=?",(scope,)).fetchall()]
         if stock_rule_ids:
@@ -324,6 +440,12 @@ def restore_account_backup(chat_id: int, user_id: int, data: bytes, filename: st
             conn.execute(f"DELETE FROM department_operation_rules WHERE department_id IN ({marks})",department_ids)
         if session_ids:
             marks=','.join('?' for _ in session_ids); conn.execute(f"DELETE FROM inventory_session_items WHERE session_id IN ({marks})",session_ids)
+        if package_ids:
+            marks=','.join('?' for _ in package_ids); conn.execute(f"DELETE FROM shift_sync_items WHERE package_id IN ({marks})",package_ids)
+        if handover_ids:
+            marks=','.join('?' for _ in handover_ids); conn.execute(f"DELETE FROM shift_handover_checks WHERE handover_id IN ({marks})",handover_ids)
+        if checklist_template_ids:
+            marks=','.join('?' for _ in checklist_template_ids); conn.execute(f"DELETE FROM shift_handover_checklist_items WHERE template_id IN ({marks})",checklist_template_ids)
         if entity_ids:
             marks=','.join('?' for _ in entity_ids)
             conn.execute(f"DELETE FROM product_components WHERE product_id IN ({marks}) OR component_id IN ({marks})", entity_ids+entity_ids)
@@ -331,12 +453,45 @@ def restore_account_backup(chat_id: int, user_id: int, data: bytes, filename: st
             conn.execute(f"DELETE FROM stock_item_area_bindings WHERE stock_item_id IN ({marks})",entity_ids)
         if area_ids:
             marks=','.join('?' for _ in area_ids); conn.execute(f"DELETE FROM chat_area_bindings WHERE area_id IN ({marks})",area_ids)
+        task_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM production_tasks WHERE chat_id=?",(scope,)).fetchall()]
+        request_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM interdepartment_requests WHERE chat_id=?",(scope,)).fetchall()]
+        lot_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM production_lots WHERE chat_id=?",(scope,)).fetchall()]
+        operation_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM operations WHERE chat_id=?",(scope,)).fetchall()]
+        quality_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM quality_inspections WHERE chat_id=?",(scope,)).fetchall()]
+        repl_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM replenishment_requests WHERE chat_id=?",(scope,)).fetchall()]
+        maint_plan_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM maintenance_plans WHERE chat_id=?",(scope,)).fetchall()]
+        maint_work_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM maintenance_work_orders WHERE chat_id=?",(scope,)).fetchall()]
+        if quality_ids:
+            marks=','.join('?' for _ in quality_ids); conn.execute(f"DELETE FROM quality_defects WHERE inspection_id IN ({marks})",quality_ids); conn.execute(f"DELETE FROM quality_actions WHERE inspection_id IN ({marks})",quality_ids)
+        if repl_ids:
+            marks=','.join('?' for _ in repl_ids); conn.execute(f"DELETE FROM replenishment_request_events WHERE request_id IN ({marks})",repl_ids)
+        if maint_work_ids:
+            marks=','.join('?' for _ in maint_work_ids); conn.execute(f"DELETE FROM maintenance_work_checks WHERE work_order_id IN ({marks})",maint_work_ids); conn.execute(f"DELETE FROM maintenance_work_parts WHERE work_order_id IN ({marks})",maint_work_ids)
+        if maint_plan_ids:
+            marks=','.join('?' for _ in maint_plan_ids); conn.execute(f"DELETE FROM maintenance_checklist_items WHERE plan_id IN ({marks})",maint_plan_ids); conn.execute(f"DELETE FROM maintenance_spare_parts WHERE plan_id IN ({marks})",maint_plan_ids)
+        if task_ids:
+            marks=','.join('?' for _ in task_ids); conn.execute(f"DELETE FROM production_task_events WHERE task_id IN ({marks})",task_ids)
+        if request_ids:
+            marks=','.join('?' for _ in request_ids); conn.execute(f"DELETE FROM interdepartment_request_events WHERE request_id IN ({marks})",request_ids)
+        if lot_ids:
+            marks=','.join('?' for _ in lot_ids)
+            conn.execute(f"DELETE FROM lot_inventory WHERE lot_id IN ({marks})",lot_ids)
+            conn.execute(f"DELETE FROM lot_relations WHERE parent_lot_id IN ({marks}) OR component_lot_id IN ({marks})",lot_ids+lot_ids)
+        if operation_ids:
+            marks=','.join('?' for _ in operation_ids); conn.execute(f"DELETE FROM lot_operation_links WHERE operation_id IN ({marks})",operation_ids)
         delete_order=[
+            "workflow_notifications","reliability_journal",
+            "maintenance_work_orders","maintenance_plans","quality_inspections","quality_rules","replenishment_requests","replenishment_settings",
+            "maintenance_records","equipment_downtimes","equipment",
+            "interdepartment_requests","production_tasks","production_lots",
             "stock_alert_incidents","stock_observations","operational_events","stock_alert_rules",
             "inventory_approval_escalations","report_delivery_history","report_schedules","inbox_items",
+            "sla_breach_notifications","supervisor_decisions","control_sla_settings",
+            "shift_continuity_reminders","shift_continuity_settings","label_templates",
+            "shift_handovers","shift_sync_packages","shift_handover_checklist_templates",
             "worker_shifts","shift_plans","shift_templates","notification_preferences","inventory_sessions",
             "report_presets","assembly_plan_targets","area_section_access",
-            "operations","inventory","aliases",
+            "operation_presets","operations","inventory","entity_codes","aliases",
             "material_stock_settings","export_preferences","setup_sessions","operation_destinations","workers",
             "job_titles","departments","entities","areas",
         ]
@@ -348,10 +503,16 @@ def restore_account_backup(chat_id: int, user_id: int, data: bytes, filename: st
             conn.execute("DELETE FROM account_chat_access WHERE account_id=?",(account.id,))
         insert_order=[
             "areas","job_titles","entities","departments","department_operation_rules","department_entity_rules","department_members","workers","operation_destinations","export_preferences",
-            "material_stock_settings","area_section_access","aliases","inventory","operations",
+            "material_stock_settings","area_section_access","aliases","entity_codes","inventory",
+            "production_lots","production_tasks","production_task_events","interdepartment_requests","interdepartment_request_events","equipment","equipment_downtimes","maintenance_records",
+            "quality_rules","quality_inspections","quality_defects","quality_actions","replenishment_settings","replenishment_requests","replenishment_request_events",
+            "maintenance_plans","maintenance_checklist_items","maintenance_spare_parts","maintenance_work_orders","maintenance_work_checks","maintenance_work_parts","workflow_notifications",
+            "operations","lot_operation_links","lot_inventory","lot_relations","reliability_journal","operation_presets",
             "stock_alert_rules","stock_alert_snoozes","stock_observations","operational_events","stock_alert_incidents",
             "assembly_plan_targets","report_presets","inventory_sessions","shift_templates","shift_plans",
-            "worker_shifts","report_schedules","inbox_items","report_delivery_history",
+            "worker_shifts","shift_sync_packages","shift_sync_items","shift_handover_checklist_templates","shift_handover_checklist_items","shift_handovers","shift_handover_checks",
+            "shift_continuity_settings","shift_continuity_reminders","control_sla_settings","supervisor_decisions","sla_breach_notifications",
+            "label_templates","report_schedules","inbox_items","report_delivery_history",
             "notification_preferences","inventory_approval_escalations","product_components",
             "meter_area_bindings","stock_item_area_bindings","chat_area_bindings","inventory_session_items",
             "setup_sessions","account_user_access","account_chat_access",

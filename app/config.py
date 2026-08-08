@@ -62,11 +62,11 @@ class Settings:
             raise RuntimeError("Отключены и бот, и Mini App.")
         token = self.bot_token.strip()
         if token in _TOKEN_PLACEHOLDERS:
-            raise RuntimeError("В .env не указан BOT_TOKEN из BotFather.")
+            raise RuntimeError("В переменных хостинга или .env не указан BOT_TOKEN из BotFather.")
         if not _TOKEN_RE.match(token):
             raise RuntimeError("BOT_TOKEN выглядит неверно.")
         if not self.primary_owner_id:
-            raise RuntimeError("В .env не указан OWNER_TELEGRAM_ID.")
+            raise RuntimeError("В переменных хостинга или .env не указан OWNER_TELEGRAM_ID.")
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
 

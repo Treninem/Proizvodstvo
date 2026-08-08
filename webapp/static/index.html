@@ -6,10 +6,11 @@
   <meta name="theme-color" content="#07111f" />
   <title>Производство</title>
   <link rel="manifest" href="/static/manifest.webmanifest" />
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v=77" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
+  <div id="connectionBanner" class="connection-banner hidden">Нет связи. Введённые данные сохранены как черновик.</div>
   <main class="app-shell">
     <section class="hero">
       <div class="hero-text">
@@ -49,6 +50,9 @@
 
     <nav class="tabs" aria-label="Разделы">
       <button class="tab active" data-tab="overview">Обзор</button>
+      <button class="tab" data-tab="control" data-control-only="1">Смена под контролем</button>
+      <button class="tab" data-tab="workflow">Задания</button>
+      <button class="tab" data-tab="quality">Качество и снабжение</button>
       <button class="tab hidden" data-tab="work" data-work-entry="1">Рабочий ввод</button>
       <button class="tab" data-tab="production" data-section="production">Выпуск</button>
       <button class="tab" data-tab="materials" data-section="material">Сырьё</button>
@@ -79,14 +83,197 @@
       <div id="accountList" class="account-list"></div>
     </section>
 
+    <section class="tab-page" id="page-control">
+      <div class="control-kpis">
+        <article class="control-kpi"><span>На смене</span><strong id="controlOpenShifts">0</strong></article>
+        <article class="control-kpi"><span>Ждут проверки</span><strong id="controlPackages">0</strong></article>
+        <article class="control-kpi"><span>Не приняты передачи</span><strong id="controlHandovers">0</strong></article>
+        <article class="control-kpi danger"><span>Просрочено / критично</span><strong id="controlOverdue">0</strong></article>
+      </div>
+      <div class="grid">
+        <article class="panel"><div class="section-title-row"><div><h2>Кто сейчас на смене</h2><p>Текущие открытые смены вашего контура.</p></div><button data-action="refresh-control">Обновить</button></div><div id="controlShiftList" class="manager-list empty">Нет открытых смен</div></article>
+        <article class="panel"><h2>Пакеты, требующие внимания</h2><div id="controlPackageList" class="manager-list empty">Нет ожидающих пакетов</div></article>
+        <article class="panel"><h2>Передача смены</h2><div id="controlHandoverList" class="manager-list empty">Нет непринятых передач</div></article>
+        <article class="panel"><h2>Критические тревоги</h2><div id="controlAlertList" class="manager-list empty">Критических тревог нет</div></article>
+        <article class="panel wide"><h2>Последние решения руководителей</h2><div id="controlDecisionList" class="manager-list empty">Решений пока нет</div></article>
+        <article class="panel" data-admin-only="1">
+          <h2>Время реакции (SLA)</h2>
+          <p>После превышения времени объект помечается просроченным, а ответственным отправляется срочное уведомление.</p>
+          <label>Пакет смены, минут<input id="slaPackageMinutes" type="number" min="5" max="10080" value="120" /></label>
+          <label>Передача смены, минут<input id="slaHandoverMinutes" type="number" min="5" max="10080" value="60" /></label>
+          <label>Критическая тревога, минут<input id="slaAlertMinutes" type="number" min="5" max="10080" value="30" /></label>
+          <button class="primary" data-action="save-control-sla">Сохранить время реакции</button>
+        </article>
+        <article class="panel" data-admin-only="1">
+          <div class="section-title-row"><div><h2>Диагностика</h2><p>База, бот, Mini App, очередь уведомлений, диск и резервные копии.</p></div><button data-action="load-diagnostics">Проверить</button></div>
+          <div id="diagnosticsStatus" class="manager-list empty">Проверка ещё не запускалась</div>
+          <div id="diagnosticsErrors" class="manager-list compact empty">Ошибок пока нет</div>
+        </article>
+      </div>
+    </section>
+
+    <section class="tab-page" id="page-workflow">
+      <div class="control-kpis">
+        <article class="control-kpi"><span>Активные задания</span><strong id="wfActiveTasks">0</strong></article>
+        <article class="control-kpi"><span>Открытые заявки</span><strong id="wfOpenRequests">0</strong></article>
+        <article class="control-kpi danger"><span>Простои</span><strong id="wfDowntimes">0</strong></article>
+        <article class="control-kpi"><span>ТО скоро/просрочено</span><strong id="wfMaintenance">0</strong></article>
+      </div>
+      <div class="grid workflow-grid">
+        <article class="panel wide">
+          <div class="section-title-row"><div><h2>Задания</h2><p>План → в работе → пауза → выполнено. Факт подтягивается из обычных производственных записей.</p></div><button data-action="refresh-workflow">Обновить</button></div>
+          <div id="wfTaskList" class="manager-list empty">Заданий пока нет</div>
+        </article>
+        <article class="form-panel" data-workflow-manager="1">
+          <div><h2>Новое задание</h2>
+            <label>Отдел<select id="wfTaskDepartment"></select></label>
+            <label>Плановая смена<select id="wfTaskShift"><option value="">Без привязки к смене</option></select></label>
+            <label>Исполнитель<select id="wfTaskAssignee"></select></label>
+            <label>Действие<select id="wfTaskOperation"></select></label>
+            <label>Позиция<select id="wfTaskEntity"></select></label>
+            <label>План<input id="wfTaskQuantity" inputmode="decimal" placeholder="0" /></label>
+            <label>Площадка<select id="wfTaskArea"></select></label>
+            <label>Срок<input id="wfTaskDue" type="datetime-local" /></label>
+            <label>Приоритет<select id="wfTaskPriority"><option value="normal">Обычный</option><option value="high">Высокий</option><option value="urgent">Срочный</option><option value="low">Низкий</option></select></label>
+            <label>Партия выпуска<select id="wfTaskOutputLot"></select></label>
+            <label>Комментарий<input id="wfTaskNote" maxlength="1000" /></label>
+            <button class="primary" data-action="create-production-task">Создать задание</button>
+          </div>
+        </article>
+        <article class="panel wide">
+          <h2>Заявки между отделами</h2>
+          <p>Запрос позиции → подтверждение → выдача → получение. Количество на каждом этапе проверяется сервером.</p>
+          <div id="wfRequestList" class="manager-list empty">Заявок пока нет</div>
+        </article>
+        <article class="form-panel">
+          <div><h2>Новая заявка</h2>
+            <label>От какого отдела<select id="wfRequestFromDepartment"></select></label>
+            <label>Какому отделу<select id="wfRequestToDepartment"></select></label>
+            <label>Позиция<select id="wfRequestEntity"></select></label>
+            <label>Количество<input id="wfRequestQuantity" inputmode="decimal" placeholder="0" /></label>
+            <div class="two-col"><label>Откуда выдать<select id="wfRequestFromArea"></select></label><label>Куда принять<select id="wfRequestToArea"></select></label></div>
+            <label>Нужно к<input id="wfRequestNeeded" type="datetime-local" /></label>
+            <label>Приоритет<select id="wfRequestPriority"><option value="normal">Обычный</option><option value="high">Высокий</option><option value="urgent">Срочный</option></select></label>
+            <label>Комментарий<input id="wfRequestNote" maxlength="1000" /></label>
+            <button class="primary" data-action="create-department-request">Отправить заявку</button>
+          </div>
+        </article>
+        <article class="panel wide">
+          <h2>Партии и прослеживаемость</h2><div id="wfLotList" class="manager-list empty">Партий пока нет</div>
+          <div id="wfLotTrace" class="trace-box hidden"></div>
+        </article>
+        <article class="form-panel" data-workflow-manager="1">
+          <div><h2>Создать партию</h2>
+            <label>Позиция<select id="wfLotEntity"></select></label>
+            <label>Код партии<input id="wfLotCode" maxlength="120" placeholder="Уникальный код" /></label>
+            <label>Код поставщика<input id="wfLotSupplier" maxlength="120" /></label>
+            <div class="two-col"><label>Дата изготовления<input id="wfLotManufacture" type="date" /></label><label>Годен до<input id="wfLotExpiry" type="date" /></label></div>
+            <label>Комментарий<input id="wfLotNote" maxlength="1000" /></label>
+            <button class="primary" data-action="create-production-lot">Создать партию</button>
+          </div>
+        </article>
+        <article class="panel wide">
+          <h2>Оборудование, простои и обслуживание</h2><div id="wfEquipmentList" class="manager-list empty">Оборудование пока не добавлено</div>
+        </article>
+        <article class="form-panel" data-workflow-manager="1">
+          <div><h2>Оборудование</h2>
+            <label>Отдел<select id="wfEquipmentDepartment"></select></label>
+            <label>Площадка<select id="wfEquipmentArea"></select></label>
+            <label>Название<input id="wfEquipmentName" maxlength="180" /></label>
+            <label>Код<input id="wfEquipmentCode" maxlength="100" /></label>
+            <div class="two-col"><label>ТО каждые, дней<input id="wfEquipmentInterval" type="number" min="0" max="3650" value="0" /></label><label>Предупредить за, дней<input id="wfEquipmentWarning" type="number" min="0" max="365" value="3" /></label></div>
+            <label>Комментарий<input id="wfEquipmentNote" maxlength="1000" /></label>
+            <button class="primary" data-action="save-equipment">Сохранить оборудование</button>
+          </div>
+        </article>
+        <article class="panel wide">
+          <div class="section-title-row"><div><h2>План / факт</h2><p>Сводка по заданиям и простоям без привязки к заранее заданным названиям.</p></div><button data-action="load-plan-fact">Обновить</button></div>
+          <div class="two-col"><label>С<input id="wfPlanFactFrom" type="date" /></label><label>По<input id="wfPlanFactTo" type="date" /></label></div>
+          <div id="wfPlanFactList" class="manager-list empty">Нет данных</div>
+        </article>
+      </div>
+    </section>
+
+    <section class="tab-page" id="page-quality">
+      <div class="control-kpis">
+        <article class="control-kpi danger"><span>Контроль ждёт решения</span><strong id="qsQualityOpen">0</strong></article>
+        <article class="control-kpi danger"><span>Партии в карантине</span><strong id="qsQuarantine">0</strong></article>
+        <article class="control-kpi"><span>Нужно пополнить</span><strong id="qsReplenish">0</strong></article>
+        <article class="control-kpi"><span>ТО просрочено</span><strong id="qsMaintenanceOverdue">0</strong></article>
+      </div>
+      <div class="grid">
+        <article class="panel wide">
+          <div class="section-title-row"><div><h2>Контроль качества</h2><p>Входной, межоперационный и выходной контроль. Карантинная партия автоматически исключается из доступного запаса.</p></div><button data-action="refresh-quality-supply">Обновить</button></div>
+          <div id="qsInspectionList" class="manager-list empty">Проверок пока нет</div>
+        </article>
+        <article class="form-panel">
+          <div><h2>Записать проверку</h2>
+            <label>Вид контроля<select id="qsInspectionType"><option value="incoming">Входной</option><option value="in_process">Межоперационный</option><option value="output" selected>Выходной</option><option value="recheck">Повторный</option></select></label>
+            <label>Отдел<select id="qsInspectionDepartment"></select></label>
+            <label>Позиция<select id="qsInspectionEntity"></select></label>
+            <label>Партия<select id="qsInspectionLot"></select></label>
+            <label>Задание<select id="qsInspectionTask"></select></label>
+            <label>Оборудование<select id="qsInspectionEquipment"></select></label>
+            <label>Площадка<select id="qsInspectionArea"></select></label>
+            <div class="two-col"><label>Проверено<input id="qsChecked" inputmode="decimal" placeholder="0" /></label><label>Несоответствие<input id="qsDefect" inputmode="decimal" placeholder="0" /></label></div>
+            <label>Причина / замечание<input id="qsInspectionNote" maxlength="1000" /></label>
+            <button class="primary" data-action="create-quality-inspection">Сохранить контроль</button>
+          </div>
+        </article>
+        <article class="form-panel" data-workflow-manager="1">
+          <div><h2>Правило контроля</h2>
+            <p>Можно сделать проверку обязательной перед закрытием производственного задания.</p>
+            <label>Отдел<select id="qsRuleDepartment"></select></label>
+            <label>Позиция<select id="qsRuleEntity"></select></label>
+            <label>Вид<select id="qsRuleType"><option value="output">Выходной</option><option value="incoming">Входной</option><option value="in_process">Межоперационный</option></select></label>
+            <div class="two-col"><label>Выборка<input id="qsRuleSample" inputmode="decimal" value="0" /></label><label>Макс. несоответствий, %<input id="qsRuleDefectPercent" inputmode="decimal" value="0" /></label></div>
+            <label class="check"><input id="qsRuleRequired" type="checkbox" /> Обязателен перед завершением задания</label>
+            <label class="check"><input id="qsRuleQuarantine" type="checkbox" checked /> Карантин при превышении нормы</label>
+            <label class="check"><input id="qsRuleRework" type="checkbox" checked /> Создавать задание на доработку</label>
+            <label>Отдел доработки<select id="qsRuleReworkDepartment"></select></label>
+            <button class="primary" data-action="save-quality-rule">Сохранить правило</button>
+          </div>
+        </article>
+        <article class="panel wide"><h2>Прогноз дефицита и заявки на пополнение</h2><p>Прогноз использует фактический расход, настроенные красные флаги, время поставки и страховой запас. Заказы поставщику автоматически не отправляются.</p><div id="qsReplenishmentSuggestions" class="manager-list empty">Рекомендаций нет</div><h3>Заявки</h3><div id="qsReplenishmentRequests" class="manager-list empty">Заявок нет</div></article>
+        <article class="form-panel" data-workflow-manager="1">
+          <div><h2>Настройка пополнения</h2>
+            <label>Позиция<select id="qsReplenishmentEntity"></select></label><label>Площадка<select id="qsReplenishmentArea"></select></label>
+            <div class="two-col"><label>Поставка, дней<input id="qsLeadDays" inputmode="decimal" value="0" /></label><label>Целевой запас, смен<input id="qsCoverShifts" inputmode="decimal" value="10" /></label></div>
+            <div class="two-col"><label>Мин. заявка<input id="qsMinOrder" inputmode="decimal" value="0" /></label><label>Кратность упаковки<input id="qsPackQty" inputmode="decimal" value="0" /></label></div>
+            <label>Поставщик / примечание<input id="qsSupplier" maxlength="200" /></label>
+            <button class="primary" data-action="save-replenishment-setting">Сохранить</button>
+          </div>
+        </article>
+        <article class="panel wide"><h2>Календарь ТО</h2><div id="qsMaintenanceList" class="manager-list empty">Заданий ТО нет</div></article>
+        <article class="form-panel" data-workflow-manager="1">
+          <div><h2>План обслуживания</h2>
+            <label>Оборудование<select id="qsMaintenanceEquipment"></select></label>
+            <label>Ответственный Telegram ID<input id="qsMaintenanceResponsible" inputmode="numeric" placeholder="необязательно" /></label>
+            <div class="two-col"><label>Интервал, дней<input id="qsMaintenanceInterval" type="number" min="0" value="0" /></label><label>Предупредить за, дней<input id="qsMaintenanceWarning" type="number" min="0" value="3" /></label></div>
+            <label>Следующий срок<input id="qsMaintenanceDue" type="datetime-local" /></label>
+            <label>Чек-лист<textarea id="qsMaintenanceChecklist" rows="5" placeholder="Один пункт на строку. Поставьте ? в начале необязательного пункта."></textarea></label>
+            <h3>Запчасть / расходник (необязательно)</h3><label>Позиция<select id="qsMaintenancePartEntity"></select></label><div class="two-col"><label>Количество<input id="qsMaintenancePartQty" inputmode="decimal" value="0" /></label><label>Склад<select id="qsMaintenancePartArea"></select></label></div>
+            <label>Комментарий<input id="qsMaintenanceNote" maxlength="1000" /></label>
+            <button class="primary" data-action="save-maintenance-plan">Сохранить план ТО</button>
+          </div>
+        </article>
+        <article class="panel wide"><div class="section-title-row"><div><h2>План → потребность → наличие → дефицит → факт</h2><p>Отчёт показывает, хватит ли комплектующих и материалов на запланированные задания.</p></div></div><div class="two-col"><label>С<input id="qsReportFrom" type="date" /></label><label>По<input id="qsReportTo" type="date" /></label></div><div class="actions"><button data-action="download-needs-xlsx">Excel</button><button data-action="download-needs-pdf">PDF</button></div></article>
+      </div>
+    </section>
+
     <section class="tab-page" id="page-work">
       <article class="form-panel wide">
         <img src="/static/img/production-form.svg" alt="" class="side-img" />
         <div>
           <h2>Рабочий ввод</h2>
           <p>Выберите разрешённое действие и позицию. В списках отображается только то, что назначено вашему отделу.</p>
+          <div id="workTaskContext" class="task-context hidden"><div><b id="workTaskTitle">Задание</b><span id="workTaskMeta"></span></div><button type="button" data-action="clear-work-task">Отвязать</button></div>
           <label>Действие<select id="workOperation"></select></label>
+          <label>Поиск позиции<input id="workEntitySearch" type="search" placeholder="Начните вводить название" autocomplete="off" /></label>
+          <div class="code-search-row"><label>Код позиции<input id="workEntityCode" inputmode="text" placeholder="Сканируйте или введите код" autocomplete="off" /></label><button type="button" data-action="find-work-code">Найти</button><button type="button" data-action="scan-work-code">Сканировать</button></div>
           <label>Позиция<select id="workEntity"></select></label>
+          <label>Партия / серия (необязательно)<select id="workLot"></select></label>
+          <div id="workStockHint" class="stock-hint">Выберите позицию и площадку</div>
           <div id="workSingleArea">
             <label>Площадка<select id="workArea"></select></label>
           </div>
@@ -94,14 +281,51 @@
             <label>Откуда<select id="workFromArea"></select></label>
             <label>Куда<select id="workToArea"></select></label>
           </div>
-          <label>Количество<input id="workQuantity" inputmode="decimal" placeholder="0" /></label>
+          <label>Количество<div class="quantity-field"><input id="workQuantity" inputmode="decimal" placeholder="0" /><span id="workUnitHint">—</span></div></label>
+          <div class="quantity-shortcuts" aria-label="Быстрый выбор количества">
+            <button type="button" data-qty-add="1">+1</button><button type="button" data-qty-add="5">+5</button><button type="button" data-qty-add="10">+10</button><button type="button" data-qty-add="50">+50</button>
+            <button type="button" data-action="repeat-last-quantity">Последнее</button><button type="button" data-action="clear-work-entry">Очистить</button>
+          </div>
           <label>Комментарий<input id="workNote" maxlength="500" placeholder="Необязательно" /></label>
-          <button class="primary" data-action="save-work-entry">Сохранить</button>
+          <div class="actions"><button class="primary" data-action="save-work-entry">Проверить и сохранить</button><button type="button" data-action="queue-work-entry">В список смены</button><button type="button" data-action="save-work-preset">Закрепить</button></div>
+          <p id="draftStatus" class="muted">Черновик сохраняется автоматически.</p>
         </div>
       </article>
+      <article class="panel wide operation-queue-panel">
+        <div class="section-title-row"><div><h2>Список смены и очередь отправки</h2><p>Можно внести несколько позиций подряд. При потере связи записи сохранятся на устройстве и отправятся безопасно после восстановления.</p></div><strong id="operationQueueCount">0</strong></div>
+        <div id="operationQueueList" class="quick-action-list empty">Очередь пуста</div>
+        <div class="actions"><button class="primary" data-action="sync-operation-queue">Отправить всё</button><button data-action="clear-operation-queue">Очистить очередь</button></div>
+      </article>
+      <article class="panel wide">
+        <div class="section-title-row"><div><h2>Пакеты смены на сервере</h2><p>После появления связи очередь сохраняется на сервере одним пакетом. Принятые записи не потеряются, а спорные останутся у руководителя на проверке.</p></div><button data-action="refresh-shift-packages">Обновить</button></div>
+        <div id="shiftPackageFilters" class="filter-grid">
+          <label>Сотрудник<select id="packageFilterWorker"><option value="">Все доступные</option></select></label>
+          <label>Отдел<select id="packageFilterDepartment"><option value="">Все доступные</option></select></label>
+          <label>Площадка<select id="packageFilterArea"><option value="">Все площадки</option></select></label>
+          <label>Статус<select id="packageFilterStatus"><option value="">Все</option><option value="review">Нужна проверка</option><option value="partial">Частично принят</option><option value="received">Получен</option><option value="rejected">Отклонён</option><option value="accepted">Принят</option></select></label>
+          <label>С даты<input id="packageFilterFrom" type="date" /></label>
+          <label>По дату<input id="packageFilterTo" type="date" /></label>
+        </div>
+        <div class="actions" id="packageBulkActions"><button data-action="apply-package-filters">Применить фильтры</button><button data-action="clear-package-filters">Сбросить</button><button class="primary" data-action="bulk-approve-packages">Принять выбранные</button><button class="danger" data-action="bulk-reject-packages">Отклонить выбранные</button></div>
+        <div id="shiftPackageList" class="manager-list empty">Пакетов пока нет</div>
+      </article>
+      <div class="grid quick-work-grid">
+        <article class="panel">
+          <h2>Закреплённые действия</h2>
+          <div id="operationPresetList" class="quick-action-list empty">Закреплённых действий пока нет</div>
+        </article>
+        <article class="panel">
+          <h2>Недавние действия</h2>
+          <div id="recentOperationList" class="quick-action-list empty">Записей пока нет</div>
+        </article>
+      </div>
     </section>
 
     <section class="tab-page active" id="page-overview">
+      <article class="panel setup-health" data-admin-only="1">
+        <div class="setup-health-head"><div><h2>Готовность учёта</h2><p>Проверка основных настроек перед работой.</p></div><strong id="setupHealthScore">—</strong></div>
+        <div id="setupHealthList" class="setup-check-list empty">Нет данных</div>
+      </article>
       <div class="grid">
         <article class="panel illustrated">
           <div>
@@ -478,6 +702,22 @@
           <h2>Активность сотрудников</h2>
           <div id="workerActivityList" class="manager-list empty">Данных пока нет</div>
         </article>
+        <article class="form-panel wide">
+          <img src="/static/img/team.svg" alt="" class="side-img" />
+          <div>
+            <h2>Передача смены</h2>
+            <p>Передайте следующему сотруднику незавершённые записи, замечания и важные события. Непринятые пакеты смены прикрепятся автоматически.</p>
+            <label>Кому передать<select id="handoverToWorker"></select></label>
+            <label>Площадка<select id="handoverArea"></select></label>
+            <label>Что важно передать<textarea id="handoverSummary" rows="3" maxlength="2000" placeholder="Что не завершено, что проверить, какие есть проблемы"></textarea></label>
+            <div id="handoverChecklist" class="handover-checklist"></div>
+            <button class="primary" data-action="create-shift-handover">Передать смену</button>
+          </div>
+        </article>
+        <article class="panel wide">
+          <h2>Журнал передачи смен</h2>
+          <div id="shiftHandoverList" class="manager-list empty">Передач пока нет</div>
+        </article>
         <article class="form-panel" data-section="workers">
           <img src="/static/img/plan.svg" alt="" class="side-img" />
           <div>
@@ -712,6 +952,7 @@
             <label>Отдел<select id="departmentEntityDepartment"></select></label>
             <label>Действие<select id="departmentEntityOperation"></select></label>
             <label>Тип позиции<select id="departmentEntityType"><option value="component">Комплектующая</option><option value="product">Изделие</option><option value="material">Сырьё</option><option value="stock_item">Складская позиция</option><option value="meter">Счётчик</option></select></label>
+            <label>Поиск позиции<input id="departmentEntitySearch" type="search" placeholder="Введите часть названия" autocomplete="off" /></label>
             <label>Позиция<select id="departmentEntityId"></select></label>
             <button class="primary" data-action="save-department-entity">Назначить позицию</button>
           </div>
@@ -728,6 +969,43 @@
             <p class="muted">Пустой список даёт все действия в пределах ваших собственных прав. Чтобы ограничить человека, отметьте только нужные.</p>
             <div id="departmentMemberOperations" class="check-grid"></div>
             <button class="primary" data-action="save-department-member">Выдать доступ</button>
+          </div>
+        </article>
+        <article class="form-panel wide" data-admin-only="1">
+          <img src="/static/img/stock.svg" alt="" class="side-img" />
+          <div>
+            <h2>Коды позиций</h2>
+            <p>Назначьте штрихкод, QR-код или короткий внутренний код. Сотрудник сможет быстро выбрать позицию сканированием.</p>
+            <div class="two-col">
+              <label>Тип позиции<select id="entityCodeType"><option value="component">Комплектующая</option><option value="product">Изделие</option><option value="material">Сырьё</option><option value="stock_item">Складская позиция</option><option value="meter">Счётчик</option></select></label>
+              <label>Позиция<select id="entityCodeEntity"></select></label>
+              <label>Код<input id="entityCodeValue" maxlength="120" placeholder="Например: A-001" autocomplete="off" /></label>
+            </div>
+            <button class="primary" data-action="save-entity-code">Сохранить код</button>
+            <div class="two-col label-tools">
+              <label>Шаблон<select id="entityLabelTemplate"><option value="">Стандартный A4</option></select></label>
+              <label>Вид этикетки<select id="entityLabelType"><option value="qr">QR-код</option><option value="code128">Штрихкод Code 128</option></select></label>
+              <label>Копий каждой<input id="entityLabelCopies" type="number" min="1" max="20" value="1" /></label>
+            </div>
+            <div class="actions"><button data-action="print-selected-labels">PDF выбранных этикеток</button><button data-action="print-all-labels">PDF всех кодов</button></div>
+            <details data-admin-only><summary>Свой шаблон принтера</summary>
+              <div class="filter-grid">
+                <label>Название<input id="labelTemplateName" maxlength="120" placeholder="Например: термопринтер" /></label>
+                <label>Страница<select id="labelTemplatePageMode"><option value="a4">Лист A4</option><option value="label">Одна этикетка = страница</option></select></label>
+                <label>Ширина, мм<input id="labelTemplateWidth" type="number" min="20" max="210" step="0.1" value="63" /></label>
+                <label>Высота, мм<input id="labelTemplateHeight" type="number" min="15" max="297" step="0.1" value="32" /></label>
+                <label>Колонок<input id="labelTemplateCols" type="number" min="1" max="8" value="3" /></label>
+                <label>Строк<input id="labelTemplateRows" type="number" min="1" max="20" value="8" /></label>
+                <label>Отступ X, мм<input id="labelTemplateMarginX" type="number" min="0" max="50" step="0.1" value="8" /></label>
+                <label>Отступ Y, мм<input id="labelTemplateMarginY" type="number" min="0" max="50" step="0.1" value="8" /></label>
+                <label>Зазор X, мм<input id="labelTemplateGapX" type="number" min="0" max="30" step="0.1" value="3" /></label>
+                <label>Зазор Y, мм<input id="labelTemplateGapY" type="number" min="0" max="30" step="0.1" value="3" /></label>
+                <label>Размер кода, мм<input id="labelTemplateCodeSize" type="number" min="8" max="100" step="0.1" value="21" /></label>
+                <label class="check-line"><input id="labelTemplateDefault" type="checkbox" /> По умолчанию</label>
+              </div>
+              <button data-action="save-label-template">Сохранить шаблон</button>
+            </details>
+            <div id="entityCodeList" class="manager-list empty">Коды ещё не назначены</div>
           </div>
         </article>
         <article class="panel wide">
@@ -786,6 +1064,34 @@
           <img src="/static/img/shield.svg" alt="" />
         </article>
         <article class="panel wide">
+          <div class="section-title-row"><div><h2>Устройства Mini App</h2><p>Здесь можно отозвать доступ потерянного телефона или чужого компьютера. Отозванное устройство перестанет выполнять запросы сразу.</p></div></div>
+          <div id="miniappDeviceList" class="manager-list empty">Устройства ещё не зарегистрированы</div>
+        </article>
+        <article class="form-panel wide" data-admin-only>
+          <img src="/static/img/security.svg" alt="" class="side-img" />
+          <div>
+            <h2>Контроль незавершённых смен</h2>
+            <p>Система сама напоминает о пакетах, которые не разобраны, и о передаче смены, которую не приняли.</p>
+            <div class="filter-grid">
+              <label>Первое напоминание о пакете, мин<input id="continuityPackageFirst" type="number" min="5" max="10080" value="60" /></label>
+              <label>Повтор по пакету, мин<input id="continuityPackageRepeat" type="number" min="5" max="10080" value="120" /></label>
+              <label>Первое по передаче, мин<input id="continuityHandoverFirst" type="number" min="5" max="10080" value="30" /></label>
+              <label>Повтор по передаче, мин<input id="continuityHandoverRepeat" type="number" min="5" max="10080" value="60" /></label>
+              <label>Максимум напоминаний<input id="continuityMaxReminders" type="number" min="0" max="10" value="3" /></label>
+            </div>
+            <button data-action="save-continuity-settings">Сохранить напоминания</button>
+          </div>
+        </article>
+        <article class="form-panel wide" data-admin-only>
+          <img src="/static/img/team.svg" alt="" class="side-img" />
+          <div>
+            <h2>Чек-лист передачи смены</h2>
+            <p>Один пункт на строку. Поставьте <b>?</b> в начале строки, если пункт необязательный. Все остальные пункты нужно отметить перед передачей.</p>
+            <label>Пункты<textarea id="handoverChecklistEditor" rows="6" placeholder="Проверить незавершённые операции&#10;Передать замечания&#10;? Указать дополнительную информацию"></textarea></label>
+            <div class="actions"><button data-action="save-handover-checklist">Сохранить чек-лист</button><button data-action="download-continuity-audit">Скачать журнал аудита XLSX</button></div>
+          </div>
+        </article>
+        <article class="panel wide">
           <h2>Резерв</h2>
           <p>Копия создаётся для выбранного учёта и скачивается через Mini App.</p>
           <div class="actions"><button class="primary" data-action="backup-account">Скачать копию учёта</button></div>
@@ -803,6 +1109,38 @@
       </div>
     </section>
   </main>
-  <script src="/static/app.js"></script>
+
+  <dialog id="scannerDialog" class="confirm-dialog scanner-dialog">
+    <form method="dialog">
+      <h2>Сканирование кода</h2>
+      <p>Наведите камеру на QR-код или штрихкод позиции.</p>
+      <video id="scannerVideo" autoplay playsinline muted></video>
+      <div id="scannerStatus" class="stock-hint">Запуск камеры…</div>
+      <div class="actions"><button value="cancel">Закрыть</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="operationConfirmDialog" class="confirm-dialog">
+    <form method="dialog">
+      <h2>Проверьте запись</h2>
+      <p id="confirmSummary" class="confirm-summary"></p>
+      <div id="confirmBalances" class="list compact"></div>
+      <div id="confirmComponents" class="list compact"></div>
+      <div id="confirmWarnings" class="confirm-warnings hidden"></div>
+      <div class="actions">
+        <button value="cancel">Вернуться</button>
+        <button id="confirmOperationButton" value="default" type="button" class="primary">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <nav class="mobile-nav" aria-label="Быстрая навигация">
+    <button data-tab="work" data-mobile-work="1"><span>✍️</span>Ввод</button>
+    <button data-tab="overview"><span>📦</span>Остатки</button>
+    <button data-tab="quality"><span>✅</span>Качество</button>
+    <button data-tab="inbox"><span>🔔</span>Входящие</button>
+    <button data-action="toggle-tabs"><span>☰</span>Ещё</button>
+  </nav>
+  <script src="/static/app.js?v=78"></script>
 </body>
 </html>

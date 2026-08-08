@@ -8,6 +8,7 @@ from aiogram.types import CallbackQuery, Message
 from ..access import is_chat_creator, is_global_owner
 from ..keyboards import chat_list_keyboard, help_topic_keyboard, main_menu, setup_menu
 from ..services import repository as repo
+from ..services import accounting
 
 router = Router()
 
@@ -134,8 +135,7 @@ HELP_PAGES: dict[str, str] = {
 Собрали Изделие 1 1000
 Сборка Изделие 1 500
 
-Фасовка, отправка, продажа:
-Зафасовали Изделие 1 1000
+Отправка и передача:
 На отправку Изделие 1 500
 К продаже Изделие 1 300
 Продано Изделие 1 200
@@ -157,7 +157,21 @@ HELP_PAGES: dict[str, str] = {
 
 Если название написано коротко, бот предложит выбрать сохранённую позицию кнопкой. После подтверждения выбранное название будет пониматься в следующих записях.
 
-Перед сохранением бот покажет проверку. Если всё верно — нажмите «Да». Если ошибка — «Исправить». Если запись не нужна — «Отмена».""",
+Перед сохранением бот покажет проверку. Если всё верно — нажмите «Да». Если ошибка — «Исправить». Если запись не нужна — «Отмена».
+
+Задания и внутренние заявки:
+Мои задания
+Задание 12 начать
+Задание 12 пауза
+Задание 12 готово
+Заявки
+Заявка 5 выдать 20
+Заявка 5 получить 20
+Оборудование
+Простой оборудование 3 причина остановки
+Закрыть простой 7 результат устранения
+
+Для создания задания или заявки руководитель может использовать Mini App либо структурированную команду с точными названиями/номерами. Все права повторно проверяются сервером.""",
     "reports": """Отчёты
 
 Отчёт можно запросить в группе или в личке.
@@ -203,7 +217,6 @@ PDF отчёт за неделю
 Деталь А 5000
 Деталь Б 12000
 Собрали Изделие 1 1000
-Зафасовали Изделие 1 500
 На отправку Изделие 1 300
 Продано Изделие 1 200
 Приход Материал 500 кг
@@ -293,6 +306,40 @@ async def help_text(message: Message) -> None:
 async def menu_main(callback: CallbackQuery) -> None:
     await safe_edit_text(callback.message, "Главное меню", reply_markup=main_menu(callback.from_user.id if callback.from_user else None))
     await callback.answer()
+
+
+@router.callback_query(F.data == "menu:recent")
+async def menu_recent(callback: CallbackQuery) -> None:
+    user_id = callback.from_user.id if callback.from_user else None
+    if not user_id:
+        await callback.answer("Не удалось определить пользователя.", show_alert=True)
+        return
+    account = repo.get_active_account(callback.message.chat.id)
+    if not account:
+        accounts = repo.list_accounts_for_user(user_id, include_accessible=True)
+        account = accounts[0] if len(accounts) == 1 else None
+    if not account:
+        await callback.answer("Сначала выберите учёт через рабочую панель или раздел «Группы».", show_alert=True)
+        return
+    rows = accounting.list_recent_operations(account.scope_chat_id, user_id=user_id, limit=10)
+    text = accounting.format_recent_operations(rows)
+    await safe_edit_text(callback.message, text, reply_markup=main_menu(user_id))
+    await callback.answer()
+
+
+@router.message(F.text.lower().in_({"мои последние записи", "последние записи", "что я вводил"}))
+async def recent_text(message: Message) -> None:
+    if not message.from_user:
+        return
+    account = repo.get_active_account(message.chat.id)
+    if not account:
+        accounts = repo.list_accounts_for_user(message.from_user.id, include_accessible=True)
+        account = accounts[0] if len(accounts) == 1 else None
+    if not account:
+        await message.answer("Сначала выберите производственный учёт в рабочей панели или через раздел «Группы».")
+        return
+    rows = accounting.list_recent_operations(account.scope_chat_id, user_id=message.from_user.id, limit=10)
+    await message.answer(accounting.format_recent_operations(rows))
 
 
 @router.callback_query(F.data == "menu:setup")

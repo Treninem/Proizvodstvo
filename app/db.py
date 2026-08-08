@@ -105,6 +105,24 @@ CREATE TABLE IF NOT EXISTS aliases (
     FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS entity_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    entity_id INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    normalized TEXT NOT NULL,
+    is_primary INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(chat_id, normalized),
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_codes_entity
+ON entity_codes(entity_id, is_primary DESC, id);
+
 CREATE TABLE IF NOT EXISTS product_components (
     product_id INTEGER NOT NULL,
     component_id INTEGER NOT NULL,
@@ -177,6 +195,37 @@ CREATE TABLE IF NOT EXISTS operation_corrections (
     FOREIGN KEY(reversal_operation_id) REFERENCES operations(id) ON DELETE SET NULL,
     FOREIGN KEY(replacement_operation_id) REFERENCES operations(id) ON DELETE SET NULL
 );
+
+CREATE TABLE IF NOT EXISTS operation_presets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    operation_type TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id INTEGER NOT NULL,
+    quantity REAL NOT NULL DEFAULT 0,
+    unit TEXT NOT NULL DEFAULT 'шт',
+    area_id INTEGER,
+    from_area_id INTEGER,
+    to_area_id INTEGER,
+    destination_type TEXT NOT NULL DEFAULT '',
+    storage_place TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    usage_count INTEGER NOT NULL DEFAULT 0,
+    last_used_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(chat_id, user_id, name),
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+    FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL,
+    FOREIGN KEY(from_area_id) REFERENCES areas(id) ON DELETE SET NULL,
+    FOREIGN KEY(to_area_id) REFERENCES areas(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_operation_presets_user
+ON operation_presets(chat_id, user_id, usage_count DESC, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS pending_confirmations (
     id TEXT PRIMARY KEY,
@@ -813,6 +862,791 @@ CREATE TABLE IF NOT EXISTS stock_alert_snoozes (
 CREATE INDEX IF NOT EXISTS idx_stock_alert_snoozes_due
 ON stock_alert_snoozes(user_id, snoozed_until);
 
+
+CREATE TABLE IF NOT EXISTS shift_sync_packages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    shift_id INTEGER,
+    area_id INTEGER,
+    client_package_id TEXT NOT NULL,
+    device_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'received',
+    item_count INTEGER NOT NULL DEFAULT 0,
+    accepted_count INTEGER NOT NULL DEFAULT 0,
+    review_count INTEGER NOT NULL DEFAULT 0,
+    rejected_count INTEGER NOT NULL DEFAULT 0,
+    error_count INTEGER NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    submitted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    reviewed_by INTEGER,
+    reviewed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(chat_id, user_id, client_package_id),
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(shift_id) REFERENCES worker_shifts(id) ON DELETE SET NULL,
+    FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_shift_sync_packages_review
+ON shift_sync_packages(chat_id, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS shift_sync_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    package_id INTEGER NOT NULL,
+    client_request_id TEXT NOT NULL,
+    sequence_no INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    operation_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'received',
+    message TEXT NOT NULL DEFAULT '',
+    warnings_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(package_id, client_request_id),
+    FOREIGN KEY(package_id) REFERENCES shift_sync_packages(id) ON DELETE CASCADE,
+    FOREIGN KEY(operation_id) REFERENCES operations(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_shift_sync_items_package
+ON shift_sync_items(package_id, sequence_no, id);
+
+CREATE TABLE IF NOT EXISTS shift_handovers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    from_user_id INTEGER NOT NULL,
+    to_user_id INTEGER,
+    shift_id INTEGER,
+    area_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'open',
+    summary TEXT NOT NULL DEFAULT '',
+    unfinished_count INTEGER NOT NULL DEFAULT 0,
+    issue_count INTEGER NOT NULL DEFAULT 0,
+    package_ids_json TEXT NOT NULL DEFAULT '[]',
+    created_by INTEGER NOT NULL,
+    acknowledged_by INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    acknowledged_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(shift_id) REFERENCES worker_shifts(id) ON DELETE SET NULL,
+    FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_shift_handovers_open
+ON shift_handovers(chat_id, status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS miniapp_devices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    device_id TEXT NOT NULL,
+    device_name TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_chat_id INTEGER,
+    revoked_at TEXT,
+    revoked_by INTEGER,
+    revoke_reason TEXT NOT NULL DEFAULT '',
+    UNIQUE(user_id, device_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_miniapp_devices_user
+ON miniapp_devices(user_id, last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS shift_continuity_settings (
+    chat_id INTEGER PRIMARY KEY,
+    package_reminder_after_minutes INTEGER NOT NULL DEFAULT 60,
+    package_repeat_minutes INTEGER NOT NULL DEFAULT 120,
+    handover_reminder_after_minutes INTEGER NOT NULL DEFAULT 30,
+    handover_repeat_minutes INTEGER NOT NULL DEFAULT 60,
+    max_reminders INTEGER NOT NULL DEFAULT 3,
+    updated_by INTEGER,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS shift_continuity_reminders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    reminder_kind TEXT NOT NULL,
+    related_id INTEGER NOT NULL,
+    recipient_user_id INTEGER NOT NULL,
+    reminder_level INTEGER NOT NULL,
+    inbox_item_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(reminder_kind, related_id, recipient_user_id, reminder_level),
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(inbox_item_id) REFERENCES inbox_items(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_shift_continuity_reminders_lookup
+ON shift_continuity_reminders(chat_id, reminder_kind, related_id, recipient_user_id);
+
+CREATE TABLE IF NOT EXISTS shift_handover_checklist_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    name TEXT NOT NULL DEFAULT 'Основной чек-лист',
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS shift_handover_checklist_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    template_id INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    is_required INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(template_id) REFERENCES shift_handover_checklist_templates(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS shift_handover_checks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    handover_id INTEGER NOT NULL,
+    checklist_item_id INTEGER,
+    label TEXT NOT NULL,
+    is_required INTEGER NOT NULL DEFAULT 1,
+    is_checked INTEGER NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    checked_by INTEGER,
+    checked_at TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(handover_id, checklist_item_id),
+    FOREIGN KEY(handover_id) REFERENCES shift_handovers(id) ON DELETE CASCADE,
+    FOREIGN KEY(checklist_item_id) REFERENCES shift_handover_checklist_items(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_shift_handover_checks_handover
+ON shift_handover_checks(handover_id, sort_order, id);
+
+
+CREATE TABLE IF NOT EXISTS supervisor_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    actor_user_id INTEGER NOT NULL,
+    worker_user_id INTEGER,
+    target_type TEXT NOT NULL,
+    target_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    before_status TEXT NOT NULL DEFAULT '',
+    after_status TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_supervisor_decisions_chat
+ON supervisor_decisions(chat_id, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_supervisor_decisions_worker
+ON supervisor_decisions(chat_id, worker_user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS control_sla_settings (
+    chat_id INTEGER PRIMARY KEY,
+    package_sla_minutes INTEGER NOT NULL DEFAULT 120,
+    handover_sla_minutes INTEGER NOT NULL DEFAULT 60,
+    critical_alert_sla_minutes INTEGER NOT NULL DEFAULT 30,
+    updated_by INTEGER,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS sla_breach_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    target_type TEXT NOT NULL,
+    target_id INTEGER NOT NULL,
+    recipient_user_id INTEGER NOT NULL,
+    breached_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    inbox_item_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(chat_id, target_type, target_id, recipient_user_id),
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(inbox_item_id) REFERENCES inbox_items(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sla_breach_notifications_chat
+ON sla_breach_notifications(chat_id, target_type, target_id);
+
+CREATE TABLE IF NOT EXISTS system_heartbeats (
+    service_key TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'ok',
+    details TEXT NOT NULL DEFAULT '',
+    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS label_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    page_mode TEXT NOT NULL DEFAULT 'a4',
+    label_width_mm REAL NOT NULL DEFAULT 63,
+    label_height_mm REAL NOT NULL DEFAULT 32,
+    columns_count INTEGER NOT NULL DEFAULT 3,
+    rows_count INTEGER NOT NULL DEFAULT 8,
+    margin_x_mm REAL NOT NULL DEFAULT 8,
+    margin_y_mm REAL NOT NULL DEFAULT 8,
+    gap_x_mm REAL NOT NULL DEFAULT 3,
+    gap_y_mm REAL NOT NULL DEFAULT 3,
+    code_size_mm REAL NOT NULL DEFAULT 21,
+    code_type TEXT NOT NULL DEFAULT 'qr',
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(chat_id, name),
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_label_templates_chat
+ON label_templates(chat_id, is_default DESC, id);
+
+
+CREATE TABLE IF NOT EXISTS production_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    department_id INTEGER NOT NULL,
+    assignee_user_id INTEGER,
+    shift_plan_id INTEGER,
+    area_id INTEGER,
+    operation_type TEXT NOT NULL DEFAULT 'production',
+    entity_type TEXT NOT NULL,
+    entity_id INTEGER NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    target_quantity REAL NOT NULL DEFAULT 0,
+    actual_quantity REAL NOT NULL DEFAULT 0,
+    unit TEXT NOT NULL DEFAULT 'шт',
+    priority TEXT NOT NULL DEFAULT 'normal',
+    status TEXT NOT NULL DEFAULT 'planned',
+    due_at TEXT,
+    started_at TEXT,
+    paused_at TEXT,
+    completed_at TEXT,
+    cancelled_at TEXT,
+    deviation_reason TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    output_lot_id INTEGER,
+    created_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(department_id) REFERENCES departments(id) ON DELETE CASCADE,
+    FOREIGN KEY(shift_plan_id) REFERENCES shift_plans(id) ON DELETE SET NULL,
+    FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL,
+    FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+    FOREIGN KEY(output_lot_id) REFERENCES production_lots(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_production_tasks_scope
+ON production_tasks(chat_id, status, department_id, assignee_user_id, due_at);
+
+CREATE TABLE IF NOT EXISTS production_task_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    actor_user_id INTEGER NOT NULL,
+    operation_id INTEGER,
+    event_type TEXT NOT NULL,
+    from_status TEXT NOT NULL DEFAULT '',
+    to_status TEXT NOT NULL DEFAULT '',
+    quantity REAL,
+    reason TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(task_id) REFERENCES production_tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY(operation_id) REFERENCES operations(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_events_task
+ON production_task_events(task_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS interdepartment_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    requester_department_id INTEGER NOT NULL,
+    supplier_department_id INTEGER NOT NULL,
+    requester_user_id INTEGER NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id INTEGER NOT NULL,
+    requested_quantity REAL NOT NULL,
+    approved_quantity REAL,
+    issued_quantity REAL NOT NULL DEFAULT 0,
+    received_quantity REAL NOT NULL DEFAULT 0,
+    unit TEXT NOT NULL DEFAULT 'шт',
+    from_area_id INTEGER,
+    to_area_id INTEGER,
+    priority TEXT NOT NULL DEFAULT 'normal',
+    status TEXT NOT NULL DEFAULT 'requested',
+    needed_at TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    decision_reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    approved_at TEXT,
+    issued_at TEXT,
+    received_at TEXT,
+    closed_at TEXT,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(requester_department_id) REFERENCES departments(id) ON DELETE CASCADE,
+    FOREIGN KEY(supplier_department_id) REFERENCES departments(id) ON DELETE CASCADE,
+    FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+    FOREIGN KEY(from_area_id) REFERENCES areas(id) ON DELETE SET NULL,
+    FOREIGN KEY(to_area_id) REFERENCES areas(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_interdepartment_requests_scope
+ON interdepartment_requests(chat_id, status, requester_department_id, supplier_department_id, needed_at);
+
+CREATE TABLE IF NOT EXISTS interdepartment_request_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL,
+    actor_user_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    quantity REAL,
+    reason TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(request_id) REFERENCES interdepartment_requests(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS production_lots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id INTEGER NOT NULL,
+    lot_code TEXT NOT NULL,
+    supplier_code TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    manufacture_date TEXT,
+    expiry_date TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(chat_id, lot_code),
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_production_lots_entity
+ON production_lots(chat_id, entity_id, status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS lot_inventory (
+    lot_id INTEGER NOT NULL,
+    area_id INTEGER,
+    quantity REAL NOT NULL DEFAULT 0,
+    unit TEXT NOT NULL DEFAULT 'шт',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(lot_id, area_id, unit),
+    FOREIGN KEY(lot_id) REFERENCES production_lots(id) ON DELETE CASCADE,
+    FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS lot_operation_links (
+    operation_id INTEGER NOT NULL,
+    lot_id INTEGER NOT NULL,
+    link_role TEXT NOT NULL DEFAULT 'output',
+    quantity REAL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(operation_id, lot_id, link_role),
+    FOREIGN KEY(operation_id) REFERENCES operations(id) ON DELETE CASCADE,
+    FOREIGN KEY(lot_id) REFERENCES production_lots(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS lot_relations (
+    parent_lot_id INTEGER NOT NULL,
+    component_lot_id INTEGER NOT NULL,
+    quantity_used REAL NOT NULL DEFAULT 0,
+    unit TEXT NOT NULL DEFAULT 'шт',
+    task_id INTEGER,
+    created_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(parent_lot_id, component_lot_id, task_id),
+    FOREIGN KEY(parent_lot_id) REFERENCES production_lots(id) ON DELETE CASCADE,
+    FOREIGN KEY(component_lot_id) REFERENCES production_lots(id) ON DELETE CASCADE,
+    FOREIGN KEY(task_id) REFERENCES production_tasks(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS equipment (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    department_id INTEGER,
+    area_id INTEGER,
+    name TEXT NOT NULL,
+    code TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    service_interval_days INTEGER NOT NULL DEFAULT 0,
+    warning_before_days INTEGER NOT NULL DEFAULT 3,
+    last_service_at TEXT,
+    next_service_at TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    is_archived INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(department_id) REFERENCES departments(id) ON DELETE SET NULL,
+    FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL,
+    UNIQUE(chat_id, code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_equipment_scope
+ON equipment(chat_id, is_archived, department_id, area_id, status);
+
+CREATE TABLE IF NOT EXISTS equipment_downtimes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    equipment_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    task_id INTEGER,
+    reported_by INTEGER NOT NULL,
+    reason_type TEXT NOT NULL DEFAULT 'other',
+    reason TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ended_at TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    resolution TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(equipment_id) REFERENCES equipment(id) ON DELETE CASCADE,
+    FOREIGN KEY(task_id) REFERENCES production_tasks(id) ON DELETE SET NULL,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_equipment_downtime
+ON equipment_downtimes(chat_id, status, equipment_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS maintenance_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    equipment_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    actor_user_id INTEGER NOT NULL,
+    maintenance_type TEXT NOT NULL DEFAULT 'planned',
+    status TEXT NOT NULL DEFAULT 'completed',
+    performed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    next_due_at TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(equipment_id) REFERENCES equipment(id) ON DELETE CASCADE,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+);
+
+
+CREATE TABLE IF NOT EXISTS quality_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    department_id INTEGER,
+    entity_id INTEGER NOT NULL,
+    operation_type TEXT NOT NULL DEFAULT 'production',
+    inspection_type TEXT NOT NULL DEFAULT 'output',
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    sample_quantity REAL NOT NULL DEFAULT 0,
+    max_defect_percent REAL NOT NULL DEFAULT 0,
+    require_before_task_complete INTEGER NOT NULL DEFAULT 0,
+    auto_quarantine_on_fail INTEGER NOT NULL DEFAULT 1,
+    create_rework_task INTEGER NOT NULL DEFAULT 1,
+    rework_department_id INTEGER,
+    rework_operation_type TEXT NOT NULL DEFAULT '',
+    created_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(department_id) REFERENCES departments(id) ON DELETE CASCADE,
+    FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+    FOREIGN KEY(rework_department_id) REFERENCES departments(id) ON DELETE SET NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_quality_rules_unique
+ON quality_rules(chat_id,entity_id,operation_type,inspection_type,COALESCE(department_id,0));
+
+CREATE INDEX IF NOT EXISTS idx_quality_rules_enabled
+ON quality_rules(chat_id,is_enabled,entity_id,department_id);
+
+CREATE TABLE IF NOT EXISTS quality_inspections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    inspection_type TEXT NOT NULL DEFAULT 'output',
+    department_id INTEGER,
+    area_id INTEGER,
+    entity_id INTEGER NOT NULL,
+    lot_id INTEGER,
+    task_id INTEGER,
+    equipment_id INTEGER,
+    shift_plan_id INTEGER,
+    worker_user_id INTEGER,
+    inspector_user_id INTEGER NOT NULL,
+    checked_quantity REAL NOT NULL DEFAULT 0,
+    defect_quantity REAL NOT NULL DEFAULT 0,
+    unit TEXT NOT NULL DEFAULT 'шт',
+    status TEXT NOT NULL DEFAULT 'open',
+    decision_reason TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    parent_inspection_id INTEGER,
+    rework_task_id INTEGER,
+    operational_event_id INTEGER,
+    decided_by INTEGER,
+    decided_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(department_id) REFERENCES departments(id) ON DELETE SET NULL,
+    FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL,
+    FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+    FOREIGN KEY(lot_id) REFERENCES production_lots(id) ON DELETE SET NULL,
+    FOREIGN KEY(task_id) REFERENCES production_tasks(id) ON DELETE SET NULL,
+    FOREIGN KEY(equipment_id) REFERENCES equipment(id) ON DELETE SET NULL,
+    FOREIGN KEY(shift_plan_id) REFERENCES shift_plans(id) ON DELETE SET NULL,
+    FOREIGN KEY(parent_inspection_id) REFERENCES quality_inspections(id) ON DELETE SET NULL,
+    FOREIGN KEY(rework_task_id) REFERENCES production_tasks(id) ON DELETE SET NULL,
+    FOREIGN KEY(operational_event_id) REFERENCES operational_events(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_quality_inspections_scope
+ON quality_inspections(chat_id,status,inspection_type,department_id,created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_quality_inspections_links
+ON quality_inspections(task_id,lot_id,equipment_id,rework_task_id);
+
+CREATE TABLE IF NOT EXISTS quality_defects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    inspection_id INTEGER NOT NULL,
+    defect_code TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'other',
+    severity TEXT NOT NULL DEFAULT 'minor',
+    quantity REAL NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(inspection_id) REFERENCES quality_inspections(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_quality_defects_inspection
+ON quality_defects(inspection_id,id);
+
+CREATE TABLE IF NOT EXISTS quality_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    inspection_id INTEGER NOT NULL,
+    actor_user_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    generated_task_id INTEGER,
+    generated_inspection_id INTEGER,
+    write_off_operation_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(inspection_id) REFERENCES quality_inspections(id) ON DELETE CASCADE,
+    FOREIGN KEY(generated_task_id) REFERENCES production_tasks(id) ON DELETE SET NULL,
+    FOREIGN KEY(generated_inspection_id) REFERENCES quality_inspections(id) ON DELETE SET NULL,
+    FOREIGN KEY(write_off_operation_id) REFERENCES operations(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS replenishment_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    entity_id INTEGER NOT NULL,
+    area_id INTEGER,
+    lead_time_days REAL NOT NULL DEFAULT 0,
+    target_cover_shifts REAL NOT NULL DEFAULT 10,
+    minimum_order_quantity REAL NOT NULL DEFAULT 0,
+    pack_quantity REAL NOT NULL DEFAULT 0,
+    preferred_supplier TEXT NOT NULL DEFAULT '',
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+    FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_replenishment_settings_unique
+ON replenishment_settings(chat_id,entity_id,COALESCE(area_id,0));
+
+CREATE TABLE IF NOT EXISTS replenishment_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    entity_id INTEGER NOT NULL,
+    area_id INTEGER,
+    requested_by INTEGER NOT NULL,
+    requested_quantity REAL NOT NULL,
+    unit TEXT NOT NULL DEFAULT 'шт',
+    status TEXT NOT NULL DEFAULT 'requested',
+    source TEXT NOT NULL DEFAULT 'manual',
+    source_rule_id INTEGER,
+    source_incident_id INTEGER,
+    available_quantity REAL NOT NULL DEFAULT 0,
+    consumption_per_shift REAL NOT NULL DEFAULT 0,
+    reserve_shifts REAL,
+    recommended_quantity REAL NOT NULL DEFAULT 0,
+    lead_time_days REAL NOT NULL DEFAULT 0,
+    needed_at TEXT,
+    supplier_note TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    approved_by INTEGER,
+    approved_at TEXT,
+    ordered_by INTEGER,
+    ordered_at TEXT,
+    received_by INTEGER,
+    received_at TEXT,
+    closed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+    FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL,
+    FOREIGN KEY(source_rule_id) REFERENCES stock_alert_rules(id) ON DELETE SET NULL,
+    FOREIGN KEY(source_incident_id) REFERENCES stock_alert_incidents(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_replenishment_requests_scope
+ON replenishment_requests(chat_id,status,entity_id,needed_at);
+
+CREATE TABLE IF NOT EXISTS replenishment_request_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL,
+    actor_user_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    quantity REAL,
+    reason TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(request_id) REFERENCES replenishment_requests(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    equipment_id INTEGER NOT NULL UNIQUE,
+    responsible_user_id INTEGER,
+    interval_days INTEGER NOT NULL DEFAULT 0,
+    warning_before_days INTEGER NOT NULL DEFAULT 3,
+    next_due_at TEXT,
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(equipment_id) REFERENCES equipment(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_maintenance_plans_due
+ON maintenance_plans(chat_id,is_enabled,next_due_at);
+
+CREATE TABLE IF NOT EXISTS maintenance_checklist_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    is_required INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(plan_id) REFERENCES maintenance_plans(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_spare_parts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id INTEGER NOT NULL,
+    entity_id INTEGER NOT NULL,
+    area_id INTEGER,
+    planned_quantity REAL NOT NULL DEFAULT 0,
+    unit TEXT NOT NULL DEFAULT 'шт',
+    FOREIGN KEY(plan_id) REFERENCES maintenance_plans(id) ON DELETE CASCADE,
+    FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+    FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_work_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    plan_id INTEGER NOT NULL,
+    equipment_id INTEGER NOT NULL,
+    responsible_user_id INTEGER,
+    due_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'planned',
+    started_at TEXT,
+    completed_at TEXT,
+    cancelled_at TEXT,
+    result TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    maintenance_record_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(plan_id,due_at),
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(plan_id) REFERENCES maintenance_plans(id) ON DELETE CASCADE,
+    FOREIGN KEY(equipment_id) REFERENCES equipment(id) ON DELETE CASCADE,
+    FOREIGN KEY(maintenance_record_id) REFERENCES maintenance_records(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_maintenance_work_orders_due
+ON maintenance_work_orders(chat_id,status,due_at,responsible_user_id);
+
+CREATE TABLE IF NOT EXISTS maintenance_work_checks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_order_id INTEGER NOT NULL,
+    checklist_item_id INTEGER,
+    label TEXT NOT NULL,
+    is_required INTEGER NOT NULL DEFAULT 1,
+    is_checked INTEGER NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    checked_by INTEGER,
+    checked_at TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(work_order_id) REFERENCES maintenance_work_orders(id) ON DELETE CASCADE,
+    FOREIGN KEY(checklist_item_id) REFERENCES maintenance_checklist_items(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_work_parts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_order_id INTEGER NOT NULL,
+    entity_id INTEGER NOT NULL,
+    area_id INTEGER,
+    planned_quantity REAL NOT NULL DEFAULT 0,
+    actual_quantity REAL NOT NULL DEFAULT 0,
+    unit TEXT NOT NULL DEFAULT 'шт',
+    operation_id INTEGER,
+    FOREIGN KEY(work_order_id) REFERENCES maintenance_work_orders(id) ON DELETE CASCADE,
+    FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+    FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL,
+    FOREIGN KEY(operation_id) REFERENCES operations(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS reliability_journal (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    object_type TEXT NOT NULL,
+    object_id INTEGER NOT NULL,
+    step_key TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    next_retry_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(object_type,object_id,step_key),
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_reliability_journal_pending
+ON reliability_journal(status,next_retry_at,id);
+
+CREATE TABLE IF NOT EXISTS workflow_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    object_type TEXT NOT NULL,
+    object_id INTEGER NOT NULL,
+    notification_key TEXT NOT NULL,
+    recipient_user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(chat_id, object_type, object_id, notification_key, recipient_user_id),
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS setup_sessions (
     chat_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
@@ -833,6 +1667,7 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(settings.database_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=8000")
     return conn
 
 
@@ -857,6 +1692,13 @@ def init_db() -> None:
         _ensure_column(conn, "operations", "to_area_id", "INTEGER")
         _ensure_column(conn, "operations", "destination_type", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(conn, "operations", "storage_place", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "operations", "client_request_id", "TEXT")
+        _ensure_column(conn, "operations", "source_channel", "TEXT NOT NULL DEFAULT 'bot'")
+        _ensure_column(conn, "operations", "task_id", "INTEGER")
+        _ensure_column(conn, "operations", "lot_id", "INTEGER")
+        _ensure_column(conn, "production_tasks", "shift_plan_id", "INTEGER")
+        _ensure_column(conn, "production_task_events", "operation_id", "INTEGER")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_task_events_operation_unique ON production_task_events(operation_id) WHERE operation_id IS NOT NULL")
         _ensure_column(conn, "worker_shifts", "plan_id", "INTEGER")
         _ensure_column(conn, "worker_shifts", "start_deviation_minutes", "REAL")
         _ensure_column(conn, "worker_shifts", "end_deviation_minutes", "REAL")
@@ -872,6 +1714,7 @@ def init_db() -> None:
         _ensure_column(conn, "stock_alert_rules", "planned_output_period", "TEXT NOT NULL DEFAULT 'shift'")
         _ensure_column(conn, "stock_alert_rules", "notify_work_chat", "INTEGER NOT NULL DEFAULT 0")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_shift_plan_template_occurrence ON shift_plans(template_id, occurrence_date) WHERE template_id IS NOT NULL AND occurrence_date IS NOT NULL")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_operations_client_request ON operations(chat_id, user_id, client_request_id) WHERE client_request_id IS NOT NULL AND client_request_id<>''")
         conn.commit()
 
 

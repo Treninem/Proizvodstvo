@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import io
+import json
 import time
+from contextvars import ContextVar
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from threading import RLock
 from typing import Annotated, Any
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -25,9 +30,21 @@ from app.services import report_scheduler
 from app.services import repository as repo
 from app.services.site_security import validate_telegram_init_data
 from app.services import stock_risk
+from app.services import shift_continuity
+from app.services import labels as label_service
+from app.services import continuity_audit
+from app.services import control_center
+from app.services import production_flow
+from app.services import quality_control
+from app.services import replenishment
+from app.services import maintenance_planning
+from app.services import production_needs_report
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
+
+_OPERATION_SAVE_LOCK = RLock()
+_REQUEST_DEVICE: ContextVar[dict[str, str]] = ContextVar("miniapp_request_device", default={})
 
 app = FastAPI(title="Производственный учёт — Mini App", docs_url=None, redoc_url=None)
 if settings.cors_allowed_origins:
@@ -36,7 +53,7 @@ if settings.cors_allowed_origins:
         allow_origins=list(settings.cors_allowed_origins),
         allow_credentials=False,
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "X-Access-Token", "X-Telegram-Init-Data"],
+        allow_headers=["Content-Type", "X-Access-Token", "X-Telegram-Init-Data", "X-Device-Id", "X-Device-Name", "X-Device-Platform"],
     )
 if settings.trusted_hosts:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.trusted_hosts))
@@ -46,10 +63,19 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 @app.middleware("http")
 async def _security_headers(request: Request, call_next):
-    response = await call_next(request)
+    token = _REQUEST_DEVICE.set({
+        "device_id": str(request.headers.get("X-Device-Id") or "")[:120],
+        "device_name": str(request.headers.get("X-Device-Name") or "")[:160],
+        "platform": str(request.headers.get("X-Device-Platform") or "")[:80],
+        "user_agent": str(request.headers.get("User-Agent") or "")[:500],
+    })
+    try:
+        response = await call_next(request)
+    finally:
+        _REQUEST_DEVICE.reset(token)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; script-src 'self' https://telegram.org; style-src 'self' 'unsafe-inline'; "
@@ -69,6 +95,36 @@ class OperationPayload(BaseModel):
     entity_type: str
     entity_id: int
     quantity: float
+    unit: str = "шт"
+    area_id: int | None = None
+    from_area_id: int | None = None
+    to_area_id: int | None = None
+    destination_type: str = ""
+    storage_place: str = ""
+    note: str = ""
+    client_request_id: str = ""
+    confirm_warnings: bool = False
+    preset_id: int | None = None
+    preview_fingerprint: str = ""
+    task_id: int | None = None
+    lot_id: int | None = None
+
+
+class EntityCodePayload(BaseModel):
+    chat_id: int
+    user_id: int
+    entity_id: int
+    code: str
+
+
+class OperationPresetPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    name: str
+    operation_type: str
+    entity_type: str
+    entity_id: int
+    quantity: float = 0
     unit: str = "шт"
     area_id: int | None = None
     from_area_id: int | None = None
@@ -274,6 +330,21 @@ class NotificationPreferencesPayload(BaseModel):
     max_reminders: int = 3
 
 
+class SLASettingsPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    package_sla_minutes: int = 120
+    handover_sla_minutes: int = 60
+    critical_alert_sla_minutes: int = 30
+
+
+class OperationPresetBatchPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    preset_id: int
+    multipliers: list[float] = Field(default_factory=list)
+
+
 class StockAlertRulePayload(BaseModel):
     chat_id: int
     user_id: int
@@ -381,6 +452,92 @@ class RestoreBackupPayload(BaseModel):
     content_base64: str
     confirmation: str
 
+class ShiftPackageSyncPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    client_package_id: str
+    shift_id: int | None = None
+    area_id: int | None = None
+    note: str = ""
+    items: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ShiftPackageItemActionPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    item_id: int
+    action: str
+    note: str = ""
+
+
+class ShiftPackageBulkActionPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    item_ids: list[int] = Field(default_factory=list)
+    action: str
+    note: str = ""
+
+
+class ContinuitySettingsPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    package_reminder_after_minutes: int = 60
+    package_repeat_minutes: int = 120
+    handover_reminder_after_minutes: int = 30
+    handover_repeat_minutes: int = 60
+    max_reminders: int = 3
+
+
+class HandoverChecklistSettingsPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    name: str = "Основной чек-лист"
+    items: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class LabelTemplatePayload(BaseModel):
+    chat_id: int
+    user_id: int
+    name: str
+    page_mode: str = "a4"
+    label_width_mm: float = 63
+    label_height_mm: float = 32
+    columns_count: int = 3
+    rows_count: int = 8
+    margin_x_mm: float = 8
+    margin_y_mm: float = 8
+    gap_x_mm: float = 3
+    gap_y_mm: float = 3
+    code_size_mm: float = 21
+    code_type: str = "qr"
+    is_default: bool = False
+
+
+class ShiftHandoverPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    from_user_id: int | None = None
+    to_user_id: int | None = None
+    shift_id: int | None = None
+    area_id: int | None = None
+    summary: str = ""
+    package_ids: list[int] = Field(default_factory=list)
+    checklist: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ShiftHandoverActionPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    handover_id: int
+
+
+class DeviceActionPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    target_user_id: int
+    device_id: str
+    action: str
+    reason: str = ""
 
 
 
@@ -390,6 +547,245 @@ class RestoreBackupPayload(BaseModel):
 
 
 
+
+
+
+class ProductionTaskPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    department_id: int
+    entity_id: int
+    operation_type: str = "production"
+    target_quantity: float
+    unit: str = "шт"
+    title: str = ""
+    assignee_user_id: int | None = None
+    shift_plan_id: int | None = None
+    area_id: int | None = None
+    priority: str = "normal"
+    due_at: str | None = None
+    note: str = ""
+    output_lot_id: int | None = None
+
+
+class ProductionTaskActionPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    task_id: int
+    action: str
+    reason: str = ""
+    note: str = ""
+
+
+class DepartmentRequestPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    requester_department_id: int
+    supplier_department_id: int
+    entity_id: int
+    quantity: float
+    unit: str = "шт"
+    from_area_id: int | None = None
+    to_area_id: int | None = None
+    priority: str = "normal"
+    needed_at: str | None = None
+    note: str = ""
+
+
+class DepartmentRequestActionPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    request_id: int
+    action: str
+    quantity: float | None = None
+    reason: str = ""
+    note: str = ""
+
+
+class ProductionLotPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    entity_id: int
+    lot_code: str
+    supplier_code: str = ""
+    manufacture_date: str | None = None
+    expiry_date: str | None = None
+    note: str = ""
+
+
+class LotRelationPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    parent_lot_id: int
+    component_lot_id: int
+    quantity: float
+    unit: str = "шт"
+    task_id: int | None = None
+
+
+class EquipmentPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    equipment_id: int | None = None
+    department_id: int | None = None
+    area_id: int | None = None
+    name: str
+    code: str = ""
+    status: str = "active"
+    service_interval_days: int = 0
+    warning_before_days: int = 3
+    note: str = ""
+
+
+class EquipmentDowntimePayload(BaseModel):
+    chat_id: int
+    user_id: int
+    equipment_id: int
+    reason_type: str = "other"
+    reason: str
+    task_id: int | None = None
+
+
+class EquipmentDowntimeClosePayload(BaseModel):
+    chat_id: int
+    user_id: int
+    downtime_id: int
+    resolution: str
+
+
+class MaintenancePayload(BaseModel):
+    chat_id: int
+    user_id: int
+    equipment_id: int
+    maintenance_type: str = "planned"
+    note: str = ""
+
+
+class QualityRulePayload(BaseModel):
+    chat_id: int
+    user_id: int
+    rule_id: int | None = None
+    department_id: int | None = None
+    entity_id: int
+    operation_type: str = "production"
+    inspection_type: str = "output"
+    is_enabled: bool = True
+    sample_quantity: float = 0
+    max_defect_percent: float = 0
+    require_before_task_complete: bool = False
+    auto_quarantine_on_fail: bool = True
+    create_rework_task: bool = True
+    rework_department_id: int | None = None
+    rework_operation_type: str = ""
+
+
+class QualityInspectionPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    inspection_type: str = "output"
+    department_id: int | None = None
+    area_id: int | None = None
+    entity_id: int
+    lot_id: int | None = None
+    task_id: int | None = None
+    equipment_id: int | None = None
+    shift_plan_id: int | None = None
+    worker_user_id: int | None = None
+    checked_quantity: float = 0
+    defect_quantity: float = 0
+    unit: str = "шт"
+    note: str = ""
+    defects: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class QualityDecisionPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    inspection_id: int
+    decision: str
+    reason: str = ""
+    area_id: int | None = None
+    note: str = ""
+
+
+class ReplenishmentSettingPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    entity_id: int
+    area_id: int | None = None
+    lead_time_days: float = 0
+    target_cover_shifts: float = 10
+    minimum_order_quantity: float = 0
+    pack_quantity: float = 0
+    preferred_supplier: str = ""
+    is_enabled: bool = True
+
+
+class ReplenishmentRequestPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    entity_id: int
+    area_id: int | None = None
+    requested_quantity: float
+    unit: str = "шт"
+    source: str = "manual"
+    source_rule_id: int | None = None
+    recommended_quantity: float = 0
+    lead_time_days: float = 0
+    needed_at: str | None = None
+    supplier_note: str = ""
+    reason: str = ""
+    note: str = ""
+
+
+class ReplenishmentActionPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    request_id: int
+    action: str
+    quantity: float | None = None
+    reason: str = ""
+    note: str = ""
+
+
+class MaintenancePlanPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    equipment_id: int
+    responsible_user_id: int | None = None
+    interval_days: int = 0
+    warning_before_days: int = 3
+    next_due_at: str | None = None
+    is_enabled: bool = True
+    note: str = ""
+    checklist: list[dict[str, Any]] = Field(default_factory=list)
+    spare_parts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class MaintenanceWorkActionPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    work_order_id: int
+    action: str
+    result: str = ""
+    note: str = ""
+
+
+class MaintenanceCheckPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    work_order_id: int
+    check_id: int
+    checked: bool = True
+    note: str = ""
+
+
+class MaintenancePartPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    work_order_id: int
+    part_id: int
+    actual_quantity: float = 0
 
 
 def _check_token(token: str | None, init_data: str | None = None) -> int | None:
@@ -399,7 +795,18 @@ def _check_token(token: str | None, init_data: str | None = None) -> int | None:
         return None
     user = validate_telegram_init_data(init_data or "", settings.bot_token)
     if user.get("id"):
-        return int(user["id"])
+        user_id = int(user["id"])
+        device = _REQUEST_DEVICE.get({})
+        result = shift_continuity.touch_device(
+            user_id,
+            device.get("device_id", ""),
+            device_name=device.get("device_name", ""),
+            platform=device.get("platform", ""),
+            user_agent=device.get("user_agent", ""),
+        )
+        if not result.get("allowed", True):
+            raise HTTPException(status_code=403, detail="Доступ с этого устройства отозван владельцем.")
+        return user_id
     if settings.bot_token or settings.miniapp_api_token:
         raise HTTPException(status_code=403, detail="access denied")
     return None
@@ -422,6 +829,9 @@ def _check_user(chat_id: int, user_id: int | None, *, submit: bool = False, mana
     account = _account_for_chat(chat_id)
     if not account:
         return None
+    if user_id:
+        device = _REQUEST_DEVICE.get({})
+        shift_continuity.set_device_chat(int(user_id), device.get("device_id", ""), account.scope_chat_id)
     if repo.is_global_owner_id(user_id):
         return account
     if not user_id:
@@ -550,6 +960,7 @@ def _entity_list(chat_id: int, user_id: int | None = None) -> dict[str, list[dic
                 "type": item.entity_type,
                 "name": item.name,
                 "unit": item.default_unit,
+                "code": repo.primary_entity_code(item.id),
             }
         )
     return result
@@ -591,13 +1002,207 @@ def _allowed_entity_types(operation_type: str) -> set[str]:
     return set()
 
 
+def _operation_preview(scope: int, user_id: int, payload: OperationPayload) -> dict[str, object]:
+    _check_operation_permission(
+        scope,
+        user_id,
+        payload.operation_type,
+        area_id=payload.area_id,
+        from_area_id=payload.from_area_id,
+        to_area_id=payload.to_area_id,
+        entity_type=payload.entity_type,
+        entity_id=payload.entity_id,
+    )
+    entity = repo.get_entity(payload.entity_id)
+    if not entity or entity.chat_id != scope or entity.entity_type != payload.entity_type:
+        raise HTTPException(status_code=400, detail="Позиция не найдена.")
+    if payload.quantity <= 0:
+        raise HTTPException(status_code=400, detail="Количество должно быть больше нуля.")
+    if payload.operation_type not in {"production", "material_in", "material_out", "energy", "assembly", "movement", "transfer_to_assembly", "shipment", "shipment_client", "shipment_fulfillment", "return", "stock_in", "stock_out", "write_off", "inventory_adjust"}:
+        raise HTTPException(status_code=400, detail="Неизвестное действие.")
+    if entity.entity_type not in _allowed_entity_types(payload.operation_type):
+        raise HTTPException(status_code=400, detail="Эта позиция не подходит для выбранного действия.")
+    if payload.operation_type in {"movement", "transfer_to_assembly"}:
+        if not payload.from_area_id or not payload.to_area_id:
+            raise HTTPException(status_code=400, detail="Выберите площадку отправления и получения.")
+        if payload.from_area_id == payload.to_area_id:
+            raise HTTPException(status_code=400, detail="Площадки отправления и получения должны отличаться.")
+
+    unit = payload.unit or entity.default_unit or "шт"
+    warnings: list[str] = []
+    balances: list[dict[str, object]] = []
+    components: list[dict[str, object]] = []
+
+    def area_name(area_id: int | None) -> str:
+        if area_id is None:
+            return "Общий склад"
+        area = repo.get_area(int(area_id))
+        return area.name if area else f"Площадка {area_id}"
+
+    incoming = {"production", "material_in", "return", "stock_in"}
+    outgoing = {"material_out", "shipment", "shipment_client", "shipment_fulfillment", "stock_out", "write_off"}
+    if payload.operation_type in incoming | outgoing:
+        current = repo.inventory_quantity(scope, payload.entity_type, payload.entity_id, unit, payload.area_id)
+        delta = payload.quantity if payload.operation_type in incoming else -payload.quantity
+        after = current + delta
+        balances.append({
+            "label": area_name(payload.area_id), "current": current, "delta": delta, "after": after, "unit": unit,
+        })
+        if after < 0:
+            warnings.append(f"После операции остаток «{entity.name}» станет отрицательным: {after:g} {unit}.")
+    elif payload.operation_type in {"movement", "transfer_to_assembly"}:
+        current_from = repo.inventory_quantity(scope, payload.entity_type, payload.entity_id, unit, payload.from_area_id)
+        current_to = repo.inventory_quantity(scope, payload.entity_type, payload.entity_id, unit, payload.to_area_id)
+        after_from = current_from - payload.quantity
+        balances.extend([
+            {"label": area_name(payload.from_area_id), "current": current_from, "delta": -payload.quantity, "after": after_from, "unit": unit},
+            {"label": area_name(payload.to_area_id), "current": current_to, "delta": payload.quantity, "after": current_to + payload.quantity, "unit": unit},
+        ])
+        if after_from < 0:
+            warnings.append(f"На площадке «{area_name(payload.from_area_id)}» не хватает «{entity.name}»: доступно {current_from:g} {unit}.")
+    elif payload.operation_type == "assembly":
+        current_product = repo.inventory_quantity(scope, "product", payload.entity_id, unit, payload.area_id)
+        balances.append({
+            "label": area_name(payload.area_id), "current": current_product, "delta": payload.quantity,
+            "after": current_product + payload.quantity, "unit": unit,
+        })
+        composition = repo.list_product_components(payload.entity_id)
+        if not composition:
+            warnings.append("Для изделия не указан состав. Комплектующие автоматически не спишутся.")
+        for comp in composition:
+            need = float(comp.get("quantity") or 0) * float(payload.quantity)
+            comp_unit = str(comp.get("default_unit") or "шт")
+            current = repo.inventory_quantity(scope, "component", int(comp["component_id"]), comp_unit, payload.area_id)
+            after = current - need
+            item = {
+                "entity_id": int(comp["component_id"]), "name": str(comp.get("name") or "Комплектующая"),
+                "required": need, "current": current, "after": after, "unit": comp_unit,
+            }
+            components.append(item)
+            if after < 0:
+                warnings.append(f"Не хватает «{item['name']}»: нужно {need:g} {comp_unit}, доступно {current:g} {comp_unit}.")
+    elif payload.operation_type == "inventory_adjust":
+        current = repo.inventory_quantity(scope, payload.entity_type, payload.entity_id, unit, payload.area_id)
+        balances.append({
+            "label": area_name(payload.area_id), "current": current, "delta": payload.quantity,
+            "after": current + payload.quantity, "unit": unit,
+        })
+
+    if payload.area_id is None and payload.operation_type not in {"movement", "transfer_to_assembly", "energy"} and len(repo.list_areas(scope)) > 1:
+        warnings.append("Площадка не выбрана. Запись попадёт на общий склад.")
+    if payload.operation_type in {"shipment_client", "shipment_fulfillment"} and not payload.storage_place:
+        warnings.append("Получатель не выбран. В записи останется только общий тип отгрузки.")
+
+    operation_label = {
+        "production": "Изготовление", "material_in": "Приход", "material_out": "Расход",
+        "energy": "Показание", "assembly": "Сборка", "movement": "Перемещение",
+        "transfer_to_assembly": "Передача", "shipment": "Отгрузка",
+        "shipment_client": "Передача заказчику", "shipment_fulfillment": "Передача на внешний склад",
+        "return": "Возврат", "stock_in": "Приход на склад", "stock_out": "Расход со склада",
+        "write_off": "Списание", "inventory_adjust": "Корректировка остатка",
+    }.get(payload.operation_type, payload.operation_type)
+    summary = f"{operation_label}: {entity.name} — {payload.quantity:g} {unit}"
+    fingerprint_payload = {
+        "operation_type": payload.operation_type, "entity_type": payload.entity_type, "entity_id": payload.entity_id,
+        "quantity": float(payload.quantity), "unit": unit, "area_id": payload.area_id,
+        "from_area_id": payload.from_area_id, "to_area_id": payload.to_area_id,
+        "balances": balances, "components": components,
+    }
+    fingerprint = hashlib.sha256(json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:32]
+    return {
+        "summary": summary, "entity_name": entity.name, "unit": unit, "warnings": warnings,
+        "requires_confirmation": bool(warnings), "balances": balances, "components": components,
+        "fingerprint": fingerprint,
+    }
+
+
+def _operation_item_allowed(scope: int, user_id: int, item: dict[str, object]) -> bool:
+    try:
+        _check_operation_permission(
+            scope, user_id, str(item.get("operation_type") or ""),
+            area_id=int(item["area_id"]) if item.get("area_id") is not None else None,
+            from_area_id=int(item["from_area_id"]) if item.get("from_area_id") is not None else None,
+            to_area_id=int(item["to_area_id"]) if item.get("to_area_id") is not None else None,
+            entity_type=str(item.get("entity_type") or ""),
+            entity_id=int(item.get("entity_id") or 0),
+        )
+        return True
+    except HTTPException:
+        return False
+
+
+def _work_access_for_user(scope: int, user_id: int) -> list[dict]:
+    department = repo.department_work_access_for_user(scope, user_id)
+    if department:
+        return department
+    permissions = repo.user_permissions_current_context(scope, user_id)
+    entities = _entity_list(scope, user_id)
+    operation_types = {
+        "production": ("production", ["component", "stock_item"]),
+        "material_in": ("material", ["material"]),
+        "material_out": ("material", ["material"]),
+        "energy": ("energy", ["meter"]),
+        "assembly": ("assembly", ["product"]),
+        "movement": ("movement", ["component", "product", "material", "stock_item"]),
+        "transfer_to_assembly": ("movement", ["component", "product", "material", "stock_item"]),
+        "shipment": ("shipment", ["product", "stock_item"]),
+        "shipment_client": ("shipment", ["product", "stock_item"]),
+        "shipment_fulfillment": ("fulfillment", ["product", "stock_item"]),
+        "return": ("returns", ["product", "stock_item"]),
+        "stock_in": ("stock", ["stock_item"]),
+        "stock_out": ("stock", ["stock_item"]),
+        "write_off": ("stock", ["component", "product", "material", "stock_item"]),
+        "inventory_adjust": ("stock", ["component", "product", "material", "stock_item"]),
+    }
+    result: list[dict] = []
+    for operation_key, (permission_key, types) in operation_types.items():
+        if not (permissions.get(permission_key) or repo.is_system_admin_id(user_id)):
+            continue
+        available: list[dict] = []
+        for entity_type in types:
+            available.extend(entities.get(entity_type) or [])
+        if available:
+            result.append({"operation_key": operation_key, "entities": available})
+    return result
+
+
+def _operation_presets_for_user(scope: int, user_id: int) -> list[dict]:
+    return [item for item in repo.list_operation_presets(scope, user_id) if _operation_item_allowed(scope, user_id, item)]
+
+
+def _recent_operations_for_user(scope: int, user_id: int) -> list[dict]:
+    return [item for item in repo.list_recent_operation_templates(scope, user_id, 12) if _operation_item_allowed(scope, user_id, item)]
+
+
 def _risk_for_user(chat_id: int, user_id: int) -> dict[str, object]:
     return stock_risk.dashboard_for_user(chat_id, user_id)
+
+
+def _shift_packages_for_user(chat_id: int, user_id: int, **filters: Any) -> list[dict[str, Any]]:
+    can_review = repo.is_system_admin_id(user_id) or repo.user_can_manage_departments(chat_id, user_id)
+    if not can_review:
+        filters = dict(filters)
+        filters["worker_user_id"] = int(user_id)
+        filters.pop("department_id", None)
+        return shift_continuity.list_shift_packages(chat_id, limit=100, **filters)
+    rows = shift_continuity.list_shift_packages(chat_id, limit=200, **filters)
+    return [
+        item for item in rows
+        if int(item.get("user_id") or 0) == int(user_id)
+        or shift_continuity.can_review_worker_packages(chat_id, user_id, int(item.get("user_id") or 0))
+    ]
+
+
+def _device_rows_for_user(chat_id: int, user_id: int) -> list[dict[str, Any]]:
+    if repo.is_system_admin_id(user_id):
+        return shift_continuity.list_devices(shift_continuity.account_user_ids(chat_id))
+    return shift_continuity.list_devices([user_id])
 
 
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
+    control_center.heartbeat("miniapp", "ok", "startup")
 
 
 
@@ -617,6 +1222,7 @@ def mini() -> FileResponse:
 
 @app.get("/health")
 def health() -> dict[str, object]:
+    control_center.heartbeat("miniapp", "ok", "health")
     return {
         "status": "ok",
         "bot_enabled": settings.bot_enabled,
@@ -626,6 +1232,7 @@ def health() -> dict[str, object]:
 
 @app.get("/ready")
 def ready() -> dict[str, object]:
+    control_center.heartbeat("miniapp", "ok", "ready")
     row = db.fetchone("SELECT 1 AS ok")
     return {"status": "ready", "database": bool(row), "mini_app": True}
 
@@ -680,6 +1287,7 @@ def bootstrap(
     is_system_admin = repo.is_system_admin_id(user_id)
     has_departments = repo.user_has_department_membership(scope, user_id)
     repo.log_site_action(scope, user_id, "bootstrap")
+    control_center.heartbeat("miniapp", "ok", "bootstrap")
     return {
         "account": {"id": account.id, "name": account.name} if account else None,
         "scope_chat_id": scope,
@@ -689,7 +1297,13 @@ def bootstrap(
         "can_manage_departments": can_manage_departments,
         "is_system_admin": is_system_admin,
         "department_memberships": repo.user_department_memberships(scope, user_id),
-        "work_access": repo.department_work_access_for_user(scope, user_id),
+        "work_access": _work_access_for_user(scope, user_id),
+        "entity_codes": repo.list_entity_codes(scope) if is_system_admin else [],
+        "operation_presets": _operation_presets_for_user(scope, user_id),
+        "recent_operations": _recent_operations_for_user(scope, user_id),
+        "setup_health": repo.setup_health(scope) if is_system_admin else {},
+        "workspace": control_center.workspace_profile(scope, user_id),
+        "control_summary": control_center.control_summary(scope, user_id) if (is_system_admin or can_manage_departments) else {},
         "departments": repo.list_departments(scope, None if is_system_admin else user_id, manageable_only=not is_system_admin) if can_manage_departments else [],
         "areas": _area_list(scope),
         "entities": _entity_list(scope, user_id),
@@ -697,7 +1311,7 @@ def bootstrap(
         "job_titles": repo.list_job_titles_detailed(scope) if can_manage else [],
         "workers": repo.list_workers_detailed(scope) if can_manage else [],
         "area_access_rules": repo.list_area_section_access(scope) if can_manage else [],
-        "inventory_positions": _inventory_positions_for_user(scope, user_id, _inventory_area_ids(scope, user_id)) if (permissions.get("stock") or is_system_admin) else [],
+        "inventory_positions": _inventory_positions_for_user(scope, user_id, _inventory_area_ids(scope, user_id)) if (permissions.get("stock") or is_system_admin or has_departments) else [],
         "inventory_sessions": repo.list_inventory_sessions(scope, area_ids=_inventory_area_ids(scope, user_id)) if ((permissions.get("stock") and not has_departments) or is_system_admin) else [],
         "report_presets": _report_presets_for_user(scope, user_id) if (permissions.get("reports") or is_system_admin) else [],
         "report_schedules": repo.list_report_schedules(scope, user_id),
@@ -705,6 +1319,15 @@ def bootstrap(
         "inbox_items": repo.list_inbox_items(scope, user_id),
         "worker_activity": repo.worker_activity_analytics(scope, 30, None if can_manage else user_id),
         "worker_shifts": repo.list_worker_shifts(scope, None if can_manage else user_id, limit=80),
+        "current_open_shift": shift_continuity.current_open_shift(scope, user_id),
+        "shift_packages": _shift_packages_for_user(scope, user_id),
+        "shift_handovers": shift_continuity.list_handovers(scope, user_id, can_manage=(is_system_admin or can_manage_departments)),
+        "handover_recipients": shift_continuity.handover_recipients(scope, user_id),
+        "handover_checklist": shift_continuity.active_handover_checklist(scope),
+        "continuity_settings": shift_continuity.get_continuity_settings(scope) if is_system_admin else {},
+        "label_templates": shift_continuity.list_label_templates(scope) if is_system_admin else [],
+        "miniapp_devices": _device_rows_for_user(scope, user_id),
+        "current_device_id": _REQUEST_DEVICE.get({}).get("device_id", ""),
         "shift_plans": repo.list_shift_plans(scope, None if can_manage else user_id),
         "shift_templates": repo.list_shift_templates(scope, None if can_manage else user_id),
         "shift_calendar": repo.shift_calendar(scope, str(date.today() - timedelta(days=7)), str(date.today() + timedelta(days=45)), None if can_manage else user_id),
@@ -712,9 +1335,323 @@ def bootstrap(
         "attendance_summary": repo.attendance_summary(scope, str(date.today() - timedelta(days=29)), str(date.today()), None if can_manage else user_id),
         "notification_preferences": repo.get_notification_preferences(scope, user_id),
         "stock_risk": _risk_for_user(scope, user_id),
+        "workflow": production_flow.workflow_snapshot(scope, user_id),
+        "workflow_options": production_flow.workflow_options(scope, user_id),
+        "quality_supply": {"quality": quality_control.quality_snapshot(scope, user_id), "replenishment": replenishment.snapshot(scope, user_id), "maintenance": maintenance_planning.snapshot(scope, user_id)},
         "plan_targets": repo.list_assembly_plan_targets(scope) if ((permissions.get("assembly") and not has_departments) or is_system_admin) else [],
         "dashboard": _dashboard_for_user(scope, user_id),
     }
+
+
+
+def _flow_user(chat_id: int, user_id: int | None, x_access_token: str | None, x_telegram_init_data: str | None, *, submit: bool = False) -> tuple[int, int]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    uid = _request_user(user_id, auth_user_id)
+    if uid is None:
+        raise HTTPException(status_code=403, detail="access denied")
+    _check_user(chat_id, uid, submit=submit)
+    return repo.resolve_scope_chat_id(chat_id), int(uid)
+
+
+def _flow_error(exc: Exception) -> None:
+    if isinstance(exc, PermissionError):
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if isinstance(exc, ValueError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise exc
+
+
+@app.get("/api/workflow")
+def workflow_snapshot(
+    chat_id: int = Query(...), user_id: int | None = Query(None),
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    scope, uid = _flow_user(chat_id, user_id, x_access_token, x_telegram_init_data)
+    return {"workflow": production_flow.workflow_snapshot(scope, uid), "workflow_options": production_flow.workflow_options(scope, uid)}
+
+
+@app.post("/api/production-tasks")
+def save_production_task(
+    payload: ProductionTaskPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    scope, uid = _flow_user(payload.chat_id, payload.user_id, x_access_token, x_telegram_init_data, submit=True)
+    try:
+        task = production_flow.create_task(
+            scope, uid, payload.department_id, payload.entity_id,
+            operation_type=payload.operation_type, target_quantity=payload.target_quantity, unit=payload.unit,
+            title=payload.title, assignee_user_id=payload.assignee_user_id, shift_plan_id=payload.shift_plan_id, area_id=payload.area_id,
+            priority=payload.priority, due_at=payload.due_at, note=payload.note, output_lot_id=payload.output_lot_id,
+        )
+    except Exception as exc:
+        _flow_error(exc)
+    repo.log_site_action(scope, uid, "production_task_create", str(task.get("id") or ""))
+    return {"message": "Задание создано.", "task": task, "workflow": production_flow.workflow_snapshot(scope, uid)}
+
+
+@app.post("/api/production-tasks/action")
+def production_task_action(
+    payload: ProductionTaskActionPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    scope, uid = _flow_user(payload.chat_id, payload.user_id, x_access_token, x_telegram_init_data, submit=True)
+    try:
+        task = production_flow.task_action(scope, uid, payload.task_id, payload.action, reason=payload.reason, note=payload.note)
+    except Exception as exc:
+        _flow_error(exc)
+    repo.log_site_action(scope, uid, "production_task_action", f"{payload.task_id}:{payload.action}")
+    return {"message": "Задание обновлено.", "task": task, "workflow": production_flow.workflow_snapshot(scope, uid)}
+
+
+@app.post("/api/department-requests")
+def save_department_request(
+    payload: DepartmentRequestPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    scope, uid = _flow_user(payload.chat_id, payload.user_id, x_access_token, x_telegram_init_data, submit=True)
+    try:
+        item = production_flow.create_request(
+            scope, uid, payload.requester_department_id, payload.supplier_department_id, payload.entity_id, payload.quantity,
+            unit=payload.unit, from_area_id=payload.from_area_id, to_area_id=payload.to_area_id,
+            priority=payload.priority, needed_at=payload.needed_at, note=payload.note,
+        )
+    except Exception as exc:
+        _flow_error(exc)
+    repo.log_site_action(scope, uid, "department_request_create", str(item.get("id") or ""))
+    return {"message": "Заявка создана.", "request": item, "workflow": production_flow.workflow_snapshot(scope, uid)}
+
+
+@app.post("/api/department-requests/action")
+def department_request_action(
+    payload: DepartmentRequestActionPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    scope, uid = _flow_user(payload.chat_id, payload.user_id, x_access_token, x_telegram_init_data, submit=True)
+    try:
+        item = production_flow.request_action(scope, uid, payload.request_id, payload.action, quantity=payload.quantity, reason=payload.reason, note=payload.note)
+    except Exception as exc:
+        _flow_error(exc)
+    repo.log_site_action(scope, uid, "department_request_action", f"{payload.request_id}:{payload.action}")
+    return {"message": "Заявка обновлена.", "request": item, "workflow": production_flow.workflow_snapshot(scope, uid)}
+
+
+@app.post("/api/lots")
+def save_production_lot(
+    payload: ProductionLotPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    scope, uid = _flow_user(payload.chat_id, payload.user_id, x_access_token, x_telegram_init_data, submit=True)
+    try:
+        lot = production_flow.create_lot(scope, uid, payload.entity_id, payload.lot_code, supplier_code=payload.supplier_code, manufacture_date=payload.manufacture_date, expiry_date=payload.expiry_date, note=payload.note)
+    except Exception as exc:
+        _flow_error(exc)
+    return {"message": "Партия создана.", "lot": lot, "workflow": production_flow.workflow_snapshot(scope, uid)}
+
+
+@app.post("/api/lots/relation")
+def save_lot_relation(
+    payload: LotRelationPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    scope, uid = _flow_user(payload.chat_id, payload.user_id, x_access_token, x_telegram_init_data, submit=True)
+    try:
+        production_flow.link_lots(scope, uid, payload.parent_lot_id, payload.component_lot_id, payload.quantity, payload.unit, payload.task_id)
+        lot = production_flow.get_lot(scope, payload.parent_lot_id, uid)
+    except Exception as exc:
+        _flow_error(exc)
+    return {"message": "Связь партий сохранена.", "lot": lot}
+
+
+@app.get("/api/lots/trace")
+def lot_trace(
+    chat_id: int = Query(...), lot_id: int = Query(...), user_id: int | None = Query(None),
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    scope, uid = _flow_user(chat_id, user_id, x_access_token, x_telegram_init_data)
+    lot = production_flow.get_lot(scope, lot_id, uid)
+    if not lot:
+        raise HTTPException(status_code=404, detail="Партия не найдена или недоступна.")
+    return {"lot": lot}
+
+
+@app.post("/api/equipment")
+def save_equipment(
+    payload: EquipmentPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    scope, uid = _flow_user(payload.chat_id, payload.user_id, x_access_token, x_telegram_init_data, submit=True)
+    try:
+        item = production_flow.save_equipment(scope, uid, payload.name, equipment_id=payload.equipment_id, department_id=payload.department_id, area_id=payload.area_id, code=payload.code, status=payload.status, service_interval_days=payload.service_interval_days, warning_before_days=payload.warning_before_days, note=payload.note)
+    except Exception as exc:
+        _flow_error(exc)
+    return {"message": "Оборудование сохранено.", "equipment": item, "workflow": production_flow.workflow_snapshot(scope, uid)}
+
+
+@app.post("/api/equipment/downtime")
+def open_equipment_downtime(
+    payload: EquipmentDowntimePayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    scope, uid = _flow_user(payload.chat_id, payload.user_id, x_access_token, x_telegram_init_data, submit=True)
+    try:
+        item = production_flow.open_downtime(scope, uid, payload.equipment_id, reason_type=payload.reason_type, reason=payload.reason, task_id=payload.task_id)
+    except Exception as exc:
+        _flow_error(exc)
+    return {"message": "Простой зарегистрирован.", "downtime": item, "workflow": production_flow.workflow_snapshot(scope, uid)}
+
+
+@app.post("/api/equipment/downtime/close")
+def close_equipment_downtime(
+    payload: EquipmentDowntimeClosePayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    scope, uid = _flow_user(payload.chat_id, payload.user_id, x_access_token, x_telegram_init_data, submit=True)
+    try:
+        item = production_flow.close_downtime(scope, uid, payload.downtime_id, payload.resolution)
+    except Exception as exc:
+        _flow_error(exc)
+    return {"message": "Простой закрыт.", "downtime": item, "workflow": production_flow.workflow_snapshot(scope, uid)}
+
+
+@app.post("/api/equipment/maintenance")
+def record_equipment_maintenance(
+    payload: MaintenancePayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    scope, uid = _flow_user(payload.chat_id, payload.user_id, x_access_token, x_telegram_init_data, submit=True)
+    try:
+        item = production_flow.record_maintenance(scope, uid, payload.equipment_id, maintenance_type=payload.maintenance_type, note=payload.note)
+    except Exception as exc:
+        _flow_error(exc)
+    return {"message": "Обслуживание записано.", "maintenance": item, "workflow": production_flow.workflow_snapshot(scope, uid)}
+
+
+@app.get("/api/quality-supply")
+def quality_supply_snapshot(
+    chat_id: int = Query(...), user_id: int | None = Query(None),
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    scope, uid = _flow_user(chat_id, user_id, x_access_token, x_telegram_init_data)
+    return {"quality_supply": {"quality": quality_control.quality_snapshot(scope, uid), "replenishment": replenishment.snapshot(scope, uid), "maintenance": maintenance_planning.snapshot(scope, uid)}}
+
+
+@app.post("/api/quality/rules")
+def save_quality_rule(payload: QualityRulePayload, x_access_token: Annotated[str | None, Header()] = None, x_telegram_init_data: Annotated[str | None, Header()] = None) -> dict[str, object]:
+    scope, uid = _flow_user(payload.chat_id, payload.user_id, x_access_token, x_telegram_init_data, submit=True)
+    try:
+        item = quality_control.save_rule(scope, uid, payload.model_dump(exclude={"chat_id","user_id"}))
+    except Exception as exc: _flow_error(exc)
+    return {"message":"Правило контроля сохранено.","rule":item,"quality_supply":{"quality":quality_control.quality_snapshot(scope,uid),"replenishment":replenishment.snapshot(scope,uid),"maintenance":maintenance_planning.snapshot(scope,uid)}}
+
+
+@app.post("/api/quality/inspections")
+def create_quality_inspection(payload: QualityInspectionPayload, x_access_token: Annotated[str | None, Header()] = None, x_telegram_init_data: Annotated[str | None, Header()] = None) -> dict[str, object]:
+    scope, uid = _flow_user(payload.chat_id, payload.user_id, x_access_token, x_telegram_init_data, submit=True)
+    try:
+        values = payload.model_dump(exclude={"chat_id","user_id","entity_id"})
+        item = quality_control.create_inspection(scope, uid, payload.entity_id, **values)
+    except Exception as exc: _flow_error(exc)
+    return {"message":"Контроль качества записан.","inspection":item,"quality_supply":{"quality":quality_control.quality_snapshot(scope,uid),"replenishment":replenishment.snapshot(scope,uid),"maintenance":maintenance_planning.snapshot(scope,uid)}}
+
+
+@app.post("/api/quality/inspections/action")
+def quality_inspection_action(payload: QualityDecisionPayload, x_access_token: Annotated[str | None, Header()] = None, x_telegram_init_data: Annotated[str | None, Header()] = None) -> dict[str, object]:
+    scope, uid = _flow_user(payload.chat_id, payload.user_id, x_access_token, x_telegram_init_data, submit=True)
+    try:
+        item = quality_control.decide_inspection(scope, uid, payload.inspection_id, payload.decision, reason=payload.reason or payload.note)
+    except Exception as exc: _flow_error(exc)
+    return {"message":"Решение по качеству сохранено.","inspection":item,"quality_supply":{"quality":quality_control.quality_snapshot(scope,uid),"replenishment":replenishment.snapshot(scope,uid),"maintenance":maintenance_planning.snapshot(scope,uid)}}
+
+
+@app.post("/api/replenishment/settings")
+def save_replenishment_setting(payload: ReplenishmentSettingPayload, x_access_token: Annotated[str | None, Header()] = None, x_telegram_init_data: Annotated[str | None, Header()] = None) -> dict[str, object]:
+    scope, uid = _flow_user(payload.chat_id, payload.user_id, x_access_token, x_telegram_init_data, submit=True)
+    try: item=replenishment.save_setting(scope,uid,payload.model_dump(exclude={"chat_id","user_id"}))
+    except Exception as exc: _flow_error(exc)
+    return {"message":"Параметры пополнения сохранены.","setting":item,"replenishment":replenishment.snapshot(scope,uid)}
+
+
+@app.post("/api/replenishment/requests")
+def create_replenishment_request(payload: ReplenishmentRequestPayload, x_access_token: Annotated[str | None, Header()] = None, x_telegram_init_data: Annotated[str | None, Header()] = None) -> dict[str, object]:
+    scope, uid = _flow_user(payload.chat_id,payload.user_id,x_access_token,x_telegram_init_data,submit=True)
+    try:item=replenishment.create_request(scope,uid,payload.model_dump(exclude={"chat_id","user_id"}))
+    except Exception as exc:_flow_error(exc)
+    return {"message":"Заявка на пополнение создана.","request":item,"replenishment":replenishment.snapshot(scope,uid)}
+
+
+@app.post("/api/replenishment/requests/action")
+def replenishment_request_action(payload: ReplenishmentActionPayload, x_access_token: Annotated[str | None, Header()] = None, x_telegram_init_data: Annotated[str | None, Header()] = None) -> dict[str, object]:
+    scope, uid=_flow_user(payload.chat_id,payload.user_id,x_access_token,x_telegram_init_data,submit=True)
+    try:item=replenishment.request_action(scope,uid,payload.request_id,payload.action,quantity=payload.quantity,reason=payload.reason,note=payload.note)
+    except Exception as exc:_flow_error(exc)
+    return {"message":"Статус пополнения обновлён.","request":item,"replenishment":replenishment.snapshot(scope,uid)}
+
+
+@app.post("/api/maintenance/plans")
+def save_maintenance_plan(payload: MaintenancePlanPayload, x_access_token: Annotated[str | None, Header()] = None, x_telegram_init_data: Annotated[str | None, Header()] = None) -> dict[str, object]:
+    scope,uid=_flow_user(payload.chat_id,payload.user_id,x_access_token,x_telegram_init_data,submit=True)
+    try:item=maintenance_planning.save_plan(scope,uid,payload.model_dump(exclude={"chat_id","user_id"}))
+    except Exception as exc:_flow_error(exc)
+    return {"message":"План ТО сохранён.","plan":item,"maintenance":maintenance_planning.snapshot(scope,uid)}
+
+
+@app.post("/api/maintenance/work/action")
+def maintenance_work_action(payload: MaintenanceWorkActionPayload, x_access_token: Annotated[str | None, Header()] = None, x_telegram_init_data: Annotated[str | None, Header()] = None) -> dict[str, object]:
+    scope,uid=_flow_user(payload.chat_id,payload.user_id,x_access_token,x_telegram_init_data,submit=True)
+    try:item=maintenance_planning.work_action(scope,uid,payload.work_order_id,payload.action,result=payload.result,note=payload.note)
+    except Exception as exc:_flow_error(exc)
+    return {"message":"ТО обновлено.","work_order":item,"maintenance":maintenance_planning.snapshot(scope,uid)}
+
+
+@app.post("/api/maintenance/work/check")
+def maintenance_work_check(payload: MaintenanceCheckPayload, x_access_token: Annotated[str | None, Header()] = None, x_telegram_init_data: Annotated[str | None, Header()] = None) -> dict[str, object]:
+    scope,uid=_flow_user(payload.chat_id,payload.user_id,x_access_token,x_telegram_init_data,submit=True)
+    try:item=maintenance_planning.set_check(scope,uid,payload.work_order_id,payload.check_id,payload.checked,payload.note)
+    except Exception as exc:_flow_error(exc)
+    return {"message":"Чек-лист обновлён.","work_order":item}
+
+
+@app.post("/api/maintenance/work/part")
+def maintenance_work_part(payload: MaintenancePartPayload, x_access_token: Annotated[str | None, Header()] = None, x_telegram_init_data: Annotated[str | None, Header()] = None) -> dict[str, object]:
+    scope,uid=_flow_user(payload.chat_id,payload.user_id,x_access_token,x_telegram_init_data,submit=True)
+    try:item=maintenance_planning.set_part(scope,uid,payload.work_order_id,payload.part_id,payload.actual_quantity)
+    except Exception as exc:_flow_error(exc)
+    return {"message":"Расход запчасти обновлён.","work_order":item}
+
+
+@app.get("/api/production-needs-report")
+def production_needs_download(
+    chat_id:int=Query(...), user_id:int|None=Query(None), start_date:str|None=Query(None), end_date:str|None=Query(None), format:str=Query("xlsx"),
+    x_access_token:Annotated[str|None,Header()]=None, x_telegram_init_data:Annotated[str|None,Header()]=None,
+):
+    scope,uid=_flow_user(chat_id,user_id,x_access_token,x_telegram_init_data)
+    try:path=production_needs_report.create_pdf(scope,uid,start_date=start_date,end_date=end_date) if format.lower()=="pdf" else production_needs_report.create_xlsx(scope,uid,start_date=start_date,end_date=end_date)
+    except Exception as exc:_flow_error(exc)
+    media="application/pdf" if path.suffix.lower()==".pdf" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return FileResponse(path,media_type=media,filename=path.name)
+
+
+@app.get("/api/plan-fact")
+def workflow_plan_fact(
+    chat_id: int = Query(...), user_id: int | None = Query(None), start_date: str | None = Query(None), end_date: str | None = Query(None), department_id: int | None = Query(None),
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    scope, uid = _flow_user(chat_id, user_id, x_access_token, x_telegram_init_data)
+    return {"plan_fact": production_flow.plan_fact_summary(scope, uid, start_date=start_date, end_date=end_date, department_id=department_id)}
 
 
 @app.get("/api/stock-risks")
@@ -876,37 +1813,55 @@ def dashboard(
     return _dashboard_for_user(scope, user_id)
 
 
-@app.post("/api/operations")
-def create_operation(
+@app.post("/api/operations/preview")
+def preview_operation(
     payload: OperationPayload,
     x_access_token: Annotated[str | None, Header()] = None,
     x_telegram_init_data: Annotated[str | None, Header()] = None,
 ) -> dict[str, object]:
     auth_user_id = _check_token(x_access_token, x_telegram_init_data)
     payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
-    account = _check_user(payload.chat_id, payload.user_id, submit=True)
+    _check_user(payload.chat_id, payload.user_id, submit=True)
     scope = repo.resolve_scope_chat_id(payload.chat_id)
-    _check_operation_permission(
-        scope,
-        payload.user_id,
-        payload.operation_type,
-        area_id=payload.area_id,
-        from_area_id=payload.from_area_id,
-        to_area_id=payload.to_area_id,
-        entity_type=payload.entity_type,
-        entity_id=payload.entity_id,
-    )
+    return {"preview": _operation_preview(scope, payload.user_id, payload)}
+
+
+def _create_operation_core(
+    payload: OperationPayload,
+    account: repo.AccountingAccount | None,
+    scope: int,
+) -> dict[str, object]:
+    request_key = str(payload.client_request_id or "").strip()[:120]
+    if request_key:
+        duplicate = repo.get_operation_by_client_request(scope, payload.user_id, request_key)
+        if duplicate:
+            return {
+                "saved": 1, "duplicate": True, "operation_id": duplicate.get("id"),
+                "account": account.name if account else "",
+                "dashboard": _dashboard_for_user(scope, payload.user_id),
+                "recent_operations": _recent_operations_for_user(scope, payload.user_id),
+                "operation_presets": _operation_presets_for_user(scope, payload.user_id),
+                "inventory_positions": _inventory_positions_for_user(scope, payload.user_id, _inventory_area_ids(scope, payload.user_id)),
+                "workflow": production_flow.workflow_snapshot(scope, payload.user_id),
+            }
+    preview = _operation_preview(scope, payload.user_id, payload)
+    supplied_fingerprint = str(payload.preview_fingerprint or "").strip()
+    if supplied_fingerprint and supplied_fingerprint != str(preview.get("fingerprint") or ""):
+        raise HTTPException(status_code=409, detail={
+            "message": "Остатки изменились после проверки. Проверьте обновлённые данные.",
+            "preview": preview, "stock_changed": True,
+        })
+    if preview.get("requires_confirmation") and not payload.confirm_warnings:
+        raise HTTPException(status_code=409, detail={"message": "Требуется подтверждение предупреждений.", "preview": preview})
     entity = repo.get_entity(payload.entity_id)
-    if not entity or entity.chat_id != scope or entity.entity_type != payload.entity_type:
-        raise HTTPException(status_code=400, detail="bad entity")
-    if payload.quantity <= 0:
-        raise HTTPException(status_code=400, detail="bad quantity")
-    if payload.operation_type == "movement" and payload.from_area_id and payload.to_area_id and payload.from_area_id == payload.to_area_id:
-        raise HTTPException(status_code=400, detail="bad movement")
-    if payload.operation_type not in {"production", "material_in", "material_out", "energy", "assembly", "movement", "transfer_to_assembly", "shipment", "shipment_client", "shipment_fulfillment", "return", "stock_in", "stock_out", "write_off", "inventory_adjust"}:
-        raise HTTPException(status_code=400, detail="bad operation")
-    if entity.entity_type not in _allowed_entity_types(payload.operation_type):
-        raise HTTPException(status_code=400, detail="bad entity")
+    if not entity:
+        raise HTTPException(status_code=400, detail="Позиция не найдена.")
+    try:
+        production_flow.validate_operation_context(scope, payload.user_id, task_id=payload.task_id, lot_id=payload.lot_id, entity_id=payload.entity_id, operation_type=payload.operation_type)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     op = {
         "operation_type": payload.operation_type,
         "entity_type": payload.entity_type,
@@ -919,15 +1874,659 @@ def create_operation(
         "to_area_id": payload.to_area_id,
         "destination_type": payload.destination_type,
         "storage_place": payload.storage_place,
+        "client_request_id": request_key or None,
+        "source_channel": "mini",
+        "task_id": payload.task_id,
+        "lot_id": payload.lot_id,
     }
-    saved = accounting.apply_operations(scope, payload.chat_id, payload.user_id, [op], raw_text=payload.note or "mini app")
+    try:
+        saved = accounting.apply_operations(scope, payload.chat_id, payload.user_id, [op], raw_text=payload.note or "mini app")
+    except Exception:
+        duplicate = repo.get_operation_by_client_request(scope, payload.user_id, request_key) if request_key else None
+        if duplicate:
+            return {
+                "saved": 1, "duplicate": True, "operation_id": duplicate.get("id"),
+                "account": account.name if account else "",
+                "dashboard": _dashboard_for_user(scope, payload.user_id),
+                "recent_operations": _recent_operations_for_user(scope, payload.user_id),
+                "operation_presets": _operation_presets_for_user(scope, payload.user_id),
+                "inventory_positions": _inventory_positions_for_user(scope, payload.user_id, _inventory_area_ids(scope, payload.user_id)),
+                "workflow": production_flow.workflow_snapshot(scope, payload.user_id),
+            }
+        raise
+    if not saved:
+        raise HTTPException(status_code=409, detail="Запись не была сохранена. Проверьте доступы и данные.")
+    saved_operation = repo.get_operation_by_client_request(scope, payload.user_id, request_key) if request_key else None
+    if payload.preset_id:
+        repo.touch_operation_preset(scope, payload.user_id, payload.preset_id)
     repo.log_site_action(scope, payload.user_id, "operation", payload.operation_type)
     repo.log_sync_event(scope, "mini", "saved", payload.operation_type)
     return {
-        "saved": saved,
+        "saved": saved, "duplicate": False, "operation_id": saved_operation.get("id") if saved_operation else None,
         "account": account.name if account else "",
         "dashboard": _dashboard_for_user(scope, payload.user_id),
+        "recent_operations": _recent_operations_for_user(scope, payload.user_id),
+        "operation_presets": _operation_presets_for_user(scope, payload.user_id),
+        "inventory_positions": _inventory_positions_for_user(scope, payload.user_id, _inventory_area_ids(scope, payload.user_id)),
+        "workflow": production_flow.workflow_snapshot(scope, payload.user_id),
+        "preview": preview,
     }
+
+
+def _create_operation_unlocked(
+    payload: OperationPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
+    account = _check_user(payload.chat_id, payload.user_id, submit=True)
+    scope = repo.resolve_scope_chat_id(payload.chat_id)
+    return _create_operation_core(payload, account, scope)
+
+
+@app.post("/api/operations")
+def create_operation(
+    payload: OperationPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    # Один критический участок на процесс: проверка остатков и запись не расходятся
+    # при одновременных нажатиях с разных телефонов.
+    with _OPERATION_SAVE_LOCK:
+        return _create_operation_unlocked(payload, x_access_token, x_telegram_init_data)
+
+
+def _package_review_recipients(scope: int, worker_user_id: int) -> list[int]:
+    recipients = set(repo.list_system_admin_ids())
+    rows = db.fetchall(
+        """
+        SELECT DISTINCT head.user_id
+        FROM department_members worker
+        JOIN departments d ON d.id=worker.department_id AND d.chat_id=? AND d.is_archived=0
+        JOIN department_members head ON head.department_id=d.id AND head.is_active=1 AND head.role_level>=50
+        WHERE worker.user_id=? AND worker.is_active=1
+        """,
+        (scope, int(worker_user_id)),
+    )
+    recipients.update(int(row["user_id"]) for row in rows)
+    recipients.discard(int(worker_user_id))
+    return sorted(recipients)
+
+
+def _notify_package_review(scope: int, package: dict[str, Any]) -> None:
+    if str(package.get("status") or "") not in {"review", "partial", "rejected"}:
+        return
+    title = "Нужно проверить записи смены"
+    message = (
+        f"Сотрудник: {package.get('worker_name') or package.get('user_id')}. "
+        f"Принято: {package.get('accepted_count', 0)}; на проверке: {package.get('review_count', 0)}; "
+        f"отклонено: {package.get('rejected_count', 0)}; ошибок: {package.get('error_count', 0)}."
+    )
+    for recipient in _package_review_recipients(scope, int(package.get("user_id") or 0)):
+        repo.create_inbox_item(
+            scope, recipient, "shift_package_review", title, message,
+            "shift_sync_package", int(package["id"]), deduplicate=True, priority="high", force=True,
+        )
+
+
+def _package_item_error(exc: HTTPException) -> tuple[str, str, list[str]]:
+    detail = exc.detail
+    if isinstance(detail, dict):
+        preview = detail.get("preview") or {}
+        warnings = [str(x) for x in (preview.get("warnings") or [])]
+        message = str(detail.get("message") or (warnings[0] if warnings else "Требуется проверка."))
+    else:
+        warnings = []
+        message = str(detail or "Ошибка записи.")
+    if exc.status_code == 409:
+        return "review", message, warnings
+    if exc.status_code in {400, 403, 404}:
+        return "rejected", message, warnings
+    return "error", message, warnings
+
+
+@app.post("/api/shift-packages/sync")
+def sync_shift_package(
+    payload: ShiftPackageSyncPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
+    account = _check_user(payload.chat_id, payload.user_id, submit=True)
+    scope = repo.resolve_scope_chat_id(payload.chat_id)
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="Пакет смены пуст.")
+    if len(payload.items) > 200:
+        raise HTTPException(status_code=400, detail="В одном пакете допускается не более 200 записей.")
+    open_shift = shift_continuity.current_open_shift(scope, payload.user_id)
+    shift_id = payload.shift_id
+    if open_shift and (not shift_id or int(shift_id) == int(open_shift["id"])):
+        shift_id = int(open_shift["id"])
+    elif shift_id:
+        row = db.fetchone("SELECT id FROM worker_shifts WHERE chat_id=? AND id=? AND user_id=?", (scope, int(shift_id), int(payload.user_id)))
+        if not row:
+            shift_id = None
+    area_id = payload.area_id if payload.area_id is not None else (open_shift.get("area_id") if open_shift else None)
+    device_id = _REQUEST_DEVICE.get({}).get("device_id", "")
+    package = shift_continuity.upsert_shift_package(
+        scope, payload.user_id, payload.client_package_id,
+        shift_id=shift_id, area_id=area_id, device_id=device_id, note=payload.note,
+    )
+    with _OPERATION_SAVE_LOCK:
+        for sequence, raw_item in enumerate(payload.items):
+            body = raw_item.get("body") if isinstance(raw_item, dict) and isinstance(raw_item.get("body"), dict) else raw_item
+            if not isinstance(body, dict):
+                continue
+            request_id = str(body.get("client_request_id") or "").strip()[:120]
+            if not request_id:
+                request_id = hashlib.sha256(
+                    json.dumps(body, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+                ).hexdigest()[:32]
+                body["client_request_id"] = request_id
+            item = shift_continuity.upsert_shift_package_item(int(package["id"]), request_id, sequence, body)
+            if str(item.get("status") or "") in {"accepted", "duplicate"}:
+                continue
+            try:
+                op_payload = OperationPayload(**{**body, "chat_id": scope, "user_id": int(payload.user_id)})
+                result = _create_operation_core(op_payload, account, scope)
+                shift_continuity.update_package_item(
+                    int(item["id"]), "duplicate" if result.get("duplicate") else "accepted",
+                    message="Запись уже была сохранена." if result.get("duplicate") else "Сохранено.",
+                    operation_id=int(result.get("operation_id") or 0) or None,
+                )
+            except HTTPException as exc:
+                status, message, warnings = _package_item_error(exc)
+                shift_continuity.update_package_item(int(item["id"]), status, message=message, warnings=warnings)
+            except Exception as exc:
+                shift_continuity.update_package_item(int(item["id"]), "error", message=f"Временная ошибка: {type(exc).__name__}")
+    package = shift_continuity.recount_shift_package(int(package["id"])) or package
+    package["worker_name"] = str(payload.user_id)
+    _notify_package_review(scope, package)
+    repo.log_sync_event(scope, "mini_package", str(package.get("status") or "received"), str(package.get("id") or ""))
+    return {
+        "package": package,
+        "shift_packages": _shift_packages_for_user(scope, payload.user_id),
+        "dashboard": _dashboard_for_user(scope, payload.user_id),
+        "inventory_positions": _inventory_positions_for_user(scope, payload.user_id, _inventory_area_ids(scope, payload.user_id)),
+        "recent_operations": _recent_operations_for_user(scope, payload.user_id),
+    }
+
+
+@app.get("/api/shift-packages")
+def list_shift_packages_api(
+    chat_id: int = Query(...), user_id: int | None = Query(None),
+    worker_user_id: int | None = Query(None), department_id: int | None = Query(None), area_id: int | None = Query(None),
+    status: str | None = Query(None), date_from: str | None = Query(None), date_to: str | None = Query(None),
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    user_id = _request_user(user_id, auth_user_id)
+    if user_id is None:
+        raise HTTPException(status_code=403, detail="access denied")
+    _check_user(chat_id, user_id)
+    scope = repo.resolve_scope_chat_id(chat_id)
+    return {"shift_packages": _shift_packages_for_user(scope, user_id, worker_user_id=worker_user_id, department_id=department_id, area_id=area_id, status=status, date_from=date_from, date_to=date_to)}
+
+
+def _review_shift_package_item(scope: int, actor_user_id: int, item_id: int, action: str, note: str = "") -> dict[str, Any]:
+    item = shift_continuity.get_package_item(item_id)
+    if not item or int(item.get("chat_id") or 0) != int(scope):
+        raise HTTPException(status_code=404, detail="Запись пакета не найдена.")
+    worker_user_id = int(item.get("user_id") or 0)
+    if not shift_continuity.can_review_worker_packages(scope, actor_user_id, worker_user_id):
+        raise HTTPException(status_code=403, detail="Нет права проверять записи этого сотрудника.")
+    action = str(action or "").strip().lower()
+    reason = str(note or "").strip()
+    before_status = str(item.get("status") or "")
+    if action == "reject":
+        if not reason:
+            raise HTTPException(status_code=400, detail="Укажите причину отклонения.")
+        shift_continuity.update_package_item(item_id, "rejected", message=reason)
+    elif action == "approve":
+        body = dict(item.get("payload") or {})
+        body.update({"chat_id": scope, "user_id": worker_user_id, "confirm_warnings": True, "preview_fingerprint": ""})
+        account = _check_user(scope, worker_user_id, submit=True)
+        try:
+            with _OPERATION_SAVE_LOCK:
+                result = _create_operation_core(OperationPayload(**body), account, scope)
+            shift_continuity.update_package_item(
+                item_id, "duplicate" if result.get("duplicate") else "accepted",
+                message=note or ("Запись уже была сохранена." if result.get("duplicate") else "Подтверждено руководителем."),
+                operation_id=int(result.get("operation_id") or 0) or None,
+            )
+        except HTTPException as exc:
+            status_value, message, warnings = _package_item_error(exc)
+            shift_continuity.update_package_item(item_id, status_value, message=message, warnings=warnings)
+            raise HTTPException(status_code=409, detail=message)
+    else:
+        raise HTTPException(status_code=400, detail="Неизвестное действие.")
+    package = shift_continuity.recount_shift_package(int(item["package_id"]), reviewed_by=actor_user_id)
+    updated_item = shift_continuity.get_package_item(item_id) or {}
+    control_center.record_decision(
+        scope, actor_user_id, worker_user_id=worker_user_id, target_type="shift_sync_item", target_id=item_id,
+        action=action, reason=reason, before_status=before_status, after_status=str(updated_item.get("status") or ""),
+        metadata={"package_id": int(item.get("package_id") or 0)},
+    )
+    repo.create_inbox_item(
+        scope, worker_user_id, "shift_package_result", "Запись смены проверена",
+        (reason or ("Запись принята руководителем." if action == "approve" else "Запись отклонена руководителем."))[:1000],
+        "shift_sync_item", int(item_id), deduplicate=False, priority="normal" if action == "approve" else "high", force=True,
+    )
+    repo.log_site_action(scope, actor_user_id, f"shift_package_{action}", str(item_id))
+    return {"package": package or {}, "worker_user_id": worker_user_id}
+
+
+@app.post("/api/shift-packages/item-action")
+def shift_package_item_action(
+    payload: ShiftPackageItemActionPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
+    _check_user(payload.chat_id, payload.user_id)
+    scope = repo.resolve_scope_chat_id(payload.chat_id)
+    result = _review_shift_package_item(scope, payload.user_id, payload.item_id, payload.action, payload.note)
+    return {"package": result["package"], "shift_packages": _shift_packages_for_user(scope, payload.user_id)}
+
+@app.post("/api/shift-packages/bulk-action")
+def shift_package_bulk_action(
+    payload: ShiftPackageBulkActionPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
+    _check_user(payload.chat_id, payload.user_id)
+    scope = repo.resolve_scope_chat_id(payload.chat_id)
+    ids = sorted({int(x) for x in payload.item_ids if int(x) > 0})[:200]
+    if not ids:
+        raise HTTPException(status_code=400, detail="Не выбраны записи.")
+    accepted = 0
+    failed: list[dict[str, object]] = []
+    for item_id in ids:
+        try:
+            _review_shift_package_item(scope, payload.user_id, item_id, payload.action, payload.note)
+            accepted += 1
+        except HTTPException as exc:
+            failed.append({"item_id": item_id, "error": str(exc.detail)})
+    return {
+        "message": f"Обработано: {accepted} из {len(ids)}.",
+        "processed": accepted, "failed": failed,
+        "shift_packages": _shift_packages_for_user(scope, payload.user_id),
+    }
+
+
+
+@app.post("/api/shift-handovers")
+def create_shift_handover_api(
+    payload: ShiftHandoverPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
+    _check_user(payload.chat_id, payload.user_id, submit=True)
+    scope = repo.resolve_scope_chat_id(payload.chat_id)
+    from_user_id = int(payload.from_user_id or payload.user_id)
+    if from_user_id != int(payload.user_id) and not shift_continuity.can_review_worker_packages(scope, payload.user_id, from_user_id):
+        raise HTTPException(status_code=403, detail="Нет права передавать смену этого сотрудника.")
+    if payload.to_user_id:
+        _check_user(scope, int(payload.to_user_id))
+        allowed_recipients = {int(item["id"]) for item in shift_continuity.handover_recipients(scope, from_user_id)}
+        if int(payload.to_user_id) not in allowed_recipients and not repo.is_system_admin_id(payload.user_id):
+            raise HTTPException(status_code=403, detail="Получатель не относится к доступному рабочему контуру.")
+    package_ids = list(payload.package_ids)
+    if not package_ids:
+        package_ids = [int(x["id"]) for x in shift_continuity.list_shift_packages(scope, user_id=from_user_id, unresolved_only=True, limit=50)]
+    open_shift = shift_continuity.current_open_shift(scope, from_user_id)
+    try:
+        handover = shift_continuity.create_handover(
+            scope, from_user_id, payload.user_id,
+            to_user_id=payload.to_user_id,
+            shift_id=payload.shift_id or (int(open_shift["id"]) if open_shift else None),
+            area_id=payload.area_id if payload.area_id is not None else (open_shift.get("area_id") if open_shift else None),
+            summary=payload.summary,
+            package_ids=package_ids,
+            checklist=payload.checklist,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    repo.log_site_action(scope, payload.user_id, "shift_handover_create", str(handover.get("id") or ""))
+    can_manage = repo.is_system_admin_id(payload.user_id) or repo.user_can_manage_departments(scope, payload.user_id)
+    return {"message": "Передача смены сохранена.", "shift_handovers": shift_continuity.list_handovers(scope, payload.user_id, can_manage=can_manage)}
+
+
+@app.post("/api/shift-handovers/acknowledge")
+def acknowledge_shift_handover_api(
+    payload: ShiftHandoverActionPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
+    _check_user(payload.chat_id, payload.user_id)
+    scope = repo.resolve_scope_chat_id(payload.chat_id)
+    can_manage = repo.is_system_admin_id(payload.user_id) or repo.user_can_manage_departments(scope, payload.user_id)
+    handover = shift_continuity.get_handover(payload.handover_id)
+    if not shift_continuity.acknowledge_handover(scope, payload.handover_id, payload.user_id, can_manage=can_manage):
+        raise HTTPException(status_code=403, detail="Передача не найдена или недоступна.")
+    if handover and int(handover.get("from_user_id") or 0) != int(payload.user_id):
+        repo.create_inbox_item(
+            scope, int(handover["from_user_id"]), "shift_handover_ack",
+            "Передача смены принята",
+            f"Передача смены №{payload.handover_id} принята сотрудником {payload.user_id}.",
+            "shift_handover", int(payload.handover_id), deduplicate=False, priority="normal", force=True,
+        )
+    repo.log_site_action(scope, payload.user_id, "shift_handover_ack", str(payload.handover_id))
+    return {"message": "Передача смены принята.", "shift_handovers": shift_continuity.list_handovers(scope, payload.user_id, can_manage=can_manage)}
+
+
+@app.post("/api/devices/action")
+def device_action_api(
+    payload: DeviceActionPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
+    _check_user(payload.chat_id, payload.user_id)
+    scope = repo.resolve_scope_chat_id(payload.chat_id)
+    if int(payload.target_user_id) != int(payload.user_id) and not repo.is_system_admin_id(payload.user_id):
+        raise HTTPException(status_code=403, detail="Управлять чужими устройствами может только владелец или полный администратор.")
+    if payload.action == "revoke":
+        ok = shift_continuity.revoke_device(payload.user_id, payload.target_user_id, payload.device_id, reason=payload.reason)
+        message = "Доступ устройства отозван."
+    elif payload.action == "restore" and repo.is_system_admin_id(payload.user_id):
+        ok = shift_continuity.restore_device(payload.user_id, payload.target_user_id, payload.device_id)
+        message = "Доступ устройства восстановлен."
+    else:
+        raise HTTPException(status_code=400, detail="Неизвестное действие.")
+    if not ok:
+        raise HTTPException(status_code=404, detail="Устройство не найдено.")
+    repo.log_site_action(scope, payload.user_id, f"device_{payload.action}", payload.device_id[:120])
+    return {"message": message, "miniapp_devices": _device_rows_for_user(scope, payload.user_id)}
+
+
+@app.get("/api/control-summary")
+def control_summary_api(
+    chat_id: int = Query(...), user_id: int | None = Query(None),
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    user_id = _request_user(user_id, auth_user_id)
+    if user_id is None:
+        raise HTTPException(status_code=403, detail="access denied")
+    _check_user(chat_id, user_id)
+    scope = repo.resolve_scope_chat_id(chat_id)
+    if not (repo.is_system_admin_id(user_id) or repo.user_can_manage_departments(scope, user_id)):
+        raise HTTPException(status_code=403, detail="Раздел доступен руководителям и администраторам.")
+    return {"control_summary": control_center.control_summary(scope, user_id)}
+
+
+@app.post("/api/control-sla")
+def control_sla_api(
+    payload: SLASettingsPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
+    _check_user(payload.chat_id, payload.user_id)
+    scope = repo.resolve_scope_chat_id(payload.chat_id)
+    try:
+        saved = control_center.save_sla_settings(scope, payload.user_id, payload.model_dump())
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    repo.log_site_action(scope, payload.user_id, "control_sla_update")
+    return {"message": "Время реакции сохранено.", "sla": saved, "control_summary": control_center.control_summary(scope, payload.user_id)}
+
+
+@app.get("/api/diagnostics")
+def diagnostics_api(
+    chat_id: int = Query(...), user_id: int | None = Query(None),
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    user_id = _request_user(user_id, auth_user_id)
+    if user_id is None:
+        raise HTTPException(status_code=403, detail="access denied")
+    _check_user(chat_id, user_id)
+    scope = repo.resolve_scope_chat_id(chat_id)
+    try:
+        return {"diagnostics": control_center.diagnostics_snapshot(scope, user_id)}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@app.post("/api/operation-presets/batch")
+def operation_preset_batch_api(
+    payload: OperationPresetBatchPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
+    _check_user(payload.chat_id, payload.user_id)
+    scope = repo.resolve_scope_chat_id(payload.chat_id)
+    preset = next((x for x in _operation_presets_for_user(scope, payload.user_id) if int(x.get("id") or 0) == int(payload.preset_id)), None)
+    if not preset:
+        raise HTTPException(status_code=404, detail="Шаблон не найден.")
+    multipliers = [float(x) for x in payload.multipliers[:50] if float(x) > 0]
+    if not multipliers:
+        raise HTTPException(status_code=400, detail="Укажите множители количества.")
+    base_qty = float(preset.get("quantity") or 0)
+    if base_qty <= 0:
+        raise HTTPException(status_code=400, detail="В шаблоне не задано базовое количество.")
+    items = []
+    for mult in multipliers:
+        items.append({
+            "operation_type": preset.get("operation_type"), "entity_type": preset.get("entity_type"), "entity_id": int(preset.get("entity_id") or 0),
+            "quantity": base_qty * mult, "unit": preset.get("unit") or "шт", "area_id": preset.get("area_id"),
+            "from_area_id": preset.get("from_area_id"), "to_area_id": preset.get("to_area_id"), "destination_type": preset.get("destination_type") or "",
+            "storage_place": preset.get("storage_place") or "", "note": preset.get("note") or "", "preset_id": int(preset["id"]),
+        })
+    return {"items": items}
+
+
+@app.get("/api/entity-labels")
+def entity_labels_api(
+    chat_id: int = Query(...), user_id: int | None = Query(None), entity_ids: str = Query(...),
+    code_type: str = Query("qr"), copies: int = Query(1), template_id: int | None = Query(None),
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> StreamingResponse:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    user_id = _request_user(user_id, auth_user_id)
+    if user_id is None:
+        raise HTTPException(status_code=403, detail="access denied")
+    _check_system_admin(chat_id, user_id)
+    scope = repo.resolve_scope_chat_id(chat_id)
+    try:
+        ids = [int(part) for part in entity_ids.replace(";", ",").split(",") if part.strip()]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Неверный список позиций.") from exc
+    if not ids or len(ids) > 200:
+        raise HTTPException(status_code=400, detail="Выберите от 1 до 200 позиций.")
+    template = None
+    if template_id is not None:
+        row = db.fetchone("SELECT * FROM label_templates WHERE chat_id=? AND id=?", (scope, int(template_id)))
+        if not row:
+            raise HTTPException(status_code=404, detail="Шаблон этикетки не найден.")
+        template = dict(row)
+    try:
+        content = label_service.build_entity_labels_pdf(scope, ids, code_type="code128" if code_type == "code128" else "qr", copies=copies, template=template)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    filename = f"etiketki_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+    return StreamingResponse(
+        io.BytesIO(content), media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/api/continuity/settings")
+def save_continuity_settings_api(
+    payload: ContinuitySettingsPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
+    _check_system_admin(payload.chat_id, payload.user_id)
+    scope = repo.resolve_scope_chat_id(payload.chat_id)
+    settings_row = shift_continuity.save_continuity_settings(scope, payload.user_id, payload.model_dump())
+    repo.log_site_action(scope, payload.user_id, "continuity_settings", "save")
+    return {"message": "Напоминания сохранены.", "continuity_settings": settings_row}
+
+
+@app.post("/api/continuity/checklist")
+def save_handover_checklist_api(
+    payload: HandoverChecklistSettingsPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
+    _check_system_admin(payload.chat_id, payload.user_id)
+    scope = repo.resolve_scope_chat_id(payload.chat_id)
+    items = shift_continuity.save_handover_checklist(scope, payload.user_id, payload.items, payload.name)
+    repo.log_site_action(scope, payload.user_id, "handover_checklist", "save")
+    return {"message": "Чек-лист передачи смены сохранён.", "handover_checklist": items}
+
+
+@app.post("/api/label-templates")
+def save_label_template_api(
+    payload: LabelTemplatePayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
+    _check_system_admin(payload.chat_id, payload.user_id)
+    scope = repo.resolve_scope_chat_id(payload.chat_id)
+    shift_continuity.save_label_template(scope, payload.user_id, payload.model_dump())
+    repo.log_site_action(scope, payload.user_id, "label_template", payload.name[:100])
+    return {"message": "Шаблон этикетки сохранён.", "label_templates": shift_continuity.list_label_templates(scope)}
+
+
+@app.get("/api/continuity-audit.xlsx")
+def continuity_audit_export(
+    chat_id: int = Query(...), user_id: int | None = Query(None),
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> StreamingResponse:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    user_id = _request_user(user_id, auth_user_id)
+    if user_id is None:
+        raise HTTPException(status_code=403, detail="access denied")
+    _check_system_admin(chat_id, user_id)
+    scope = repo.resolve_scope_chat_id(chat_id)
+    content = continuity_audit.build_continuity_audit_xlsx(scope)
+    repo.log_site_action(scope, user_id, "continuity_audit", "xlsx")
+    filename = f"audit_smen_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+    return StreamingResponse(io.BytesIO(content), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@app.post("/api/entity-codes")
+def save_entity_code(
+    payload: EntityCodePayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
+    _check_system_admin(payload.chat_id, payload.user_id)
+    scope = repo.resolve_scope_chat_id(payload.chat_id)
+    ok, message, code_id = repo.set_entity_code(scope, payload.entity_id, payload.code, payload.user_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    repo.log_site_action(scope, payload.user_id, "entity_code_save", str(code_id or ""))
+    return {"message": message, "entity_codes": repo.list_entity_codes(scope), "entities": _entity_list(scope, payload.user_id), "work_access": _work_access_for_user(scope, payload.user_id)}
+
+
+@app.delete("/api/entity-codes")
+def remove_entity_code(
+    chat_id: int = Query(...), user_id: int | None = Query(None), code_id: int = Query(...),
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    user_id = _request_user(user_id, auth_user_id)
+    if user_id is None:
+        raise HTTPException(status_code=403, detail="access denied")
+    _check_system_admin(chat_id, user_id)
+    scope = repo.resolve_scope_chat_id(chat_id)
+    if not repo.delete_entity_code(scope, code_id):
+        raise HTTPException(status_code=404, detail="Код не найден.")
+    repo.log_site_action(scope, user_id, "entity_code_delete", str(code_id))
+    return {"message": "Код удалён.", "entity_codes": repo.list_entity_codes(scope), "entities": _entity_list(scope, user_id), "work_access": _work_access_for_user(scope, user_id)}
+
+
+@app.get("/api/entity-codes/resolve")
+def resolve_entity_code(
+    chat_id: int = Query(...), code: str = Query(...), user_id: int | None = Query(None),
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    user_id = _request_user(user_id, auth_user_id)
+    if user_id is None:
+        raise HTTPException(status_code=403, detail="access denied")
+    _check_user(chat_id, user_id)
+    scope = repo.resolve_scope_chat_id(chat_id)
+    item = repo.resolve_entity_code(scope, code)
+    if not item:
+        raise HTTPException(status_code=404, detail="Позиция с таким кодом не найдена.")
+    allowed_ids = {int(entity["id"]) for access in _work_access_for_user(scope, user_id) for entity in access.get("entities", [])}
+    if int(item["entity_id"]) not in allowed_ids:
+        raise HTTPException(status_code=404, detail="Позиция с таким кодом недоступна.")
+    return {"entity": {"id": int(item["entity_id"]), "type": item["entity_type"], "name": item["entity_name"], "unit": item["default_unit"], "code": item["code"]}}
+
+
+@app.post("/api/operation-presets")
+def save_operation_preset(
+    payload: OperationPresetPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
+    _check_user(payload.chat_id, payload.user_id, submit=True)
+    scope = repo.resolve_scope_chat_id(payload.chat_id)
+    preview_payload = OperationPayload(**payload.model_dump(), client_request_id="", confirm_warnings=True)
+    _operation_preview(scope, payload.user_id, preview_payload)
+    ok, message = repo.save_operation_preset(
+        scope, payload.user_id, name=payload.name, operation_type=payload.operation_type,
+        entity_type=payload.entity_type, entity_id=payload.entity_id, quantity=payload.quantity, unit=payload.unit,
+        area_id=payload.area_id, from_area_id=payload.from_area_id, to_area_id=payload.to_area_id,
+        destination_type=payload.destination_type, storage_place=payload.storage_place, note=payload.note,
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=message)
+    return {"message": message, "operation_presets": _operation_presets_for_user(scope, payload.user_id)}
+
+
+@app.delete("/api/operation-presets")
+def delete_operation_preset(
+    chat_id: int = Query(...), user_id: int | None = Query(None), preset_id: int = Query(...),
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    user_id = _request_user(user_id, auth_user_id)
+    if user_id is None:
+        raise HTTPException(status_code=403, detail="access denied")
+    _check_user(chat_id, user_id, submit=True)
+    scope = repo.resolve_scope_chat_id(chat_id)
+    if not repo.delete_operation_preset(scope, user_id, preset_id):
+        raise HTTPException(status_code=404, detail="Быстрое действие не найдено.")
+    return {"message": "Быстрое действие удалено.", "operation_presets": _operation_presets_for_user(scope, user_id)}
 
 
 @app.get("/api/plans")
@@ -1401,6 +3000,8 @@ def inventory_correction(
     unit = payload.unit.strip() or entity.default_unit or "шт"
     old_quantity = repo.inventory_quantity(scope, entity.entity_type, entity.id, unit, payload.area_id)
     delta = float(payload.actual_quantity) - float(old_quantity)
+    if abs(delta) > 1e-9 and not payload.note.strip():
+        raise HTTPException(status_code=400, detail="Укажите причину корректировки остатка.")
     saved = 0
     if abs(delta) > 1e-9:
         saved = accounting.apply_operations(
@@ -1417,6 +3018,12 @@ def inventory_correction(
                 "area_id": payload.area_id,
             }],
             raw_text=payload.note.strip() or "Корректировка остатков на сайте",
+        )
+    if abs(delta) > 1e-9:
+        control_center.record_decision(
+            scope, payload.user_id, worker_user_id=payload.user_id, target_type="inventory_correction", target_id=int(saved or 0),
+            action="adjust", reason=payload.note.strip(), before_status=str(old_quantity), after_status=str(payload.actual_quantity),
+            metadata={"entity_id": entity.id, "entity_name": entity.name, "area_id": payload.area_id, "delta": delta},
         )
     repo.log_site_action(scope, payload.user_id, "inventory_correction", f"{entity.name}: {old_quantity} -> {payload.actual_quantity}")
     repo.log_sync_event(scope, "site", "saved", "inventory correction")
@@ -1811,7 +3418,7 @@ def shift_start(
     _check_user(payload.chat_id, payload.user_id, submit=True)
     scope = repo.resolve_scope_chat_id(payload.chat_id)
     target = int(payload.worker_user_id or payload.user_id)
-    if target != int(payload.user_id) and not repo.user_can_manage_current_context(scope, payload.user_id):
+    if target != int(payload.user_id) and not shift_continuity.can_review_worker_packages(scope, payload.user_id, target):
         raise HTTPException(status_code=403, detail="access denied")
     if payload.area_id is not None and not repo.user_area_action_allowed(scope, target, "overview", payload.area_id, "view") and not repo.is_global_owner_id(payload.user_id):
         raise HTTPException(status_code=403, detail="area access denied")
@@ -1820,7 +3427,7 @@ def shift_start(
         raise HTTPException(status_code=400, detail=message)
     repo.log_site_action(scope, payload.user_id, "shift_start", str(target))
     can_manage = repo.user_can_manage_current_context(scope, payload.user_id)
-    return {"message": message, "activity": repo.worker_activity_analytics(scope, 30, None if can_manage else payload.user_id), "shifts": repo.list_worker_shifts(scope, None if can_manage else payload.user_id), "shift_plans": repo.list_shift_plans(scope, None if can_manage else payload.user_id), "attendance_deviations": repo.attendance_deviations(scope, None if can_manage else payload.user_id, 30)}
+    return {"message": message, "activity": repo.worker_activity_analytics(scope, 30, None if can_manage else payload.user_id), "shifts": repo.list_worker_shifts(scope, None if can_manage else payload.user_id), "current_open_shift": shift_continuity.current_open_shift(scope, payload.user_id), "shift_packages": _shift_packages_for_user(scope, payload.user_id), "shift_handovers": shift_continuity.list_handovers(scope, payload.user_id, can_manage=(repo.is_system_admin_id(payload.user_id) or repo.user_can_manage_departments(scope, payload.user_id))), "shift_plans": repo.list_shift_plans(scope, None if can_manage else payload.user_id), "attendance_deviations": repo.attendance_deviations(scope, None if can_manage else payload.user_id, 30)}
 
 
 @app.post("/api/shifts/end")
@@ -1834,14 +3441,14 @@ def shift_end(
     _check_user(payload.chat_id, payload.user_id, submit=True)
     scope = repo.resolve_scope_chat_id(payload.chat_id)
     target = int(payload.worker_user_id or payload.user_id)
-    if target != int(payload.user_id) and not repo.user_can_manage_current_context(scope, payload.user_id):
+    if target != int(payload.user_id) and not shift_continuity.can_review_worker_packages(scope, payload.user_id, target):
         raise HTTPException(status_code=403, detail="access denied")
     ok, message = repo.end_worker_shift(scope, target, payload.user_id, payload.note)
     if not ok:
         raise HTTPException(status_code=400, detail=message)
     repo.log_site_action(scope, payload.user_id, "shift_end", str(target))
     can_manage = repo.user_can_manage_current_context(scope, payload.user_id)
-    return {"message": message, "activity": repo.worker_activity_analytics(scope, 30, None if can_manage else payload.user_id), "shifts": repo.list_worker_shifts(scope, None if can_manage else payload.user_id), "shift_plans": repo.list_shift_plans(scope, None if can_manage else payload.user_id), "attendance_deviations": repo.attendance_deviations(scope, None if can_manage else payload.user_id, 30)}
+    return {"message": message, "activity": repo.worker_activity_analytics(scope, 30, None if can_manage else payload.user_id), "shifts": repo.list_worker_shifts(scope, None if can_manage else payload.user_id), "current_open_shift": shift_continuity.current_open_shift(scope, payload.user_id), "shift_packages": _shift_packages_for_user(scope, payload.user_id), "shift_handovers": shift_continuity.list_handovers(scope, payload.user_id, can_manage=(repo.is_system_admin_id(payload.user_id) or repo.user_can_manage_departments(scope, payload.user_id))), "shift_plans": repo.list_shift_plans(scope, None if can_manage else payload.user_id), "attendance_deviations": repo.attendance_deviations(scope, None if can_manage else payload.user_id, 30)}
 
 
 # --- Планирование смен step67 ---

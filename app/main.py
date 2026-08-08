@@ -9,7 +9,8 @@ from aiogram.types import Message
 from .config import settings
 from .db import init_db
 from .services import report_scheduler
-from .handlers import start, intake, setup, groups, owner, accounts, corrections, reports, backups, inventory, onboarding, chats, risks
+from .services import control_center
+from .handlers import start, intake, setup, groups, owner, accounts, corrections, reports, backups, inventory, onboarding, chats, risks, workflow
 from .handlers.groups import try_handle_group_command
 from .handlers.accounts import try_handle_account_command
 from .handlers.setup import try_handle_wizard_message, try_handle_setup_command
@@ -19,6 +20,7 @@ from .handlers.corrections import try_handle_correction_command
 from .handlers.backups import try_handle_backup
 from .handlers.inventory import try_handle_inventory_adjustment
 from .handlers.risks import try_handle_risk_command
+from .handlers.workflow import try_handle_workflow_command
 from .handlers.onboarding import try_handle_onboarding
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
@@ -40,6 +42,7 @@ async def all_text(message: Message) -> None:
         try_handle_setup_command,
         try_handle_correction_command,
         try_handle_inventory_adjustment,
+        try_handle_workflow_command,
         try_handle_risk_command,
         try_handle_report,
         try_handle_backup,
@@ -68,23 +71,37 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(backups.router)
     dp.include_router(onboarding.router)
     dp.include_router(risks.router)
+    dp.include_router(workflow.router)
     dp.include_router(router)
     return dp
+
+
+async def _bot_heartbeat_loop() -> None:
+    while True:
+        control_center.heartbeat("bot", "ok", "polling active")
+        await asyncio.sleep(60)
 
 
 async def run_bot() -> None:
     bot = Bot(settings.bot_token)
     dp = build_dispatcher()
     log.info("Бот запущен")
+    control_center.heartbeat("bot", "ok", "polling started")
     scheduler_task = asyncio.create_task(report_scheduler.schedule_loop(bot))
+    heartbeat_task = asyncio.create_task(_bot_heartbeat_loop())
     try:
         await dp.start_polling(bot)
+    except Exception as exc:
+        control_center.heartbeat("bot", "error", str(exc))
+        raise
     finally:
+        heartbeat_task.cancel()
         scheduler_task.cancel()
-        try:
-            await scheduler_task
-        except asyncio.CancelledError:
-            pass
+        for task in (heartbeat_task, scheduler_task):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await bot.session.close()
 
 

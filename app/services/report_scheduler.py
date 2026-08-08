@@ -9,6 +9,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from . import reporting
 from . import repository as repo
 from . import stock_risk
+from . import shift_continuity
+from . import control_center
+from . import production_flow
+from . import reliability
+from . import replenishment
+from . import maintenance_planning
 
 
 def _server_timezone():
@@ -195,12 +201,19 @@ async def deliver_inbox_notifications(bot) -> int:
 async def schedule_loop(bot, interval_seconds: int = 60) -> None:
     while True:
         try:
+            control_center.heartbeat("scheduler", "ok", "cycle")
             repo.generate_shift_plans_from_templates(datetime.now())
             repo.queue_overdue_inventory_approval_escalations(datetime.now())
+            shift_continuity.queue_continuity_reminders(datetime.now())
+            control_center.queue_sla_breach_notifications(datetime.now())
+            production_flow.queue_workflow_reminders(datetime.now())
+            reliability.process_pending(limit=100)
+            maintenance_planning.ensure_work_orders_for_all(now=datetime.now()) if hasattr(maintenance_planning, "ensure_work_orders_for_all") else None
+            replenishment.queue_forecast_notifications(datetime.now())
             stock_risk.evaluate_all(now=datetime.now())
             await deliver_inbox_notifications(bot)
             await deliver_queued_report_retries(bot)
             await deliver_due_reports(bot)
-        except Exception:
-            pass
+        except Exception as exc:
+            control_center.heartbeat("scheduler", "error", str(exc))
         await asyncio.sleep(max(30, int(interval_seconds)))

@@ -8,6 +8,7 @@ from typing import Any
 from .. import db
 from .normalize import normalize_key
 from . import repository as repo
+from . import control_center
 from .normalize import format_amount
 
 
@@ -38,21 +39,31 @@ def clear_pending(pending_id: str) -> None:
     db.execute("DELETE FROM pending_confirmations WHERE id=?", (pending_id,))
 
 
-def _inventory_delta(chat_id: int, area_id: int | None, entity_type: str, entity_id: int, unit: str, delta: float) -> None:
-    row = db.fetchone(
-        "SELECT quantity FROM inventory WHERE chat_id=? AND ((area_id IS NULL AND ? IS NULL) OR area_id=?) AND entity_type=? AND entity_id=? AND unit=?",
-        (chat_id, area_id, area_id, entity_type, entity_id, unit),
-    )
-    if row:
-        db.execute(
-            "UPDATE inventory SET quantity=quantity+? WHERE chat_id=? AND ((area_id IS NULL AND ? IS NULL) OR area_id=?) AND entity_type=? AND entity_id=? AND unit=?",
-            (delta, chat_id, area_id, area_id, entity_type, entity_id, unit),
-        )
-    else:
-        db.execute(
-            "INSERT INTO inventory(chat_id,area_id,entity_type,entity_id,unit,quantity) VALUES(?,?,?,?,?,?)",
-            (chat_id, area_id, entity_type, entity_id, unit, delta),
-        )
+def _inventory_delta(
+    chat_id: int, area_id: int | None, entity_type: str, entity_id: int, unit: str, delta: float, *, conn=None
+) -> None:
+    own_conn = conn is None
+    connection = conn or db.connect()
+    try:
+        row = connection.execute(
+            "SELECT quantity FROM inventory WHERE chat_id=? AND ((area_id IS NULL AND ? IS NULL) OR area_id=?) AND entity_type=? AND entity_id=? AND unit=?",
+            (chat_id, area_id, area_id, entity_type, entity_id, unit),
+        ).fetchone()
+        if row:
+            connection.execute(
+                "UPDATE inventory SET quantity=quantity+? WHERE chat_id=? AND ((area_id IS NULL AND ? IS NULL) OR area_id=?) AND entity_type=? AND entity_id=? AND unit=?",
+                (delta, chat_id, area_id, area_id, entity_type, entity_id, unit),
+            )
+        else:
+            connection.execute(
+                "INSERT INTO inventory(chat_id,area_id,entity_type,entity_id,unit,quantity) VALUES(?,?,?,?,?,?)",
+                (chat_id, area_id, entity_type, entity_id, unit, delta),
+            )
+        if own_conn:
+            connection.commit()
+    finally:
+        if own_conn:
+            connection.close()
 
 
 
@@ -72,7 +83,7 @@ def _remember_confirmed_phrase(chat_id: int, op: dict[str, Any]) -> None:
         return
     repo.remember_lexicon(chat_id, phrase, str(target_type), int(target_id))
 
-def _apply_inventory_effect(chat_id: int, op: dict[str, Any]) -> None:
+def _apply_inventory_effect(chat_id: int, op: dict[str, Any], *, conn=None) -> None:
     operation_type = op.get("operation_type")
     entity_type = op.get("entity_type")
     entity_id = op.get("entity_id")
@@ -83,81 +94,95 @@ def _apply_inventory_effect(chat_id: int, op: dict[str, Any]) -> None:
         return
     qty = float(quantity)
     if operation_type == "production" and entity_type and entity_id:
-        # Выпуск теперь попадает в остатки выбранной площадки.
-        # Если площадка не указана, сохраняется прежнее общее поведение.
-        _inventory_delta(chat_id, area_id, entity_type, int(entity_id), unit, qty)
+        _inventory_delta(chat_id, area_id, str(entity_type), int(entity_id), unit, qty, conn=conn)
     elif operation_type == "material_in" and entity_type == "material" and entity_id:
-        _inventory_delta(chat_id, area_id, "material", int(entity_id), unit, qty)
+        _inventory_delta(chat_id, area_id, "material", int(entity_id), unit, qty, conn=conn)
     elif operation_type == "material_out" and entity_type == "material" and entity_id:
-        _inventory_delta(chat_id, area_id, "material", int(entity_id), unit, -qty)
+        _inventory_delta(chat_id, area_id, "material", int(entity_id), unit, -qty, conn=conn)
     elif operation_type == "assembly" and entity_type == "product" and entity_id:
-        # Сборка хранится там, где её указали, а комплектующие списываются
-        # с этой же площадки. Без площадки остаётся общий склад.
-        _inventory_delta(chat_id, area_id, "product", int(entity_id), unit, qty)
+        _inventory_delta(chat_id, area_id, "product", int(entity_id), unit, qty, conn=conn)
         for comp in repo.list_product_components(int(entity_id)):
             comp_id = int(comp["component_id"])
             need = float(comp["quantity"] or 0) * qty
             comp_unit = comp.get("default_unit") or "шт"
-            _inventory_delta(chat_id, area_id, "component", comp_id, comp_unit, -need)
-    elif operation_type in {"shipment", "shipment_client", "shipment_fulfillment"} and entity_type == "product" and entity_id:
-        _inventory_delta(chat_id, area_id, "product", int(entity_id), unit, -qty)
-    elif operation_type == "return" and entity_type == "product" and entity_id:
-        _inventory_delta(chat_id, area_id, "product", int(entity_id), unit, qty)
+            _inventory_delta(chat_id, area_id, "component", comp_id, comp_unit, -need, conn=conn)
+    elif operation_type in {"shipment", "shipment_client", "shipment_fulfillment"} and entity_type in {"product", "stock_item"} and entity_id:
+        _inventory_delta(chat_id, area_id, str(entity_type), int(entity_id), unit, -qty, conn=conn)
+    elif operation_type == "return" and entity_type in {"product", "stock_item"} and entity_id:
+        _inventory_delta(chat_id, area_id, str(entity_type), int(entity_id), unit, qty, conn=conn)
     elif operation_type in {"movement", "transfer_to_assembly"} and entity_type and entity_id:
         from_area_id = op.get("from_area_id")
         to_area_id = op.get("to_area_id") or area_id
         if from_area_id:
-            _inventory_delta(chat_id, int(from_area_id), str(entity_type), int(entity_id), unit, -qty)
+            _inventory_delta(chat_id, int(from_area_id), str(entity_type), int(entity_id), unit, -qty, conn=conn)
         if to_area_id:
-            _inventory_delta(chat_id, int(to_area_id), str(entity_type), int(entity_id), unit, qty)
-    elif operation_type == "stock_in" and entity_type == "stock_item" and entity_id:
-        _inventory_delta(chat_id, area_id, "stock_item", int(entity_id), unit, qty)
-    elif operation_type == "stock_out" and entity_type == "stock_item" and entity_id:
-        _inventory_delta(chat_id, area_id, "stock_item", int(entity_id), unit, -qty)
+            _inventory_delta(chat_id, int(to_area_id), str(entity_type), int(entity_id), unit, qty, conn=conn)
+    elif operation_type == "stock_in" and entity_type and entity_id:
+        _inventory_delta(chat_id, area_id, str(entity_type), int(entity_id), unit, qty, conn=conn)
+    elif operation_type == "stock_out" and entity_type and entity_id:
+        _inventory_delta(chat_id, area_id, str(entity_type), int(entity_id), unit, -qty, conn=conn)
     elif operation_type == "write_off" and entity_type and entity_id:
-        _inventory_delta(chat_id, area_id, str(entity_type), int(entity_id), unit, -qty)
+        _inventory_delta(chat_id, area_id, str(entity_type), int(entity_id), unit, -qty, conn=conn)
     elif operation_type == "inventory_adjust" and entity_type and entity_id:
-        # Количество в такой записи — это разница между фактическим остатком
-        # и тем, что было в базе до сверки.
-        _inventory_delta(chat_id, area_id, str(entity_type), int(entity_id), unit, qty)
+        _inventory_delta(chat_id, area_id, str(entity_type), int(entity_id), unit, qty, conn=conn)
 
 
 def _insert_operation(chat_id: int, group_chat_id: int, user_id: int, op: dict[str, Any], raw_text: str) -> int:
+    from . import reliability
+
     with db.connect() as conn:
-        cur = conn.execute(
-            """
-            INSERT INTO operations(chat_id,group_chat_id,area_id,user_id,operation_type,entity_type,entity_id,quantity,unit,raw_text,from_area_id,to_area_id,destination_type,storage_place)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                chat_id,
-                group_chat_id,
-                op.get("area_id"),
-                user_id,
-                op.get("operation_type"),
-                op.get("entity_type"),
-                op.get("entity_id"),
-                op.get("quantity"),
-                op.get("unit") or "шт",
-                raw_text,
-                op.get("from_area_id"),
-                op.get("to_area_id"),
-                op.get("destination_type") or "",
-                op.get("storage_place") or "",
-            ),
-        )
-        conn.commit()
-        operation_id = int(cur.lastrowid)
-    _apply_inventory_effect(chat_id, op)
+        try:
+            # BEGIN IMMEDIATE serializes competing writes before inventory is read/changed.
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                """
+                INSERT INTO operations(chat_id,group_chat_id,area_id,user_id,operation_type,entity_type,entity_id,quantity,unit,raw_text,from_area_id,to_area_id,destination_type,storage_place,client_request_id,source_channel,task_id,lot_id)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    chat_id,
+                    group_chat_id,
+                    op.get("area_id"),
+                    user_id,
+                    op.get("operation_type"),
+                    op.get("entity_type"),
+                    op.get("entity_id"),
+                    op.get("quantity"),
+                    op.get("unit") or "шт",
+                    raw_text,
+                    op.get("from_area_id"),
+                    op.get("to_area_id"),
+                    op.get("destination_type") or "",
+                    op.get("storage_place") or "",
+                    op.get("client_request_id") or None,
+                    op.get("source_channel") or ("mini" if str(raw_text or "").strip().lower().startswith("mini app") else "bot"),
+                    int(op.get("task_id")) if op.get("task_id") else None,
+                    int(op.get("lot_id")) if op.get("lot_id") else None,
+                ),
+            )
+            operation_id = int(cur.lastrowid)
+            # Операция и её влияние на обычный склад теперь фиксируются одной транзакцией.
+            _apply_inventory_effect(chat_id, op, conn=conn)
+            reliability.queue_operation_steps(conn, chat_id, operation_id, user_id, op, raw_text)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    # Связь с заданием/партией и аналитика риска восстановимы по журналу.
     try:
-        from . import stock_risk
-        if not op.get("skip_risk_observation"):
-            source = "mini" if str(raw_text or "").strip().lower().startswith("mini app") else "bot"
-            stock_risk.record_operation_observation(chat_id, user_id, op, operation_id, raw_text, source=source)
+        reliability.process_for_operation(operation_id)
     except Exception:
-        # Учётная операция важнее аналитики: сбой расчёта риска не должен потерять запись.
         pass
     return operation_id
+
+
+def record_internal_operation(
+    chat_id: int, group_chat_id: int, actor_user_id: int, op: dict[str, Any], *, raw_text: str
+) -> int:
+    """Запись из доверенного серверного контура после его собственной проверки прав."""
+    return _insert_operation(int(chat_id), int(group_chat_id), int(actor_user_id), dict(op), str(raw_text or "Системная операция"))
+
 
 
 def count_saveable_operations(operations: list[dict[str, Any]]) -> int:
@@ -324,7 +349,10 @@ def _can_change_operation(chat_id: int, actor_user_id: int, operation: dict[str,
     return int(operation.get("user_id") or 0) == int(actor_user_id)
 
 
-def cancel_operation(chat_id: int, group_chat_id: int, actor_user_id: int, operation_id: int) -> tuple[bool, str]:
+def cancel_operation(chat_id: int, group_chat_id: int, actor_user_id: int, operation_id: int, reason: str) -> tuple[bool, str]:
+    reason = str(reason or "").strip()
+    if not reason:
+        return False, "Укажите причину отмены."
     operation = _find_operation(chat_id, operation_id)
     if not operation:
         return False, "Запись не найдена."
@@ -340,12 +368,16 @@ def cancel_operation(chat_id: int, group_chat_id: int, actor_user_id: int, opera
         INSERT INTO operation_corrections(original_operation_id,reversal_operation_id,actor_user_id,correction_type,old_quantity,note)
         VALUES(?,?,?,?,?,?)
         """,
-        (operation_id, reversal_id, actor_user_id, "cancel", operation.get("quantity"), "отмена"),
+        (operation_id, reversal_id, actor_user_id, "cancel", operation.get("quantity"), reason),
     )
+    control_center.record_decision(chat_id, actor_user_id, worker_user_id=int(operation.get("user_id") or actor_user_id), target_type="operation", target_id=operation_id, action="cancel", reason=reason, before_status=str(operation.get("quantity") or ""), after_status="cancelled")
     return True, f"Запись №{operation_id} отменена."
 
 
-def change_operation_quantity(chat_id: int, group_chat_id: int, actor_user_id: int, operation_id: int, new_quantity: float) -> tuple[bool, str]:
+def change_operation_quantity(chat_id: int, group_chat_id: int, actor_user_id: int, operation_id: int, new_quantity: float, reason: str) -> tuple[bool, str]:
+    reason = str(reason or "").strip()
+    if not reason:
+        return False, "Укажите причину исправления."
     operation = _find_operation(chat_id, operation_id)
     if not operation:
         return False, "Запись не найдена."
@@ -366,8 +398,9 @@ def change_operation_quantity(chat_id: int, group_chat_id: int, actor_user_id: i
         INSERT INTO operation_corrections(original_operation_id,reversal_operation_id,replacement_operation_id,actor_user_id,correction_type,old_quantity,new_quantity,note)
         VALUES(?,?,?,?,?,?,?,?)
         """,
-        (operation_id, reversal_id, replacement_id, actor_user_id, "quantity", operation.get("quantity"), new_quantity, "исправление количества"),
+        (operation_id, reversal_id, replacement_id, actor_user_id, "quantity", operation.get("quantity"), new_quantity, reason),
     )
+    control_center.record_decision(chat_id, actor_user_id, worker_user_id=int(operation.get("user_id") or actor_user_id), target_type="operation", target_id=operation_id, action="quantity_change", reason=reason, before_status=str(operation.get("quantity") or ""), after_status=str(new_quantity))
     return True, f"Запись №{operation_id} исправлена: {format_amount(float(operation.get('quantity') or 0))} → {format_amount(new_quantity)}."
 
 

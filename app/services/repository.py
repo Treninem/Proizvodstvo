@@ -610,6 +610,90 @@ def get_entity(entity_id: int) -> Entity | None:
     return Entity(int(r["id"]), int(r["chat_id"]), r["entity_type"], r["name"], r["normalized"], r["default_unit"])
 
 
+def _normalize_entity_code(code: str) -> str:
+    return "".join(ch for ch in str(code or "").strip().upper() if not ch.isspace())[:120]
+
+
+def set_entity_code(chat_id: int, entity_id: int, code: str, created_by: int | None = None) -> tuple[bool, str, int | None]:
+    scope = resolve_scope_chat_id(chat_id)
+    entity = get_entity(int(entity_id))
+    normalized = _normalize_entity_code(code)
+    if not entity or int(entity.chat_id) != int(scope):
+        return False, "Позиция не найдена.", None
+    if len(normalized) < 2:
+        return False, "Код должен содержать не менее двух символов.", None
+    conflict = db.fetchone("SELECT entity_id FROM entity_codes WHERE chat_id=? AND normalized=?", (scope, normalized))
+    if conflict and int(conflict["entity_id"]) != int(entity_id):
+        return False, "Этот код уже назначен другой позиции.", None
+    with db.connect() as conn:
+        conn.execute("UPDATE entity_codes SET is_primary=0,updated_at=CURRENT_TIMESTAMP WHERE chat_id=? AND entity_id=?", (scope, int(entity_id)))
+        existing = conn.execute("SELECT id FROM entity_codes WHERE chat_id=? AND normalized=?", (scope, normalized)).fetchone()
+        if existing:
+            code_id = int(existing["id"])
+            conn.execute("UPDATE entity_codes SET code=?,entity_id=?,is_primary=1,updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(code).strip()[:120], int(entity_id), code_id))
+        else:
+            cur = conn.execute(
+                "INSERT INTO entity_codes(chat_id,entity_id,code,normalized,is_primary,created_by) VALUES(?,?,?,?,1,?)",
+                (scope, int(entity_id), str(code).strip()[:120], normalized, int(created_by) if created_by else None),
+            )
+            code_id = int(cur.lastrowid)
+        conn.commit()
+    return True, "Код позиции сохранён.", code_id
+
+
+def delete_entity_code(chat_id: int, code_id: int) -> bool:
+    scope = resolve_scope_chat_id(chat_id)
+    row = db.fetchone("SELECT entity_id,is_primary FROM entity_codes WHERE chat_id=? AND id=?", (scope, int(code_id)))
+    if not row:
+        return False
+    db.execute("DELETE FROM entity_codes WHERE chat_id=? AND id=?", (scope, int(code_id)))
+    if int(row["is_primary"] or 0):
+        replacement = db.fetchone("SELECT id FROM entity_codes WHERE chat_id=? AND entity_id=? ORDER BY id LIMIT 1", (scope, int(row["entity_id"])))
+        if replacement:
+            db.execute("UPDATE entity_codes SET is_primary=1,updated_at=CURRENT_TIMESTAMP WHERE id=?", (int(replacement["id"]),))
+    return True
+
+
+def list_entity_codes(chat_id: int, entity_ids: Iterable[int] | None = None) -> list[dict]:
+    scope = resolve_scope_chat_id(chat_id)
+    params: list[object] = [scope]
+    where = ["ec.chat_id=?"]
+    if entity_ids is not None:
+        ids = sorted({int(value) for value in entity_ids if int(value) > 0})
+        if not ids:
+            return []
+        marks = ",".join("?" for _ in ids)
+        where.append(f"ec.entity_id IN ({marks})")
+        params.extend(ids)
+    rows = db.fetchall(
+        f"""SELECT ec.*,e.name AS entity_name,e.entity_type,e.default_unit
+            FROM entity_codes ec JOIN entities e ON e.id=ec.entity_id AND e.is_archived=0
+            WHERE {' AND '.join(where)}
+            ORDER BY e.name,ec.is_primary DESC,ec.code""",
+        tuple(params),
+    )
+    return [dict(row) for row in rows]
+
+
+def resolve_entity_code(chat_id: int, code: str) -> dict | None:
+    scope = resolve_scope_chat_id(chat_id)
+    normalized = _normalize_entity_code(code)
+    if not normalized:
+        return None
+    row = db.fetchone(
+        """SELECT ec.*,e.name AS entity_name,e.entity_type,e.default_unit
+           FROM entity_codes ec JOIN entities e ON e.id=ec.entity_id AND e.is_archived=0
+           WHERE ec.chat_id=? AND ec.normalized=?""",
+        (scope, normalized),
+    )
+    return dict(row) if row else None
+
+
+def primary_entity_code(entity_id: int) -> str:
+    row = db.fetchone("SELECT code FROM entity_codes WHERE entity_id=? ORDER BY is_primary DESC,id LIMIT 1", (int(entity_id),))
+    return str(row["code"]) if row else ""
+
+
 def add_aliases(chat_id: int, target_type: str, target_id: int, aliases_text: str, source: str = "manual") -> tuple[int, list[str]]:
     chat_id = resolve_scope_chat_id(chat_id)
     added = 0
@@ -3949,7 +4033,8 @@ def department_work_access_for_user(chat_id: int, user_id: int | None) -> list[d
             target["departments"].add(str(membership.get("department_name") or ""))
             entity_rows = db.fetchall(
                 """
-                SELECT der.entity_id,der.entity_type,e.name,e.default_unit
+                SELECT der.entity_id,der.entity_type,e.name,e.default_unit,
+                       (SELECT ec.code FROM entity_codes ec WHERE ec.entity_id=e.id ORDER BY ec.is_primary DESC,ec.id LIMIT 1) AS code
                 FROM department_entity_rules der
                 JOIN entities e ON e.id=der.entity_id AND e.is_archived=0
                 WHERE der.department_id=? AND der.operation_key=? AND der.can_submit=1
@@ -3963,6 +4048,7 @@ def department_work_access_for_user(chat_id: int, user_id: int | None) -> list[d
                     "type": str(entity["entity_type"]),
                     "name": str(entity["name"]),
                     "unit": str(entity["default_unit"] or "шт"),
+                    "code": str(entity["code"] or ""),
                 }
     result: list[dict] = []
     for operation_key in sorted(merged):
@@ -4056,3 +4142,208 @@ def user_can_manage_departments(chat_id: int, user_id: int | None) -> bool:
     if is_system_admin_id(user_id):
         return True
     return any(int(item.get("role_level") or 0) >= 50 for item in user_department_memberships(chat_id, user_id))
+
+# --- Step 72: удобный и безопасный ввод ------------------------------------
+
+def get_operation_by_client_request(chat_id: int, user_id: int, client_request_id: str | None) -> dict | None:
+    key = str(client_request_id or "").strip()
+    if not key:
+        return None
+    scope = resolve_scope_chat_id(chat_id)
+    row = db.fetchone(
+        """
+        SELECT o.id,o.chat_id,o.group_chat_id,o.area_id,o.from_area_id,o.to_area_id,
+               o.user_id,o.operation_type,o.entity_type,o.entity_id,o.quantity,o.unit,
+               o.destination_type,o.storage_place,o.raw_text,o.client_request_id,
+               o.source_channel,o.created_at,e.name AS entity_name,
+               a.name AS area_name,fa.name AS from_area_name,ta.name AS to_area_name
+        FROM operations o
+        LEFT JOIN entities e ON e.id=o.entity_id
+        LEFT JOIN areas a ON a.id=o.area_id
+        LEFT JOIN areas fa ON fa.id=o.from_area_id
+        LEFT JOIN areas ta ON ta.id=o.to_area_id
+        WHERE o.chat_id=? AND o.user_id=? AND o.client_request_id=?
+        LIMIT 1
+        """,
+        (scope, int(user_id), key),
+    )
+    return dict(row) if row else None
+
+
+def list_recent_operation_templates(chat_id: int, user_id: int, limit: int = 8) -> list[dict]:
+    scope = resolve_scope_chat_id(chat_id)
+    rows = db.fetchall(
+        """
+        SELECT o.id,o.operation_type,o.entity_type,o.entity_id,o.quantity,o.unit,
+               o.area_id,o.from_area_id,o.to_area_id,o.destination_type,o.storage_place,
+               o.raw_text,o.created_at,e.name AS entity_name,
+               a.name AS area_name,fa.name AS from_area_name,ta.name AS to_area_name
+        FROM operations o
+        LEFT JOIN operation_corrections oc ON oc.original_operation_id=o.id
+        LEFT JOIN entities e ON e.id=o.entity_id
+        LEFT JOIN areas a ON a.id=o.area_id
+        LEFT JOIN areas fa ON fa.id=o.from_area_id
+        LEFT JOIN areas ta ON ta.id=o.to_area_id
+        WHERE o.chat_id=? AND o.user_id=? AND oc.id IS NULL AND e.is_archived=0
+        ORDER BY o.created_at DESC,o.id DESC
+        LIMIT ?
+        """,
+        (scope, int(user_id), max(1, min(int(limit), 20))),
+    )
+    result: list[dict] = []
+    seen: set[tuple] = set()
+    for row in rows:
+        item = dict(row)
+        key = (
+            item.get("operation_type"), item.get("entity_type"), item.get("entity_id"),
+            item.get("area_id"), item.get("from_area_id"), item.get("to_area_id"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result[: max(1, min(int(limit), 12))]
+
+
+def list_operation_presets(chat_id: int, user_id: int) -> list[dict]:
+    scope = resolve_scope_chat_id(chat_id)
+    rows = db.fetchall(
+        """
+        SELECT p.*,e.name AS entity_name,a.name AS area_name,
+               fa.name AS from_area_name,ta.name AS to_area_name
+        FROM operation_presets p
+        JOIN entities e ON e.id=p.entity_id AND e.is_archived=0
+        LEFT JOIN areas a ON a.id=p.area_id
+        LEFT JOIN areas fa ON fa.id=p.from_area_id
+        LEFT JOIN areas ta ON ta.id=p.to_area_id
+        WHERE p.chat_id=? AND p.user_id=?
+        ORDER BY p.usage_count DESC,COALESCE(p.last_used_at,p.updated_at) DESC,p.id DESC
+        """,
+        (scope, int(user_id)),
+    )
+    return [dict(row) for row in rows]
+
+
+def save_operation_preset(
+    chat_id: int,
+    user_id: int,
+    *,
+    name: str,
+    operation_type: str,
+    entity_type: str,
+    entity_id: int,
+    quantity: float = 0,
+    unit: str = "шт",
+    area_id: int | None = None,
+    from_area_id: int | None = None,
+    to_area_id: int | None = None,
+    destination_type: str = "",
+    storage_place: str = "",
+    note: str = "",
+) -> tuple[bool, str]:
+    scope = resolve_scope_chat_id(chat_id)
+    clean_name = " ".join(str(name or "").split()).strip()[:80]
+    if not clean_name:
+        return False, "Укажите название быстрого действия."
+    entity = get_entity(int(entity_id))
+    if not entity or entity.chat_id != scope or entity.entity_type != entity_type:
+        return False, "Позиция не найдена."
+    existing = db.fetchone(
+        "SELECT id FROM operation_presets WHERE chat_id=? AND user_id=? AND name=?",
+        (scope, int(user_id), clean_name),
+    )
+    params = (
+        operation_type, entity_type, int(entity_id), max(0.0, float(quantity or 0)), unit or entity.default_unit or "шт",
+        area_id, from_area_id, to_area_id, destination_type or "", storage_place or "", str(note or "")[:500],
+    )
+    if existing:
+        db.execute(
+            """
+            UPDATE operation_presets
+            SET operation_type=?,entity_type=?,entity_id=?,quantity=?,unit=?,area_id=?,from_area_id=?,to_area_id=?,
+                destination_type=?,storage_place=?,note=?,updated_at=CURRENT_TIMESTAMP
+            WHERE id=? AND chat_id=? AND user_id=?
+            """,
+            params + (int(existing["id"]), scope, int(user_id)),
+        )
+        return True, "Быстрое действие обновлено."
+    count_row = db.fetchone("SELECT COUNT(*) AS n FROM operation_presets WHERE chat_id=? AND user_id=?", (scope, int(user_id)))
+    if int(count_row["n"] if count_row else 0) >= 12:
+        return False, "Можно сохранить не больше 12 быстрых действий. Удалите ненужное."
+    db.execute(
+        """
+        INSERT INTO operation_presets(
+            chat_id,user_id,name,operation_type,entity_type,entity_id,quantity,unit,area_id,from_area_id,to_area_id,
+            destination_type,storage_place,note
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (scope, int(user_id), clean_name) + params,
+    )
+    return True, "Быстрое действие сохранено."
+
+
+def delete_operation_preset(chat_id: int, user_id: int, preset_id: int) -> bool:
+    scope = resolve_scope_chat_id(chat_id)
+    row = db.fetchone(
+        "SELECT id FROM operation_presets WHERE id=? AND chat_id=? AND user_id=?",
+        (int(preset_id), scope, int(user_id)),
+    )
+    if not row:
+        return False
+    db.execute("DELETE FROM operation_presets WHERE id=?", (int(preset_id),))
+    return True
+
+
+def touch_operation_preset(chat_id: int, user_id: int, preset_id: int) -> None:
+    scope = resolve_scope_chat_id(chat_id)
+    db.execute(
+        """
+        UPDATE operation_presets
+        SET usage_count=usage_count+1,last_used_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+        WHERE id=? AND chat_id=? AND user_id=?
+        """,
+        (int(preset_id), scope, int(user_id)),
+    )
+
+
+def setup_health(chat_id: int) -> dict[str, object]:
+    scope = resolve_scope_chat_id(chat_id)
+    counts = {
+        "areas": _count_table("areas", "WHERE chat_id=? AND is_archived=0", (scope,)),
+        "departments": _count_table("departments", "WHERE chat_id=? AND is_archived=0", (scope,)),
+        "workers": int((db.fetchone(
+            """
+            SELECT COUNT(DISTINCT user_id) AS n FROM (
+              SELECT user_id FROM workers WHERE chat_id=? AND is_active=1
+              UNION
+              SELECT dm.user_id FROM department_members dm
+              JOIN departments d ON d.id=dm.department_id
+              WHERE d.chat_id=? AND d.is_archived=0 AND dm.is_active=1
+            )
+            """,
+            (scope, scope),
+        ) or {"n": 0})["n"]),
+        "components": _count_table("entities", "WHERE chat_id=? AND entity_type='component' AND is_archived=0", (scope,)),
+        "products": _count_table("entities", "WHERE chat_id=? AND entity_type='product' AND is_archived=0", (scope,)),
+        "materials": _count_table("entities", "WHERE chat_id=? AND entity_type='material' AND is_archived=0", (scope,)),
+        "risk_rules": _count_table("stock_alert_rules", "WHERE chat_id=? AND is_enabled=1", (scope,)),
+    }
+    composition = db.fetchone(
+        """
+        SELECT COUNT(DISTINCT pc.product_id) AS n
+        FROM product_components pc JOIN entities e ON e.id=pc.product_id
+        WHERE e.chat_id=? AND e.is_archived=0
+        """,
+        (scope,),
+    )
+    counts["products_with_composition"] = int(composition["n"] if composition else 0)
+    checks = [
+        {"key": "areas", "label": "Создана хотя бы одна площадка", "ok": counts["areas"] > 0},
+        {"key": "positions", "label": "Созданы рабочие позиции", "ok": (counts["components"] + counts["products"] + counts["materials"]) > 0},
+        {"key": "departments", "label": "Настроены отделы и права", "ok": counts["departments"] > 0},
+        {"key": "workers", "label": "Добавлены сотрудники", "ok": counts["workers"] > 0},
+        {"key": "composition", "label": "Для собираемых изделий указан состав", "ok": counts["products"] == 0 or counts["products_with_composition"] > 0},
+        {"key": "risk_rules", "label": "Настроены критические остатки", "ok": counts["risk_rules"] > 0},
+    ]
+    ready = sum(1 for item in checks if item["ok"])
+    return {"checks": checks, "counts": counts, "ready": ready, "total": len(checks)}
