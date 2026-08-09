@@ -52,7 +52,7 @@ def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
     if settings.public_base_url:
         rows.append([InlineKeyboardButton(
             text="Открыть рабочую панель",
-            web_app=WebAppInfo(url=settings.public_base_url.rstrip("/") + "/mini"),
+            web_app=WebAppInfo(url=settings.public_base_url.rstrip("/") + "/mini?v=20260809b"),
         )])
     rows.append([InlineKeyboardButton(text="Мои последние записи", callback_data="menu:recent")])
     rows.append([InlineKeyboardButton(text="Как пользоваться", callback_data="menu:help")])

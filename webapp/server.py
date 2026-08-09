@@ -12,7 +12,7 @@ from threading import RLock
 from typing import Annotated, Any
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -81,8 +81,13 @@ async def _security_headers(request: Request, call_next):
         "default-src 'self'; script-src 'self' https://telegram.org; style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: https:; connect-src 'self' https:; frame-ancestors 'self' https:; base-uri 'self'; form-action 'self'",
     )
-    if request.url.path.startswith("/api/"):
-        response.headers.setdefault("Cache-Control", "no-store")
+    if request.url.path.startswith("/api/") or request.url.path == "/mini":
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    elif request.url.path.startswith("/static/"):
+        # Versioned filenames allow long caching without serving stale UI after a deploy.
+        response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
     return response
 
 
@@ -1215,9 +1220,18 @@ def _startup() -> None:
 
 
 
+MINI_UI_VERSION = "20260809b"
+
 @app.get("/mini")
-def mini() -> FileResponse:
-    return FileResponse(STATIC / "index.html")
+def mini(request: Request):
+    if request.query_params.get("v") != MINI_UI_VERSION:
+        return RedirectResponse(url=f"/mini?v={MINI_UI_VERSION}", status_code=307)
+    response = FileResponse(STATIC / "index.html")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    response.headers["X-Miniapp-Version"] = MINI_UI_VERSION
+    return response
 
 
 @app.get("/health")
@@ -1225,6 +1239,7 @@ def health() -> dict[str, object]:
     control_center.heartbeat("miniapp", "ok", "health")
     return {
         "status": "ok",
+        "mini_ui_version": MINI_UI_VERSION,
         "bot_enabled": settings.bot_enabled,
         "miniapp_enabled": settings.miniapp_enabled,
     }

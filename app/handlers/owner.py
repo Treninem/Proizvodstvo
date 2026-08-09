@@ -38,7 +38,7 @@ def _owner_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
         rows.append([
             InlineKeyboardButton(
                 text="Открыть Mini App",
-                web_app=WebAppInfo(url=settings.public_base_url.rstrip("/") + "/mini"),
+                web_app=WebAppInfo(url=settings.public_base_url.rstrip("/") + "/mini?v=20260809b"),
             )
         ])
     rows.append([InlineKeyboardButton(text="Обновить", callback_data="owner:panel")])
