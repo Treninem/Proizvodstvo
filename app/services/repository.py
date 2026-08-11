@@ -299,6 +299,59 @@ def _unique_account_name(owner_user_id: int, base_name: str, fallback_id: int) -
     return candidate
 
 
+_GROUP_SCOPE_DATA_TABLES = (
+    "areas", "job_titles", "workers", "entities", "inventory", "operations",
+    "departments", "assembly_plan_targets", "material_stock_settings",
+    "production_tasks", "interdepartment_requests", "production_lots",
+    "equipment", "equipment_downtimes", "maintenance_records",
+    "quality_rules", "quality_inspections", "replenishment_settings",
+    "replenishment_requests", "maintenance_plans", "maintenance_work_orders",
+)
+
+
+def _scope_business_row_count(chat_id: int) -> int:
+    """Count real accounting rows, ignoring access/session/audit metadata."""
+    total = 0
+    with db.connect() as conn:
+        for table in _GROUP_SCOPE_DATA_TABLES:
+            try:
+                row = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE chat_id=?", (int(chat_id),)).fetchone()
+                total += int(row[0] if row else 0)
+            except Exception:
+                # Older databases may not have the newest tables yet.
+                continue
+    return total
+
+
+def _repair_empty_account_scope_from_group(account: AccountingAccount, group_chat_id: int) -> AccountingAccount:
+    """Reuse legacy group data when a synthetic account scope is still empty.
+
+    Older releases could write directly under the Telegram group chat_id and later
+    create a synthetic account scope. Switching is safe only when the synthetic
+    scope has no business rows and the group scope already has real accounting data.
+    If both contain data, we deliberately do nothing to avoid an automatic merge.
+    """
+    group_chat_id = int(group_chat_id)
+    if int(account.scope_chat_id) == group_chat_id:
+        return account
+    occupied = get_account_by_scope(group_chat_id)
+    if occupied and int(occupied.id) != int(account.id):
+        return account
+    try:
+        group_rows = _scope_business_row_count(group_chat_id)
+        account_rows = _scope_business_row_count(int(account.scope_chat_id))
+    except Exception:
+        return account
+    if group_rows <= 0 or account_rows > 0:
+        return account
+    try:
+        db.execute("UPDATE accounting_accounts SET scope_chat_id=? WHERE id=?", (group_chat_id, int(account.id)))
+        repaired = get_account_by_id(int(account.id))
+        return repaired or account
+    except Exception:
+        return account
+
+
 def ensure_group_account_context(group_chat_id: int, group_title: str, group_type: str, owner_user_id: int, private_chat_id: int | None = None, private_title: str = '') -> AccountingAccount | None:
     """Prepare a real accounting context for setup opened from a private chat.
 
@@ -321,6 +374,7 @@ def ensure_group_account_context(group_chat_id: int, group_title: str, group_typ
         account = get_account_by_id(account_id)
     if account is None:
         return None
+    account = _repair_empty_account_scope_from_group(account, group_chat_id)
     grant_account_user_access(account.id, owner_user_id, None, display_manage=True)
     attach_chat_to_account(account.id, group_chat_id, can_manage=True, set_active=True)
     if private_chat_id is not None:
