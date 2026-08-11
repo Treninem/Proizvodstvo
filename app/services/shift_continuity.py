@@ -519,6 +519,42 @@ def touch_device(
     return result
 
 
+def update_device_sync_state(
+    user_id: int,
+    device_id: str,
+    *,
+    chat_id: int | None = None,
+    app_version: str = "",
+    sync_status: str = "ok",
+    pending_queue_count: int = 0,
+    draft_present: bool = False,
+    last_error: str = "",
+    health_ok: bool = True,
+) -> dict[str, Any]:
+    key = str(device_id or "").strip()[:120]
+    if not key:
+        return {"updated": False}
+    pending = max(0, min(int(pending_queue_count or 0), 10000))
+    status = str(sync_status or "unknown")[:30]
+    with db.connect() as conn:
+        conn.execute(
+            """
+            UPDATE miniapp_devices SET
+                last_chat_id=COALESCE(?,last_chat_id),
+                app_version=?,sync_status=?,pending_queue_count=?,draft_present=?,
+                last_sync_error=?,last_seen_at=CURRENT_TIMESTAMP,
+                last_sync_at=CASE WHEN ?='ok' THEN CURRENT_TIMESTAMP ELSE last_sync_at END,
+                last_health_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE last_health_at END
+            WHERE user_id=? AND device_id=?
+            """,
+            (repo.resolve_scope_chat_id(chat_id) if chat_id else None, str(app_version or "")[:40], status, pending,
+             int(bool(draft_present)), str(last_error or "")[:1000], status, int(bool(health_ok)), int(user_id), key),
+        )
+        row = conn.execute("SELECT * FROM miniapp_devices WHERE user_id=? AND device_id=?", (int(user_id), key)).fetchone()
+        conn.commit()
+    return dict(row) if row else {"updated": False}
+
+
 def set_device_chat(user_id: int, device_id: str, chat_id: int) -> None:
     if not str(device_id or "").strip():
         return

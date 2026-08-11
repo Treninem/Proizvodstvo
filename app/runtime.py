@@ -7,6 +7,8 @@ import uvicorn
 
 from .config import settings
 from .db import init_db
+from . import db
+from .services import control_center
 from .main import run_bot
 
 log = logging.getLogger("production_account_runtime")
@@ -26,10 +28,33 @@ async def _run_miniapp() -> None:
     await server.serve()
 
 
+async def _watchdog_loop() -> None:
+    tick = 0
+    while True:
+        try:
+            probe = db.database_probe(1200)
+            details = f"db={'ok' if probe.get('ok') else 'error'} {probe.get('latency_ms', 0)}ms"
+            control_center.heartbeat("runtime", "ok", "combined process active")
+            control_center.heartbeat("watchdog", "ok" if probe.get("ok") else "warning", details)
+            tick += 1
+            if tick % 5 == 0:
+                checkpoint = db.checkpoint_wal()
+                if not checkpoint.get("ok") and checkpoint.get("error"):
+                    control_center.heartbeat("watchdog", "warning", f"wal checkpoint: {checkpoint.get('error')}")
+        except Exception as exc:
+            # Watchdog never stops the accounting process. It only records state.
+            log.warning("Watchdog: %s", exc)
+            try:
+                control_center.heartbeat("watchdog", "error", str(exc))
+            except Exception:
+                pass
+        await asyncio.sleep(60)
+
+
 async def main() -> None:
     settings.require_ready()
     init_db()
-    tasks: list[asyncio.Task] = []
+    tasks: list[asyncio.Task] = [asyncio.create_task(_watchdog_loop(), name="watchdog")]
     if settings.miniapp_enabled:
         tasks.append(asyncio.create_task(_run_miniapp(), name="miniapp"))
     if settings.bot_enabled:

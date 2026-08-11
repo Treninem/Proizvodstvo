@@ -331,6 +331,22 @@ def diagnostics_snapshot(chat_id: int, user_id: int) -> dict[str, Any]:
     if backups:
         b = backups[0]
         latest_backup = {'name': b.name, 'size': b.stat().st_size, 'modified_at': datetime.fromtimestamp(b.stat().st_mtime).isoformat(timespec='seconds')}
+    db_files = db.database_file_state()
+    device_rows = [dict(r) for r in db.fetchall(
+        "SELECT * FROM miniapp_devices WHERE last_chat_id=? OR user_id=? ORDER BY last_seen_at DESC LIMIT 200",
+        (scope, int(settings.primary_owner_id)),
+    )]
+    now_dt = datetime.now()
+    sync_devices = {"total": len(device_rows), "recent": 0, "stale": 0, "with_pending": 0, "pending_total": 0, "with_errors": 0}
+    for item in device_rows:
+        age = _age_minutes(item.get('last_seen_at'), now_dt)
+        if age <= 5: sync_devices["recent"] += 1
+        else: sync_devices["stale"] += 1
+        pending = int(item.get('pending_queue_count') or 0)
+        sync_devices["pending_total"] += pending
+        if pending: sync_devices["with_pending"] += 1
+        if str(item.get('last_sync_error') or '').strip(): sync_devices["with_errors"] += 1
+
     errors = [dict(r) for r in db.fetchall(
         '''SELECT 'telegram' AS source,id AS ref_id,telegram_error AS message,created_at FROM inbox_items WHERE telegram_status='error' AND telegram_error<>''
            UNION ALL SELECT 'report' AS source,id AS ref_id,error AS message,created_at FROM report_delivery_history WHERE status='error' AND error<>''
@@ -341,14 +357,14 @@ def diagnostics_snapshot(chat_id: int, user_id: int) -> dict[str, Any]:
         age = _age_minutes(item.get('last_seen_at')) if item else 999999
         return {'status': item.get('status') or 'unknown', 'last_seen_at': item.get('last_seen_at'), 'age_minutes': age, 'stale': age > 3, 'details': item.get('details') or ''}
     return {
-        'database': {'status': db_status, 'message': db_message, 'path': str(db_path), 'size_bytes': db_path.stat().st_size if db_path.exists() else 0},
-        'services': {'bot': hb_view('bot'), 'scheduler': hb_view('scheduler'), 'miniapp': hb_view('miniapp')},
+        'database': {'status': db_status, 'message': db_message, 'path': str(db_path), 'size_bytes': db_path.stat().st_size if db_path.exists() else 0, **db_files},
+        'services': {'bot': hb_view('bot'), 'scheduler': hb_view('scheduler'), 'miniapp': hb_view('miniapp'), 'runtime': hb_view('runtime'), 'watchdog': hb_view('watchdog')},
         'disk': {'total_bytes': usage.total, 'used_bytes': usage.used, 'free_bytes': usage.free, 'free_percent': round(usage.free/max(1,usage.total)*100, 1)},
         'queues': {'telegram_pending': int(pending_telegram['n'] if pending_telegram else 0), 'report_queued': int(queued_reports['n'] if queued_reports else 0), 'report_errors': int(report_errors['n'] if report_errors else 0), 'shift_packages_unresolved': int(unresolved_packages['n'] if unresolved_packages else 0)},
         'workflow': {'active_tasks': int(active_tasks['n'] if active_tasks else 0), 'open_requests': int(open_requests['n'] if open_requests else 0), 'open_downtimes': int(open_downtimes['n'] if open_downtimes else 0), 'maintenance_due_soon': int(maintenance_due['n'] if maintenance_due else 0),
                      'quality_open': int(quality_open['n'] if quality_open else 0), 'quarantine_lots': int(quarantine_lots['n'] if quarantine_lots else 0),
                      'replenishment_open': int(replenishment_open['n'] if replenishment_open else 0), 'maintenance_work_overdue': int(maintenance_work_overdue['n'] if maintenance_work_overdue else 0),
                      'reliability_pending': int(reliability_pending['n'] if reliability_pending else 0)},
-        'backup': {'count': len(backups), 'latest': latest_backup}, 'recent_errors': errors,
+        'backup': {'count': len(backups), 'latest': latest_backup}, 'device_sync': sync_devices, 'recent_errors': errors,
         'checked_at': datetime.now().isoformat(timespec='seconds'),
     }

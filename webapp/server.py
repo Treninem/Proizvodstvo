@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import io
 import json
+import os
 import time
 from contextvars import ContextVar
 from datetime import date, datetime, timedelta
@@ -45,6 +47,7 @@ STATIC = ROOT / "static"
 
 _OPERATION_SAVE_LOCK = RLock()
 _REQUEST_DEVICE: ContextVar[dict[str, str]] = ContextVar("miniapp_request_device", default={})
+_PROCESS_STARTED_AT = time.time()
 
 app = FastAPI(title="Производственный учёт — Mini App", docs_url=None, redoc_url=None)
 if settings.cors_allowed_origins:
@@ -96,6 +99,16 @@ async def _security_headers(request: Request, call_next):
 class AccountSelectPayload(BaseModel):
     user_id: int
     account_id: int
+
+
+class ClientSyncPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    app_version: str = ""
+    sync_status: str = "ok"
+    pending_queue_count: int = 0
+    draft_present: bool = False
+    last_error: str = ""
 
 
 class OperationPayload(BaseModel):
@@ -1209,10 +1222,36 @@ def _device_rows_for_user(chat_id: int, user_id: int) -> list[dict[str, Any]]:
     return shift_continuity.list_devices([user_id])
 
 
+_MINIAPP_HEARTBEAT_TASK: asyncio.Task | None = None
+
+
+async def _miniapp_heartbeat_loop() -> None:
+    while True:
+        try:
+            control_center.heartbeat("miniapp", "ok", "event loop active")
+        except Exception:
+            pass
+        await asyncio.sleep(60)
+
+
 @app.on_event("startup")
-def _startup() -> None:
+async def _startup() -> None:
+    global _MINIAPP_HEARTBEAT_TASK
     init_db()
     control_center.heartbeat("miniapp", "ok", "startup")
+    _MINIAPP_HEARTBEAT_TASK = asyncio.create_task(_miniapp_heartbeat_loop(), name="miniapp-heartbeat")
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    global _MINIAPP_HEARTBEAT_TASK
+    if _MINIAPP_HEARTBEAT_TASK is not None:
+        _MINIAPP_HEARTBEAT_TASK.cancel()
+        try:
+            await _MINIAPP_HEARTBEAT_TASK
+        except asyncio.CancelledError:
+            pass
+        _MINIAPP_HEARTBEAT_TASK = None
 
 
 
@@ -1225,7 +1264,7 @@ def _startup() -> None:
 
 
 
-MINI_UI_VERSION = "20260811b"
+MINI_UI_VERSION = "20260811c"
 
 @app.get("/mini")
 def mini(request: Request):
@@ -1241,20 +1280,29 @@ def mini(request: Request):
 
 @app.get("/health")
 def health() -> dict[str, object]:
-    control_center.heartbeat("miniapp", "ok", "health")
+    # Liveness must stay instant and must not wait for SQLite locks. Reverse proxies use this endpoint.
     return {
         "status": "ok",
         "mini_ui_version": MINI_UI_VERSION,
         "bot_enabled": settings.bot_enabled,
         "miniapp_enabled": settings.miniapp_enabled,
+        "uptime_seconds": int(max(0, time.time() - _PROCESS_STARTED_AT)),
+        "pid": os.getpid(),
     }
 
 
 @app.get("/ready")
-def ready() -> dict[str, object]:
-    control_center.heartbeat("miniapp", "ok", "ready")
-    row = db.fetchone("SELECT 1 AS ok")
-    return {"status": "ready", "database": bool(row), "mini_app": True}
+def ready() -> JSONResponse:
+    probe = db.database_probe(1200)
+    payload = {
+        "status": "ready" if probe.get("ok") else "degraded",
+        "database": bool(probe.get("ok")),
+        "database_latency_ms": probe.get("latency_ms"),
+        "database_error": probe.get("error") or "",
+        "mini_app": True,
+        "mini_ui_version": MINI_UI_VERSION,
+    }
+    return JSONResponse(payload, status_code=200 if probe.get("ok") else 503)
 
 
 
@@ -1271,6 +1319,30 @@ def ready() -> dict[str, object]:
 
 
 
+
+
+@app.post("/api/client-sync")
+def client_sync_api(
+    payload: ClientSyncPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
+    _check_user(payload.chat_id, payload.user_id)
+    scope = repo.resolve_scope_chat_id(payload.chat_id)
+    device = _REQUEST_DEVICE.get({})
+    shift_continuity.update_device_sync_state(
+        payload.user_id, device.get("device_id", ""), chat_id=scope, app_version=payload.app_version,
+        sync_status=payload.sync_status, pending_queue_count=payload.pending_queue_count,
+        draft_present=payload.draft_present, last_error=payload.last_error, health_ok=True,
+    )
+    return {
+        "status": "ok",
+        "server_time": datetime.now().isoformat(timespec="seconds"),
+        "mini_ui_version": MINI_UI_VERSION,
+        "active_scope_chat_id": scope,
+    }
 
 
 @app.get("/api/accounts")

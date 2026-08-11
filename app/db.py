@@ -8,6 +8,8 @@ from .config import settings
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
+PRAGMA wal_autocheckpoint=1000;
 PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS chats (
@@ -1664,10 +1666,12 @@ def ensure_data_dir() -> None:
 
 def connect() -> sqlite3.Connection:
     ensure_data_dir()
-    conn = sqlite3.connect(settings.database_path)
+    conn = sqlite3.connect(settings.database_path, timeout=15.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=8000")
+    conn.execute("PRAGMA busy_timeout=15000")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA wal_autocheckpoint=1000")
     return conn
 
 
@@ -1696,6 +1700,13 @@ def init_db() -> None:
         _ensure_column(conn, "operations", "source_channel", "TEXT NOT NULL DEFAULT 'bot'")
         _ensure_column(conn, "operations", "task_id", "INTEGER")
         _ensure_column(conn, "operations", "lot_id", "INTEGER")
+        _ensure_column(conn, "miniapp_devices", "app_version", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "miniapp_devices", "sync_status", "TEXT NOT NULL DEFAULT 'unknown'")
+        _ensure_column(conn, "miniapp_devices", "pending_queue_count", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "miniapp_devices", "draft_present", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "miniapp_devices", "last_sync_at", "TEXT")
+        _ensure_column(conn, "miniapp_devices", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "miniapp_devices", "last_health_at", "TEXT")
         _ensure_column(conn, "production_tasks", "shift_plan_id", "INTEGER")
         _ensure_column(conn, "production_task_events", "operation_id", "INTEGER")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_task_events_operation_unique ON production_task_events(operation_id) WHERE operation_id IS NOT NULL")
@@ -1716,6 +1727,46 @@ def init_db() -> None:
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_shift_plan_template_occurrence ON shift_plans(template_id, occurrence_date) WHERE template_id IS NOT NULL AND occurrence_date IS NOT NULL")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_operations_client_request ON operations(chat_id, user_id, client_request_id) WHERE client_request_id IS NOT NULL AND client_request_id<>''")
         conn.commit()
+
+
+def database_probe(timeout_ms: int = 1000) -> dict[str, Any]:
+    """Короткая проверка готовности БД без длинного ожидания блокировки."""
+    ensure_data_dir()
+    started = __import__("time").monotonic()
+    try:
+        conn = sqlite3.connect(settings.database_path, timeout=max(0.1, float(timeout_ms) / 1000.0))
+        try:
+            conn.execute(f"PRAGMA busy_timeout={max(100, int(timeout_ms))}")
+            row = conn.execute("SELECT 1").fetchone()
+        finally:
+            conn.close()
+        return {"ok": bool(row and row[0] == 1), "latency_ms": round((__import__("time").monotonic()-started)*1000, 1), "error": ""}
+    except Exception as exc:
+        return {"ok": False, "latency_ms": round((__import__("time").monotonic()-started)*1000, 1), "error": str(exc)[:500]}
+
+
+def checkpoint_wal() -> dict[str, Any]:
+    """Безопасный PASSIVE-checkpoint: не мешает текущим записям."""
+    try:
+        with connect() as conn:
+            row = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+        values = list(row or (0, 0, 0))
+        while len(values) < 3:
+            values.append(0)
+        return {"ok": int(values[0] or 0) == 0, "busy": int(values[0] or 0), "log_frames": int(values[1] or 0), "checkpointed_frames": int(values[2] or 0), "error": ""}
+    except Exception as exc:
+        return {"ok": False, "busy": 0, "log_frames": 0, "checkpointed_frames": 0, "error": str(exc)[:500]}
+
+
+def database_file_state() -> dict[str, Any]:
+    path = Path(settings.database_path)
+    wal = Path(str(path) + "-wal")
+    shm = Path(str(path) + "-shm")
+    return {
+        "database_bytes": path.stat().st_size if path.exists() else 0,
+        "wal_bytes": wal.stat().st_size if wal.exists() else 0,
+        "shm_bytes": shm.stat().st_size if shm.exists() else 0,
+    }
 
 
 def execute(query: str, params: Iterable[Any] = ()) -> None:
