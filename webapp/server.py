@@ -93,6 +93,11 @@ async def _security_headers(request: Request, call_next):
 
 
 
+class AccountSelectPayload(BaseModel):
+    user_id: int
+    account_id: int
+
+
 class OperationPayload(BaseModel):
     chat_id: int
     user_id: int
@@ -1220,7 +1225,7 @@ def _startup() -> None:
 
 
 
-MINI_UI_VERSION = "20260809b"
+MINI_UI_VERSION = "20260811a"
 
 @app.get("/mini")
 def mini(request: Request):
@@ -1279,7 +1284,45 @@ def accounts(
     if uid is None:
         raise HTTPException(status_code=403, detail="access denied")
     items = repo.list_accounts_for_user(uid, include_accessible=True)
-    return {"accounts": [{"id": a.id, "name": a.name, "scope_chat_id": a.scope_chat_id, "is_general": a.is_general} for a in items]}
+    active = repo.get_active_account(int(uid))
+    allowed_ids = {int(a.id) for a in items}
+    if active and int(active.id) not in allowed_ids:
+        active = None
+    return {
+        "accounts": [{"id": a.id, "name": a.name, "scope_chat_id": a.scope_chat_id, "is_general": a.is_general} for a in items],
+        # В личном Telegram-чате chat.id совпадает с user.id. Поэтому это тот же
+        # активный учёт, который пользователь выбрал в меню бота. Mini App
+        # использует его как источник истины вместо устаревшего localStorage.
+        "active_account_id": active.id if active else None,
+        "active_scope_chat_id": active.scope_chat_id if active else None,
+    }
+
+
+@app.post("/api/accounts/select")
+def select_account(
+    payload: AccountSelectPayload,
+    x_access_token: Annotated[str | None, Header()] = None,
+    x_telegram_init_data: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    auth_user_id = _check_token(x_access_token, x_telegram_init_data)
+    uid = _request_user(payload.user_id, auth_user_id)
+    if uid is None:
+        raise HTTPException(status_code=403, detail="access denied")
+    account = repo.get_account_by_id(int(payload.account_id))
+    if not account or not repo.user_has_account_access(account.id, uid):
+        raise HTTPException(status_code=403, detail="access denied")
+    # Telegram private chat id equals the user's Telegram id. Keep the bot and
+    # Mini App on the same active account in both directions.
+    repo.upsert_chat(int(uid), "Личный чат", "private", connected=True)
+    ok, message = repo.set_active_account(int(uid), account.id, user_id=int(uid))
+    if not ok:
+        raise HTTPException(status_code=403, detail=message)
+    repo.log_site_action(int(account.scope_chat_id), int(uid), "select_account", details=str(account.id))
+    return {
+        "ok": True,
+        "message": message,
+        "account": {"id": account.id, "name": account.name, "scope_chat_id": account.scope_chat_id},
+    }
 
 
 @app.get("/api/bootstrap")
