@@ -5,6 +5,25 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from .config import settings
 
 
+MINI_UI_VERSION = "20260811a"
+
+def miniapp_url(user_id: int | None = None) -> str:
+    """Return a Mini App URL pinned to the account currently selected in private bot chat."""
+    base = settings.public_base_url.rstrip("/")
+    if not base:
+        return ""
+    params = [f"v={MINI_UI_VERSION}"]
+    if user_id:
+        try:
+            from .services import repository as repo
+            account = repo.get_active_account(int(user_id))
+            if account and repo.user_has_account_access(account.id, int(user_id)):
+                params.append(f"chat_id={int(account.scope_chat_id)}")
+        except Exception:
+            pass
+    return base + "/mini?" + "&".join(params)
+
+
 PERMISSION_LABELS: dict[str, str] = {
     "production": "Сдавать производство",
     "material": "Сдавать сырьё",
@@ -52,7 +71,7 @@ def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
     if settings.public_base_url:
         rows.append([InlineKeyboardButton(
             text="Открыть рабочую панель",
-            web_app=WebAppInfo(url=settings.public_base_url.rstrip("/") + "/mini?v=20260809b"),
+            web_app=WebAppInfo(url=miniapp_url(user_id)),
         )])
     rows.append([InlineKeyboardButton(text="Мои последние записи", callback_data="menu:recent")])
     rows.append([InlineKeyboardButton(text="Как пользоваться", callback_data="menu:help")])
