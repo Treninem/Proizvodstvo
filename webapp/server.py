@@ -1225,7 +1225,7 @@ def _startup() -> None:
 
 
 
-MINI_UI_VERSION = "20260811a"
+MINI_UI_VERSION = "20260811b"
 
 @app.get("/mini")
 def mini(request: Request):
