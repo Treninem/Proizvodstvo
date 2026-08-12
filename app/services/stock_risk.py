@@ -184,7 +184,7 @@ def get_rule(rule_id: int) -> dict[str, Any] | None:
 
 def save_rule(chat_id: int, actor_user_id: int, values: dict[str, Any]) -> tuple[bool, str, int | None]:
     scope = _scope(chat_id)
-    if not repo.is_system_admin_id(int(actor_user_id)):
+    if not repo.is_tenant_admin(scope, int(actor_user_id)):
         return False, "Настраивать критические остатки может только владелец или полный администратор.", None
     entity_id = int(values.get("entity_id") or 0)
     entity_type = str(values.get("entity_type") or "")
@@ -390,7 +390,7 @@ def _validate_event_scope(scope: int, area_id: int | None, department_id: int | 
 
 
 def _event_accessible_to_user(event: dict[str, Any], chat_id: int, user_id: int, *, manage: bool = False) -> bool:
-    if repo.is_system_admin_id(user_id):
+    if repo.is_tenant_admin(scope, user_id):
         return True
     memberships, department_ids, head_ids, _ = _membership_context(chat_id, user_id)
     if not memberships:
@@ -429,7 +429,7 @@ def _sanitize_event_values(scope: int, actor_user_id: int, values: dict[str, Any
     if error:
         return False, error, clean
     clean["area_id"], clean["department_id"], clean["entity_id"] = area_id, department_id, entity_id
-    if repo.is_system_admin_id(actor_user_id):
+    if repo.is_tenant_admin(scope, actor_user_id):
         return True, "", clean
     memberships, department_ids, head_ids, max_level = _membership_context(scope, actor_user_id)
     if not memberships:
@@ -517,8 +517,7 @@ def notify_operational_event(chat_id: int, event_id: int) -> int:
     if not row:
         return 0
     event = dict(row)
-    recipients: set[int] = {int(settings.primary_owner_id)}
-    recipients.update(repo.list_system_admin_ids())
+    recipients: set[int] = set(repo.tenant_admin_user_ids(scope))
     if event.get("department_id"):
         heads = db.fetchall("SELECT user_id FROM department_members WHERE department_id=? AND is_active=1 AND role_level>=50", (int(event["department_id"]),))
         recipients.update(int(x["user_id"]) for x in heads)
@@ -806,14 +805,16 @@ def evaluate_rule(rule_id: int, now: datetime | None = None) -> RiskSnapshot | N
 
 
 def _recipient_ids(rule: dict[str, Any]) -> set[int]:
+    scope = int(rule["chat_id"])
     ids: set[int] = set(_json_ids(rule.get("notify_user_ids_json")))
     if bool(rule.get("notify_owner")):
-        ids.add(int(settings.primary_owner_id))
-        account = repo.get_account_by_scope(int(rule["chat_id"]))
+        account = repo.get_account_by_scope(scope)
         if account:
             ids.add(int(account.owner_user_id))
     if bool(rule.get("notify_system_admins")):
-        ids.update(repo.list_system_admin_ids())
+        # Historical field name: in tenant mode this means organization admins,
+        # never the platform owner/system menu.
+        ids.update(repo.tenant_admin_user_ids(scope))
     if bool(rule.get("notify_department_heads")):
         rows = db.fetchall(
             """
@@ -1014,7 +1015,7 @@ def acknowledge_incident(chat_id: int, incident_id: int, user_id: int, snooze_mi
     )
     if not row:
         return False
-    if not repo.is_system_admin_id(user_id):
+    if not repo.is_tenant_admin(scope, user_id):
         memberships = repo.user_department_memberships(scope, user_id)
         if memberships:
             visible = repo.visible_entity_ids_for_user(scope, user_id) or set()
@@ -1039,7 +1040,7 @@ def acknowledge_incident(chat_id: int, incident_id: int, user_id: int, snooze_mi
 def dashboard_for_user(chat_id: int, user_id: int) -> dict[str, Any]:
     scope = _scope(chat_id)
     data = dashboard(scope)
-    if repo.is_system_admin_id(user_id):
+    if repo.is_tenant_admin(scope, user_id):
         return data
     memberships = repo.user_department_memberships(scope, user_id)
     visible = repo.visible_entity_ids_for_user(scope, user_id)

@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#07111f" />
   <title>Производство</title>
   <link rel="manifest" href="/static/manifest.webmanifest" />
-  <link rel="stylesheet" href="/static/style-20260811c.css?v=81-watchdog" />
+  <link rel="stylesheet" href="/static/style-20260812a.css?v=82-ux" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -15,8 +15,8 @@
     <section class="hero">
       <div class="hero-text">
         <p class="eyebrow">производственный учёт</p>
-        <h1>Панель производства</h1>
-        <p id="accountName">Выберите учёт в боте и откройте приложение из личных сообщений.</p>
+        <h1>Производство</h1>
+        <p id="accountName">Рабочий учёт вашей организации</p>
         <div class="hero-pills">
           <span id="rolePill">Доступ проверяется</span>
           <span id="syncPill">Обновление —</span><span id="loginPill">Telegram</span>
@@ -104,7 +104,7 @@
           <label>Критическая тревога, минут<input id="slaAlertMinutes" type="number" min="5" max="10080" value="30" /></label>
           <button class="primary" data-action="save-control-sla">Сохранить время реакции</button>
         </article>
-        <article class="panel" data-admin-only="1">
+        <article class="panel" data-admin-only="1" id="controlDiagnosticsBlock">
           <div class="section-title-row"><div><h2>Диагностика</h2><p>База, бот, Mini App, очередь уведомлений, диск и резервные копии.</p></div><button data-action="load-diagnostics">Проверить</button></div>
           <div id="diagnosticsStatus" class="manager-list empty">Проверка ещё не запускалась</div>
           <div id="diagnosticsErrors" class="manager-list compact empty">Ошибок пока нет</div>
@@ -172,7 +172,7 @@
             <button class="primary" data-action="create-production-lot">Создать партию</button>
           </div>
         </article>
-        <article class="panel wide">
+        <article class="panel wide" id="workflowEquipmentBlock">
           <h2>Оборудование, простои и обслуживание</h2><div id="wfEquipmentList" class="manager-list empty">Оборудование пока не добавлено</div>
         </article>
         <article class="form-panel" data-workflow-manager="1">
@@ -262,6 +262,24 @@
     </section>
 
     <section class="tab-page" id="page-work">
+      <section class="hub-head">
+        <div><p class="eyebrow">производство</p><h2>Что делаем сейчас?</h2><p>Сначала выберите участок и отдел. Ниже останутся только разрешённые вам действия и позиции.</p></div>
+      </section>
+      <article class="context-panel">
+        <div class="context-title"><b>Рабочее место</b><span id="workContextHint">Определяем доступ…</span></div>
+        <div class="three-col">
+          <label>Населённый пункт / площадка<select id="workSiteSelect"></select></label>
+          <label>Участок<select id="workAreaContext"></select></label>
+          <label>Отдел<select id="workDepartmentContext"></select></label>
+          <label>Место хранения<select id="workLocationContext"></select></label>
+        </div>
+      </article>
+      <section class="production-shortcuts">
+        <button data-work-op="production"><img src="/static/img/production-card-20260809b.webp" alt=""><b>Изготовление</b><span>Внести выпуск</span></button>
+        <button data-work-op="material_out"><img src="/static/img/materials-card-20260809b.webp" alt=""><b>Расход</b><span>Сырьё и материалы</span></button>
+        <button data-work-op="assembly"><img src="/static/img/assembly-card-20260809b.webp" alt=""><b>Сборка</b><span>Собрать изделие</span></button>
+        <button data-tab="transfers"><img src="/static/img/shipment-card-20260809b.webp" alt=""><b>Передать</b><span>В другой отдел</span></button>
+      </section>
       <article class="form-panel wide">
         <img src="/static/img/production-form.svg" alt="" class="side-img" />
         <div>
@@ -322,6 +340,14 @@
     </section>
 
     <section class="tab-page active" id="page-overview">
+      <section class="hub-head"><div><p class="eyebrow">склад</p><h2>Остатки и местонахождение</h2><p>Общий остаток и точное место: населённый пункт → участок → отдел → место хранения.</p></div></section>
+      <div class="hub-actions">
+        <button data-tab="transfers"><span>⇄</span><b>Передачи</b><small>Отправить или принять</small></button>
+        <button data-tab="inventory"><span>✓</span><b>Инвентаризация</b><small>Фактические остатки</small></button>
+        <button data-tab="risks"><span>!</span><b>Критические остатки</b><small>Запас и тревоги</small></button>
+        <button data-action="refresh-location-stock"><span>↻</span><b>Обновить</b><small>Где что находится</small></button>
+      </div>
+      <article class="panel wide location-stock-panel"><div class="section-title-row"><div><h2>Где находится товар</h2><p>Нажмите позицию, чтобы увидеть распределение.</p></div></div><div id="locationStockList" class="manager-list empty">Загрузка…</div></article>
       <article class="panel setup-health" data-admin-only="1">
         <div class="setup-health-head"><div><h2>Готовность учёта</h2><p>Проверка основных настроек перед работой.</p></div><strong id="setupHealthScore">—</strong></div>
         <div id="setupHealthList" class="setup-check-list empty">Нет данных</div>
@@ -580,6 +606,25 @@
           <div id="reportDeliveryHistory" class="manager-list empty">Отправок пока нет</div>
         </article>
       </div>
+      <article class="form-panel wide" data-admin-only="1">
+        <div>
+          <h2>Импорт Excel</h2>
+          <p>Загрузите существующую таблицу. Система сначала покажет, какие колонки и данные распознаны. До подтверждения склад не меняется.</p>
+          <label>Файл XLSX<input id="excelImportFile" type="file" accept=".xlsx,.xlsm" /></label>
+          <button class="primary" data-action="analyze-excel">Разобрать таблицу</button>
+          <div id="excelPreview" class="excel-preview hidden"></div>
+        </div>
+      </article>
+      <article class="panel wide">
+        <h2>Привычные ведомости Excel</h2>
+        <p>Формат: неделя, дата, позиция и по каждой площадке приход / производство / расход / остаток.</p>
+        <div class="actions">
+          <button data-export-ledger="material">Сырьё XLSX</button>
+          <button data-export-ledger="component">Детали XLSX</button>
+          <button data-export-ledger="product">Готовая продукция XLSX</button>
+          <button data-export-ledger="stock_item">Склад XLSX</button>
+        </div>
+      </article>
     </section>
 
 
@@ -1040,6 +1085,42 @@
       </div>
     </section>
 
+    <section class="tab-page" id="page-transfers">
+      <section class="hub-head"><div><p class="eyebrow">склад</p><h2>Передачи между подразделениями</h2><p>Отправитель создаёт передачу. Получатель пересчитывает и подтверждает. До приёмки количество отмечено как «в пути».</p></div></section>
+      <div class="grid">
+        <article class="form-panel wide"><div>
+          <h2>Новая передача</h2>
+          <div class="two-col"><label>Откуда<select id="transferFromArea"></select></label><label>Куда<select id="transferToArea"></select></label></div>
+          <div class="two-col"><label>Отдел отправителя<select id="transferFromDepartment"></select></label><label>Отдел получателя<select id="transferToDepartment"></select></label></div>
+          <div class="two-col"><label>Место выдачи<select id="transferFromLocation"></select></label><label>Место приёмки<select id="transferToLocation"></select></label></div>
+          <div class="two-col"><label>Позиция<select id="transferEntity"></select></label><label>Количество<input id="transferQuantity" inputmode="decimal" /></label></div>
+          <label>Комментарий<input id="transferNote" maxlength="1000" placeholder="Необязательно" /></label>
+          <button class="primary" data-action="create-transfer">Передать на подтверждение</button>
+        </div></article>
+        <article class="panel wide"><div class="section-title-row"><div><h2>Входящие и исходящие</h2><p>При расхождении приёмщик указывает фактическое количество и причину.</p></div><button data-action="refresh-transfers">Обновить</button></div><div id="transferList" class="manager-list empty">Передач пока нет</div></article>
+      </div>
+    </section>
+
+    <section class="tab-page" id="page-organization" data-admin-only="1">
+      <section class="hub-head"><div><p class="eyebrow">структура</p><h2>Где работает организация</h2><p>Создайте населённые пункты/площадки, привяжите участки и обозначьте конкретные места хранения.</p></div></section>
+      <div class="grid">
+        <article class="form-panel"><div><h2>Населённый пункт / площадка</h2><label>Населённый пункт<input id="siteSettlement" placeholder="Город, посёлок" /></label><label>Название площадки<input id="siteName" placeholder="Производство, склад…" /></label><label>Адрес<input id="siteAddress" /></label><button class="primary" data-action="create-site">Создать</button><div id="siteList" class="manager-list compact"></div></div></article>
+        <article class="form-panel"><div><h2>Привязать участок</h2><label>Участок<select id="bindAreaSelect"></select></label><label>Площадка<select id="bindSiteSelect"></select></label><button data-action="bind-area-site">Сохранить</button></div></article>
+        <article class="form-panel wide"><div><h2>Место хранения</h2><div class="two-col"><label>Название<input id="storageLocationName" placeholder="Стеллаж, зона, склад…" /></label><label>Код<input id="storageLocationCode" placeholder="необязательно" /></label></div><div class="three-col"><label>Площадка<select id="storageLocationSite"></select></label><label>Участок<select id="storageLocationArea"></select></label><label>Отдел<select id="storageLocationDepartment"></select></label></div><button data-action="create-storage-location">Создать место</button><div id="storageLocationList" class="manager-list compact"></div></div></article>
+      </div>
+    </section>
+
+    <section class="tab-page" id="page-more">
+      <section class="hub-head"><div><p class="eyebrow">ещё</p><h2>Управление и дополнительные разделы</h2><p>Каждая функция находится в своей группе. Вы увидите только то, к чему у вас есть доступ.</p></div></section>
+      <div class="more-groups">
+        <section><h3>Люди и доступ</h3><div class="more-grid"><button data-tab="team" data-section="workers"><span>👥</span><b>Сотрудники</b><small>Люди и должности</small></button><button data-tab="departments" data-department-manage="1"><span>🏢</span><b>Отделы</b><small>Руководители и рабочие действия</small></button><button data-tab="area-access" data-section="permissions"><span>🔐</span><b>Права</b><small>Что кому разрешено</small></button></div></section>
+        <section><h3>Работа</h3><div class="more-grid"><button data-tab="workflow"><span>🧾</span><b>Задания</b><small>Задачи, заявки и план/факт</small></button><button data-tab="shifts"><span>🕐</span><b>Смены</b><small>График и передача смены</small></button><button data-tab="inbox"><span>🔔</span><b>Входящие</b><small>Что требует вашего внимания</small></button><button data-tab="control" data-control-only="1"><span>🎛️</span><b>Контроль смены</b><small>Сводка руководителя</small></button></div></section>
+        <section><h3>Качество и техника</h3><div class="more-grid"><button data-tab="quality"><span>✅</span><b>Качество</b><small>Проверки, карантин, снабжение</small></button><button data-tab="workflow" data-focus="workflowEquipmentBlock" data-requires-equipment="1"><span>⚙️</span><b>Оборудование</b><small>Простои и обслуживание</small></button></div></section>
+        <section data-admin-only="1"><h3>Настройка организации</h3><div class="more-grid"><button data-tab="organization"><span>📍</span><b>Площадки и места</b><small>Населённые пункты, участки, хранение</small></button><button data-tab="places"><span>🏷️</span><b>Справочники</b><small>Позиции, составы и назначения</small></button></div></section>
+        <section data-admin-only="1"><h3>Безопасность и сервис</h3><div class="more-grid"><button data-tab="security"><span>🛡️</span><b>Безопасность</b><small>Резерв, устройства и аудит</small></button><button data-tab="control" data-focus="controlDiagnosticsBlock"><span>🩺</span><b>Диагностика</b><small>Бот, база, очереди и сервер</small></button></div></section>
+      </div>
+    </section>
+
     <section class="tab-page" id="page-security" data-section="site">
       <div class="grid">
         <article class="panel illustrated">
@@ -1064,7 +1145,7 @@
           <img src="/static/img/shield.svg" alt="" />
         </article>
         <article class="panel wide">
-          <div class="section-title-row"><div><h2>Устройства Mini App и синхронизация</h2><p>Видно последнюю активность, версию приложения, наличие локального черновика и неотправленных записей. Здесь же можно отозвать потерянное устройство.</p></div></div>
+          <div class="section-title-row"><div><h2>Устройства Mini App и синхронизация</h2><p>Видно последнюю активность, наличие локального черновика и неотправленных записей. Здесь же можно отозвать потерянное устройство.</p></div></div>
           <div id="miniappDeviceList" class="manager-list empty">Устройства ещё не зарегистрированы</div>
         </article>
         <article class="form-panel wide" data-admin-only>
@@ -1134,13 +1215,13 @@
     </form>
   </dialog>
 
-  <nav class="mobile-nav" aria-label="Быстрая навигация">
-    <button data-tab="work" data-mobile-work="1"><span>✍️</span>Ввод</button>
-    <button data-tab="overview"><span>📦</span>Остатки</button>
-    <button data-tab="quality"><span>✅</span>Качество</button>
-    <button data-tab="inbox"><span>🔔</span>Входящие</button>
-    <button data-action="toggle-tabs"><span>☰</span>Ещё</button>
+  <nav class="mobile-nav primary-nav" aria-label="Основные разделы">
+    <button data-tab="work" data-primary-nav="production"><span>🏭</span>Производство</button>
+    <button data-tab="overview" data-primary-nav="stock"><span>📦</span>Склад</button>
+    <button data-tab="plan" data-primary-nav="plan" data-section="assembly"><span>📋</span>План</button>
+    <button data-tab="reports" data-primary-nav="reports" data-section="reports"><span>📊</span>Отчёты</button>
+    <button data-tab="more" data-primary-nav="more"><span>☰</span>Ещё</button>
   </nav>
-  <script src="/static/app-20260811c.js?v=81-watchdog"></script>
+  <script src="/static/app-20260812a.js?v=82-ux"></script>
 </body>
 </html>

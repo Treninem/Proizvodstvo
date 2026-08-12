@@ -71,6 +71,12 @@ ACCOUNT_TABLES: dict[str, str] = {
     "maintenance_plans": "chat_id",
     "maintenance_work_orders": "chat_id",
     "reliability_journal": "chat_id",
+    "company_sites": "chat_id",
+    "storage_locations": "chat_id",
+    "inventory_allocations": "chat_id",
+    "stock_transfers": "chat_id",
+    "excel_import_batches": "chat_id",
+    "tenant_audit_events": "chat_id",
 }
 
 GLOBAL_ACCOUNT_TABLES = {
@@ -264,6 +270,13 @@ def create_account_backup(chat_id: int, user_id: int | None = None) -> Path:
         tables_payload["maintenance_work_checks"] = []
         tables_payload["maintenance_work_parts"] = []
 
+    transfer_ids = [int(row["id"]) for row in tables_payload.get("stock_transfers", [])]
+    if transfer_ids:
+        marks = ",".join("?" for _ in transfer_ids)
+        tables_payload["stock_transfer_items"] = _rows("stock_transfer_items", f"transfer_id IN ({marks})", transfer_ids)
+    else:
+        tables_payload["stock_transfer_items"] = []
+
     if account:
         tables_payload["account_user_access"] = _rows("account_user_access", "account_id=?", (account.id,))
         tables_payload["account_chat_access"] = _rows("account_chat_access", "account_id=?", (account.id,))
@@ -360,6 +373,7 @@ RESTORE_ALLOWED_TABLES = set(ACCOUNT_TABLES) | {
     "production_task_events", "interdepartment_request_events", "lot_inventory", "lot_operation_links", "lot_relations",
     "quality_defects", "quality_actions", "replenishment_request_events",
     "maintenance_checklist_items", "maintenance_spare_parts", "maintenance_work_checks", "maintenance_work_parts",
+    "stock_transfer_items",
 }
 
 
@@ -430,6 +444,10 @@ def restore_account_backup(chat_id: int, user_id: int, data: bytes, filename: st
         checklist_template_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM shift_handover_checklist_templates WHERE chat_id=?",(scope,)).fetchall()]
         department_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM departments WHERE chat_id=?",(scope,)).fetchall()]
         stock_rule_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM stock_alert_rules WHERE chat_id=?",(scope,)).fetchall()]
+        transfer_ids=[int(r["id"]) for r in conn.execute("SELECT id FROM stock_transfers WHERE chat_id=?",(scope,)).fetchall()]
+        if transfer_ids:
+            marks=','.join('?' for _ in transfer_ids)
+            conn.execute(f"DELETE FROM stock_transfer_items WHERE transfer_id IN ({marks})",transfer_ids)
         if stock_rule_ids:
             marks=','.join('?' for _ in stock_rule_ids)
             conn.execute(f"DELETE FROM stock_alert_snoozes WHERE rule_id IN ({marks})",stock_rule_ids)
@@ -480,6 +498,7 @@ def restore_account_backup(chat_id: int, user_id: int, data: bytes, filename: st
         if operation_ids:
             marks=','.join('?' for _ in operation_ids); conn.execute(f"DELETE FROM lot_operation_links WHERE operation_id IN ({marks})",operation_ids)
         delete_order=[
+            "inventory_allocations","stock_transfers","excel_import_batches","tenant_audit_events","storage_locations",
             "workflow_notifications","reliability_journal",
             "maintenance_work_orders","maintenance_plans","quality_inspections","quality_rules","replenishment_requests","replenishment_settings",
             "maintenance_records","equipment_downtimes","equipment",
@@ -493,7 +512,7 @@ def restore_account_backup(chat_id: int, user_id: int, data: bytes, filename: st
             "report_presets","assembly_plan_targets","area_section_access",
             "operation_presets","operations","inventory","entity_codes","aliases",
             "material_stock_settings","export_preferences","setup_sessions","operation_destinations","workers",
-            "job_titles","departments","entities","areas",
+            "job_titles","departments","entities","areas","company_sites",
         ]
         for table in delete_order:
             conn.execute(f"DELETE FROM {table} WHERE chat_id=?",(scope,))
@@ -502,12 +521,12 @@ def restore_account_backup(chat_id: int, user_id: int, data: bytes, filename: st
         if "account_chat_access" in tables:
             conn.execute("DELETE FROM account_chat_access WHERE account_id=?",(account.id,))
         insert_order=[
-            "areas","job_titles","entities","departments","department_operation_rules","department_entity_rules","department_members","workers","operation_destinations","export_preferences",
-            "material_stock_settings","area_section_access","aliases","entity_codes","inventory",
+            "company_sites","areas","job_titles","entities","departments","storage_locations","department_operation_rules","department_entity_rules","department_members","workers","operation_destinations","export_preferences",
+            "material_stock_settings","area_section_access","aliases","entity_codes","inventory","inventory_allocations",
             "production_lots","production_tasks","production_task_events","interdepartment_requests","interdepartment_request_events","equipment","equipment_downtimes","maintenance_records",
             "quality_rules","quality_inspections","quality_defects","quality_actions","replenishment_settings","replenishment_requests","replenishment_request_events",
             "maintenance_plans","maintenance_checklist_items","maintenance_spare_parts","maintenance_work_orders","maintenance_work_checks","maintenance_work_parts","workflow_notifications",
-            "operations","lot_operation_links","lot_inventory","lot_relations","reliability_journal","operation_presets",
+            "operations","stock_transfers","stock_transfer_items","excel_import_batches","tenant_audit_events","lot_operation_links","lot_inventory","lot_relations","reliability_journal","operation_presets",
             "stock_alert_rules","stock_alert_snoozes","stock_observations","operational_events","stock_alert_incidents",
             "assembly_plan_targets","report_presets","inventory_sessions","shift_templates","shift_plans",
             "worker_shifts","shift_sync_packages","shift_sync_items","shift_handover_checklist_templates","shift_handover_checklist_items","shift_handovers","shift_handover_checks",

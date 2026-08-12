@@ -4,7 +4,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 
 from ._safe import safe_edit_text
-from ..access import is_chat_creator, is_global_owner
+from ..access import is_chat_creator
 from ..keyboards import area_choice_keyboard, chat_action_keyboard, chat_list_keyboard, main_menu, setup_menu
 from ..services import repository as repo
 
@@ -15,8 +15,6 @@ _VISIBLE_MEMBER_STATUSES = {"creator", "administrator"}
 async def _can_see_chat(bot, chat_id: int, user_id: int | None) -> bool:
     if not user_id:
         return False
-    if is_global_owner(user_id):
-        return True
     try:
         member = await bot.get_chat_member(chat_id, user_id)
         if str(member.status) in _VISIBLE_MEMBER_STATUSES:
@@ -31,8 +29,6 @@ async def _can_see_chat(bot, chat_id: int, user_id: int | None) -> bool:
 async def _can_manage_selected_chat(bot, chat_id: int, user_id: int | None) -> bool:
     if not user_id:
         return False
-    if is_global_owner(user_id):
-        return True
     if repo.user_has_manage_access_to_chat(chat_id, user_id):
         return True
     return await is_chat_creator(bot, chat_id, user_id)
@@ -86,6 +82,18 @@ async def bot_chat_member(update: ChatMemberUpdated) -> None:
     new_status = str(update.new_chat_member.status)
     connected = new_status not in {"left", "kicked"}
     repo.upsert_chat(chat.id, chat.title or "", chat.type, connected=connected)
+    if connected:
+        # A Telegram group is a tenant boundary. Bind it to its real Telegram
+        # creator as early as possible, without requiring a hidden platform role.
+        # Failure to query administrators is non-fatal; the same check is repeated
+        # when the creator opens setup from the private bot.
+        try:
+            admins = await update.bot.get_chat_administrators(chat.id)
+            creator = next((m.user for m in admins if str(m.status) == "creator"), None)
+            if creator:
+                repo.ensure_group_account_context(chat.id, chat.title or "Рабочая группа", chat.type, int(creator.id))
+        except Exception:
+            pass
     # В группе бот не пишет приветствие сам. Он только запоминает группу,
     # чтобы она появилась в личке в разделе «Группы». Так обычная переписка
     # в чате не засоряется повторными сообщениями от бота.
@@ -93,9 +101,6 @@ async def bot_chat_member(update: ChatMemberUpdated) -> None:
 
 @router.message(F.text.lower().in_({"мои группы", "группы", "мои чаты", "чаты"}))
 async def my_chats_text(message: Message) -> None:
-    if not repo.is_system_admin_id(message.from_user.id if message.from_user else None):
-        await message.answer("Нет доступа.")
-        return
     if message.chat.type != "private":
         await message.answer("Список групп открывается в личке бота.")
         return
@@ -104,9 +109,6 @@ async def my_chats_text(message: Message) -> None:
 
 @router.callback_query(F.data == "menu:chats")
 async def my_chats_callback(callback: CallbackQuery) -> None:
-    if not repo.is_system_admin_id(callback.from_user.id if callback.from_user else None):
-        await callback.answer("Нет доступа.", show_alert=True)
-        return
     if callback.message.chat.type != "private":
         await callback.answer("Откройте этот раздел в личке бота.", show_alert=True)
         return

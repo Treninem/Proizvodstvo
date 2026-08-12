@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery, FSInputFile, Message
 from ..services.normalize import normalize_key
 from ..services import reporting
 from ..services import repository as repo
-from ..access import can_view_reports, is_chat_creator, is_global_owner
+from ..access import can_view_reports, is_chat_creator
 from ..keyboards import report_sections_keyboard, report_download_keyboard, report_multi_keyboard, EXPORT_SECTION_LABELS, reports_quick_menu, assembly_plan_product_keyboard, assembly_plan_after_save_keyboard
 
 router = Router()
@@ -125,8 +125,6 @@ def _looks_like_multi_report_request(text: str) -> bool:
 async def _user_can_report_chat(bot, chat_id: int, user_id: int | None) -> bool:
     if not user_id:
         return False
-    if is_global_owner(user_id):
-        return True
     account = repo.get_active_account(chat_id)
     if account and repo.user_has_account_access(account.id, user_id):
         return True

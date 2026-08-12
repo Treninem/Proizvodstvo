@@ -19,8 +19,6 @@ def is_global_owner(user_id: int | None) -> bool:
 async def is_chat_creator(bot: Bot, chat_id: int, user_id: int | None) -> bool:
     if not user_id:
         return False
-    if is_global_owner(user_id):
-        return True
     try:
         admins = await bot.get_chat_administrators(chat_id)
     except Exception:
@@ -32,18 +30,24 @@ async def is_chat_creator(bot: Bot, chat_id: int, user_id: int | None) -> bool:
 
 
 async def can_manage_accounting(bot: Bot, chat: Chat, user: User | None) -> bool:
+    """Tenant-level administration only.
+
+    The platform owner does not receive implicit access here. Telegram group creators
+    do receive full rights for the accounting tenant attached to *their* group.
+    """
     if not user:
         return False
-    if is_global_owner(user.id):
-        return True
     try:
         from .services import repository as repo
         if repo.user_can_manage_current_context(chat.id, user.id):
             return True
+        if chat.type in {"group", "supergroup"} and await is_chat_creator(bot, chat.id, user.id):
+            account = repo.ensure_group_account_context(
+                chat.id, chat.title or "Рабочая группа", chat.type, user.id
+            )
+            return bool(account and repo.user_can_manage_current_context(chat.id, user.id))
     except Exception:
-        pass
-    # Административная настройка не наследуется от прав создателя Telegram-группы.
-    # Она доступна только системным администраторам из .env.
+        return False
     return False
 
 
@@ -69,8 +73,6 @@ OPERATION_PERMISSION = {
 async def can_submit_operations(bot: Bot, chat: Chat, user: User | None, operation_types: set[str]) -> bool:
     if not user:
         return False
-    if is_global_owner(user.id):
-        return True
     if await can_manage_accounting(bot, chat, user):
         return True
     try:
@@ -96,8 +98,6 @@ async def can_submit_operations(bot: Bot, chat: Chat, user: User | None, operati
 async def can_view_reports(bot: Bot, chat: Chat, user: User | None, need_export: bool = False) -> bool:
     if not user:
         return False
-    if is_global_owner(user.id):
-        return True
     if await can_manage_accounting(bot, chat, user):
         return True
     try:

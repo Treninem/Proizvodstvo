@@ -64,7 +64,7 @@ def _fmt_qty(value: Any) -> str:
 
 
 def _visible_workflow(scope: int, user_id: int) -> bool:
-    if repo.is_system_admin_id(user_id):
+    if repo.is_tenant_admin(scope, user_id):
         return True
     return bool(repo.user_has_department_membership(scope, user_id))
 

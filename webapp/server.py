@@ -13,7 +13,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Annotated, Any
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -41,6 +41,7 @@ from app.services import quality_control
 from app.services import replenishment
 from app.services import maintenance_planning
 from app.services import production_needs_report
+from app.services import stock_transfers, excel_bridge
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
@@ -101,6 +102,62 @@ class AccountSelectPayload(BaseModel):
     account_id: int
 
 
+class CompanySitePayload(BaseModel):
+    chat_id: int
+    user_id: int
+    settlement: str = ""
+    name: str
+    address: str = ""
+
+class StorageLocationPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    name: str
+    site_id: int | None = None
+    area_id: int | None = None
+    department_id: int | None = None
+    code: str = ""
+
+class AreaSitePayload(BaseModel):
+    chat_id: int
+    user_id: int
+    area_id: int
+    site_id: int | None = None
+
+class TransferItemPayload(BaseModel):
+    entity_id: int
+    quantity: float
+    unit: str = "шт"
+
+class TransferCreatePayload(BaseModel):
+    chat_id: int
+    user_id: int
+    from_area_id: int
+    to_area_id: int
+    from_department_id: int | None = None
+    to_department_id: int | None = None
+    from_location_id: int | None = None
+    to_location_id: int | None = None
+    note: str = ""
+    items: list[TransferItemPayload]
+
+class TransferAcceptItemPayload(BaseModel):
+    item_id: int
+    quantity: float
+
+class TransferAcceptPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    transfer_id: int
+    note: str = ""
+    items: list[TransferAcceptItemPayload] = Field(default_factory=list)
+
+class ExcelConfirmPayload(BaseModel):
+    chat_id: int
+    user_id: int
+    batch_id: str
+    create_missing: bool = True
+
 class ClientSyncPayload(BaseModel):
     chat_id: int
     user_id: int
@@ -131,6 +188,12 @@ class OperationPayload(BaseModel):
     preview_fingerprint: str = ""
     task_id: int | None = None
     lot_id: int | None = None
+    department_id: int | None = None
+    from_department_id: int | None = None
+    to_department_id: int | None = None
+    storage_location_id: int | None = None
+    from_location_id: int | None = None
+    to_location_id: int | None = None
 
 
 class EntityCodePayload(BaseModel):
@@ -814,8 +877,9 @@ class MaintenancePartPayload(BaseModel):
 def _check_token(token: str | None, init_data: str | None = None) -> int | None:
     expected = settings.miniapp_api_token
     if expected and token == expected:
-        # Служебный ключ интеграции. Пользователь всё равно проверяется отдельно.
-        return None
+        # Служебный ключ не должен позволять подменять произвольный user_id из запроса.
+        # Он действует от имени системного владельца; несовпадающий user_id будет отвергнут _request_user().
+        return int(settings.primary_owner_id)
     user = validate_telegram_init_data(init_data or "", settings.bot_token)
     if user.get("id"):
         user_id = int(user["id"])
@@ -855,8 +919,6 @@ def _check_user(chat_id: int, user_id: int | None, *, submit: bool = False, mana
     if user_id:
         device = _REQUEST_DEVICE.get({})
         shift_continuity.set_device_chat(int(user_id), device.get("device_id", ""), account.scope_chat_id)
-    if repo.is_global_owner_id(user_id):
-        return account
     if not user_id:
         raise HTTPException(status_code=403, detail="access denied")
     if manage and not repo.user_has_account_access(account.id, user_id, require_manage=True):
@@ -872,7 +934,7 @@ def _check_user(chat_id: int, user_id: int | None, *, submit: bool = False, mana
 
 def _check_system_admin(chat_id: int, user_id: int | None) -> None:
     _check_user(chat_id, user_id)
-    if not repo.is_system_admin_id(user_id):
+    if not repo.is_tenant_admin(chat_id, user_id):
         raise HTTPException(status_code=403, detail="admin access denied")
 
 
@@ -930,7 +992,7 @@ def _check_operation_permission(
     entity_type: str | None = None,
     entity_id: int | None = None,
 ) -> None:
-    if repo.is_system_admin_id(user_id):
+    if repo.is_tenant_admin(chat_id, user_id):
         return
     department_allowed = repo.department_operation_allowed(chat_id, user_id, operation_type, "submit", entity_type, entity_id)
     if department_allowed is False:
@@ -1000,7 +1062,7 @@ def _inventory_positions_for_user(chat_id: int, user_id: int, area_ids: set[int]
 def _dashboard_for_user(chat_id: int, user_id: int) -> dict:
     # Полная сводка содержит данные всего производства. Участникам отделов она
     # не передаётся; их рабочая панель строится только из назначенных позиций.
-    if repo.user_has_department_membership(chat_id, user_id) and not repo.is_system_admin_id(user_id):
+    if repo.user_has_department_membership(chat_id, user_id) and not repo.is_tenant_admin(chat_id, user_id):
         return {"month_totals": [], "inventory": {}, "area_summary": [], "material_days_by_area": [], "alerts": [], "recent": []}
     return dash.dashboard(chat_id, area_ids=_dashboard_area_ids(chat_id, user_id))
 
@@ -1025,7 +1087,43 @@ def _allowed_entity_types(operation_type: str) -> set[str]:
     return set()
 
 
+
+def _validate_tenant_operation_context(scope: int, user_id: int, payload: OperationPayload) -> None:
+    """Reject forged department/location IDs before any preview or write."""
+    tenant_admin = repo.is_tenant_admin(scope, user_id)
+    source_departments = [payload.department_id, payload.from_department_id]
+    for dep_id in [payload.department_id, payload.from_department_id, payload.to_department_id]:
+        if dep_id is None:
+            continue
+        row = db.fetchone("SELECT id FROM departments WHERE id=? AND chat_id=?", (int(dep_id), int(scope)))
+        if not row:
+            raise HTTPException(status_code=400, detail="Отдел не принадлежит выбранному учёту.")
+    if not tenant_admin:
+        member_ids = {int(x.get("department_id") or 0) for x in repo.user_department_memberships(scope, user_id)}
+        for dep_id in source_departments:
+            if dep_id is not None and int(dep_id) not in member_ids:
+                raise HTTPException(status_code=403, detail="Нельзя выполнять операцию от имени чужого отдела.")
+    checks = [
+        (payload.storage_location_id, payload.area_id, payload.department_id),
+        (payload.from_location_id, payload.from_area_id, payload.from_department_id),
+        (payload.to_location_id, payload.to_area_id, payload.to_department_id),
+    ]
+    for location_id, area_id, department_id in checks:
+        if location_id is None:
+            continue
+        row = db.fetchone(
+            "SELECT area_id,department_id FROM storage_locations WHERE id=? AND chat_id=? AND is_active=1",
+            (int(location_id), int(scope)),
+        )
+        if not row:
+            raise HTTPException(status_code=400, detail="Место хранения не принадлежит выбранному учёту.")
+        if area_id is not None and row["area_id"] is not None and int(row["area_id"]) != int(area_id):
+            raise HTTPException(status_code=400, detail="Место хранения относится к другому участку.")
+        if department_id is not None and row["department_id"] is not None and int(row["department_id"]) != int(department_id):
+            raise HTTPException(status_code=400, detail="Место хранения относится к другому отделу.")
+
 def _operation_preview(scope: int, user_id: int, payload: OperationPayload) -> dict[str, object]:
+    _validate_tenant_operation_context(scope, user_id, payload)
     _check_operation_permission(
         scope,
         user_id,
@@ -1129,6 +1227,8 @@ def _operation_preview(scope: int, user_id: int, payload: OperationPayload) -> d
         "operation_type": payload.operation_type, "entity_type": payload.entity_type, "entity_id": payload.entity_id,
         "quantity": float(payload.quantity), "unit": unit, "area_id": payload.area_id,
         "from_area_id": payload.from_area_id, "to_area_id": payload.to_area_id,
+        "department_id": payload.department_id, "from_department_id": payload.from_department_id, "to_department_id": payload.to_department_id,
+        "storage_location_id": payload.storage_location_id, "from_location_id": payload.from_location_id, "to_location_id": payload.to_location_id,
         "balances": balances, "components": components,
     }
     fingerprint = hashlib.sha256(json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:32]
@@ -1179,7 +1279,7 @@ def _work_access_for_user(scope: int, user_id: int) -> list[dict]:
     }
     result: list[dict] = []
     for operation_key, (permission_key, types) in operation_types.items():
-        if not (permissions.get(permission_key) or repo.is_system_admin_id(user_id)):
+        if not (permissions.get(permission_key) or repo.is_tenant_admin(scope, user_id)):
             continue
         available: list[dict] = []
         for entity_type in types:
@@ -1202,7 +1302,7 @@ def _risk_for_user(chat_id: int, user_id: int) -> dict[str, object]:
 
 
 def _shift_packages_for_user(chat_id: int, user_id: int, **filters: Any) -> list[dict[str, Any]]:
-    can_review = repo.is_system_admin_id(user_id) or repo.user_can_manage_departments(chat_id, user_id)
+    can_review = repo.is_tenant_admin(chat_id, user_id) or repo.user_can_manage_departments(chat_id, user_id)
     if not can_review:
         filters = dict(filters)
         filters["worker_user_id"] = int(user_id)
@@ -1217,9 +1317,13 @@ def _shift_packages_for_user(chat_id: int, user_id: int, **filters: Any) -> list
 
 
 def _device_rows_for_user(chat_id: int, user_id: int) -> list[dict[str, Any]]:
-    if repo.is_system_admin_id(user_id):
-        return shift_continuity.list_devices(shift_continuity.account_user_ids(chat_id))
-    return shift_continuity.list_devices([user_id])
+    rows = shift_continuity.list_devices(shift_continuity.account_user_ids(chat_id)) if repo.is_tenant_admin(chat_id, user_id) else shift_continuity.list_devices([user_id])
+    # Build/version is platform-owner information and is intentionally not exposed
+    # through ordinary tenant Mini App APIs.
+    result=[]
+    for item in rows:
+        clean=dict(item); clean.pop("app_version", None); result.append(clean)
+    return result
 
 
 _MINIAPP_HEARTBEAT_TASK: asyncio.Task | None = None
@@ -1264,7 +1368,7 @@ async def _shutdown() -> None:
 
 
 
-MINI_UI_VERSION = "20260811c"
+MINI_UI_VERSION = "20260812a"
 
 @app.get("/mini")
 def mini(request: Request):
@@ -1274,7 +1378,6 @@ def mini(request: Request):
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
-    response.headers["X-Miniapp-Version"] = MINI_UI_VERSION
     return response
 
 
@@ -1283,7 +1386,6 @@ def health() -> dict[str, object]:
     # Liveness must stay instant and must not wait for SQLite locks. Reverse proxies use this endpoint.
     return {
         "status": "ok",
-        "mini_ui_version": MINI_UI_VERSION,
         "bot_enabled": settings.bot_enabled,
         "miniapp_enabled": settings.miniapp_enabled,
         "uptime_seconds": int(max(0, time.time() - _PROCESS_STARTED_AT)),
@@ -1300,7 +1402,6 @@ def ready() -> JSONResponse:
         "database_latency_ms": probe.get("latency_ms"),
         "database_error": probe.get("error") or "",
         "mini_app": True,
-        "mini_ui_version": MINI_UI_VERSION,
     }
     return JSONResponse(payload, status_code=200 if probe.get("ok") else 503)
 
@@ -1340,7 +1441,6 @@ def client_sync_api(
     return {
         "status": "ok",
         "server_time": datetime.now().isoformat(timespec="seconds"),
-        "mini_ui_version": MINI_UI_VERSION,
         "active_scope_chat_id": scope,
     }
 
@@ -1414,7 +1514,8 @@ def bootstrap(
     area_access = repo.area_access_map_for_user(scope, user_id)
     can_manage = repo.user_can_manage_current_context(scope, user_id)
     can_manage_departments = repo.user_can_manage_departments(scope, user_id)
-    is_system_admin = repo.is_system_admin_id(user_id)
+    is_system_admin = repo.is_tenant_admin(scope, user_id)
+    is_tenant_admin = is_system_admin
     has_departments = repo.user_has_department_membership(scope, user_id)
     repo.log_site_action(scope, user_id, "bootstrap")
     control_center.heartbeat("miniapp", "ok", "bootstrap")
@@ -1426,6 +1527,7 @@ def bootstrap(
         "can_manage": can_manage,
         "can_manage_departments": can_manage_departments,
         "is_system_admin": is_system_admin,
+        "is_tenant_admin": is_tenant_admin,
         "department_memberships": repo.user_department_memberships(scope, user_id),
         "work_access": _work_access_for_user(scope, user_id),
         "entity_codes": repo.list_entity_codes(scope) if is_system_admin else [],
@@ -1888,7 +1990,7 @@ def save_operational_event(
     payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
     _check_user(payload.chat_id, payload.user_id, submit=True)
     scope = repo.resolve_scope_chat_id(payload.chat_id)
-    if not repo.is_system_admin_id(payload.user_id) and not repo.user_has_department_membership(scope, payload.user_id):
+    if not repo.is_tenant_admin(scope, payload.user_id) and not repo.user_has_department_membership(scope, payload.user_id):
         raise HTTPException(status_code=403, detail="access denied")
     values = payload.model_dump()
     values["starts_at"] = values.get("starts_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2008,6 +2110,12 @@ def _create_operation_core(
         "source_channel": "mini",
         "task_id": payload.task_id,
         "lot_id": payload.lot_id,
+        "department_id": payload.department_id,
+        "from_department_id": payload.from_department_id,
+        "to_department_id": payload.to_department_id,
+        "storage_location_id": payload.storage_location_id,
+        "from_location_id": payload.from_location_id,
+        "to_location_id": payload.to_location_id,
     }
     try:
         saved = accounting.apply_operations(scope, payload.chat_id, payload.user_id, [op], raw_text=payload.note or "mini app")
@@ -2068,7 +2176,7 @@ def create_operation(
 
 
 def _package_review_recipients(scope: int, worker_user_id: int) -> list[int]:
-    recipients = set(repo.list_system_admin_ids())
+    recipients = set(repo.tenant_admin_user_ids(scope))
     rows = db.fetchall(
         """
         SELECT DISTINCT head.user_id
@@ -2307,7 +2415,7 @@ def create_shift_handover_api(
     if payload.to_user_id:
         _check_user(scope, int(payload.to_user_id))
         allowed_recipients = {int(item["id"]) for item in shift_continuity.handover_recipients(scope, from_user_id)}
-        if int(payload.to_user_id) not in allowed_recipients and not repo.is_system_admin_id(payload.user_id):
+        if int(payload.to_user_id) not in allowed_recipients and not repo.is_tenant_admin(scope, payload.user_id):
             raise HTTPException(status_code=403, detail="Получатель не относится к доступному рабочему контуру.")
     package_ids = list(payload.package_ids)
     if not package_ids:
@@ -2326,7 +2434,7 @@ def create_shift_handover_api(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     repo.log_site_action(scope, payload.user_id, "shift_handover_create", str(handover.get("id") or ""))
-    can_manage = repo.is_system_admin_id(payload.user_id) or repo.user_can_manage_departments(scope, payload.user_id)
+    can_manage = repo.is_tenant_admin(scope, payload.user_id) or repo.user_can_manage_departments(scope, payload.user_id)
     return {"message": "Передача смены сохранена.", "shift_handovers": shift_continuity.list_handovers(scope, payload.user_id, can_manage=can_manage)}
 
 
@@ -2340,7 +2448,7 @@ def acknowledge_shift_handover_api(
     payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
     _check_user(payload.chat_id, payload.user_id)
     scope = repo.resolve_scope_chat_id(payload.chat_id)
-    can_manage = repo.is_system_admin_id(payload.user_id) or repo.user_can_manage_departments(scope, payload.user_id)
+    can_manage = repo.is_tenant_admin(scope, payload.user_id) or repo.user_can_manage_departments(scope, payload.user_id)
     handover = shift_continuity.get_handover(payload.handover_id)
     if not shift_continuity.acknowledge_handover(scope, payload.handover_id, payload.user_id, can_manage=can_manage):
         raise HTTPException(status_code=403, detail="Передача не найдена или недоступна.")
@@ -2365,12 +2473,12 @@ def device_action_api(
     payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
     _check_user(payload.chat_id, payload.user_id)
     scope = repo.resolve_scope_chat_id(payload.chat_id)
-    if int(payload.target_user_id) != int(payload.user_id) and not repo.is_system_admin_id(payload.user_id):
+    if int(payload.target_user_id) != int(payload.user_id) and not repo.is_tenant_admin(scope, payload.user_id):
         raise HTTPException(status_code=403, detail="Управлять чужими устройствами может только владелец или полный администратор.")
     if payload.action == "revoke":
         ok = shift_continuity.revoke_device(payload.user_id, payload.target_user_id, payload.device_id, reason=payload.reason)
         message = "Доступ устройства отозван."
-    elif payload.action == "restore" and repo.is_system_admin_id(payload.user_id):
+    elif payload.action == "restore" and repo.is_tenant_admin(scope, payload.user_id):
         ok = shift_continuity.restore_device(payload.user_id, payload.target_user_id, payload.device_id)
         message = "Доступ устройства восстановлен."
     else:
@@ -2393,7 +2501,7 @@ def control_summary_api(
         raise HTTPException(status_code=403, detail="access denied")
     _check_user(chat_id, user_id)
     scope = repo.resolve_scope_chat_id(chat_id)
-    if not (repo.is_system_admin_id(user_id) or repo.user_can_manage_departments(scope, user_id)):
+    if not (repo.is_tenant_admin(scope, user_id) or repo.user_can_manage_departments(scope, user_id)):
         raise HTTPException(status_code=403, detail="Раздел доступен руководителям и администраторам.")
     return {"control_summary": control_center.control_summary(scope, user_id)}
 
@@ -2672,7 +2780,7 @@ def get_plans(
         raise HTTPException(status_code=403, detail="access denied")
     _check_user(chat_id, user_id)
     scope = repo.resolve_scope_chat_id(chat_id)
-    if repo.user_has_department_membership(scope, user_id) and not repo.is_system_admin_id(user_id):
+    if repo.user_has_department_membership(scope, user_id) and not repo.is_tenant_admin(chat_id, user_id):
         raise HTTPException(status_code=403, detail="access denied")
     return {"targets": repo.list_assembly_plan_targets(scope)}
 
@@ -2728,7 +2836,7 @@ def audit(
     _check_user(chat_id, user_id)
     scope = repo.resolve_scope_chat_id(chat_id)
     permissions = repo.user_permissions_current_context(scope, user_id)
-    if not repo.is_system_admin_id(user_id):
+    if not repo.is_tenant_admin(scope, user_id):
         raise HTTPException(status_code=403, detail="access denied")
     repo.log_site_action(scope, user_id, "audit")
     return {
@@ -2756,8 +2864,8 @@ def security_status(
     return {
         "protected_access": bool(settings.miniapp_api_token or x_telegram_init_data),
         "encrypted_backups": bool(settings.backup_encryption_key),
-        "can_download_backup": bool(permissions.get("setup") or permissions.get("export") or repo.is_global_owner_id(user_id)),
-        "can_restore_backup": bool(repo.is_global_owner_id(user_id) or (repo.get_account_by_scope(scope) and int(repo.get_account_by_scope(scope).owner_user_id) == int(user_id))),
+        "can_download_backup": bool(permissions.get("setup") or permissions.get("export") or repo.is_tenant_admin(scope, user_id)),
+        "can_restore_backup": bool(repo.is_tenant_admin(scope, user_id) or (repo.get_account_by_scope(scope) and int(repo.get_account_by_scope(scope).owner_user_id) == int(user_id))),
         "account_separated": True,
     }
 
@@ -2791,7 +2899,7 @@ def site_restore(
     _check_system_admin(payload.chat_id, payload.user_id)
     scope = repo.resolve_scope_chat_id(payload.chat_id)
     account = repo.get_account_by_scope(scope)
-    if not (repo.is_global_owner_id(payload.user_id) or (account and int(account.owner_user_id) == int(payload.user_id))):
+    if not (account and int(account.owner_user_id) == int(payload.user_id)):
         raise HTTPException(status_code=403, detail="restore owner only")
     if payload.confirmation.strip().upper() != "ВОССТАНОВИТЬ":
         raise HTTPException(status_code=400, detail="Введите слово ВОССТАНОВИТЬ.")
@@ -2817,9 +2925,9 @@ def make_report(
     _check_user(payload.chat_id, payload.user_id)
     scope = repo.resolve_scope_chat_id(payload.chat_id)
     permissions = repo.user_permissions_current_context(scope, payload.user_id)
-    if repo.user_has_department_membership(scope, payload.user_id) and not repo.is_system_admin_id(payload.user_id):
+    if repo.user_has_department_membership(scope, payload.user_id) and not repo.is_tenant_admin(scope, payload.user_id):
         raise HTTPException(status_code=403, detail="department reports are not available")
-    if not (permissions.get("reports") or permissions.get("export") or permissions.get("setup")) and not repo.is_global_owner_id(payload.user_id):
+    if not (permissions.get("reports") or permissions.get("export") or permissions.get("setup")) and not repo.is_tenant_admin(scope, payload.user_id):
         raise HTTPException(status_code=403, detail="access denied")
     access = repo.area_section_access_for_user(scope, payload.user_id, "reports")
     area_ids: set[int] | None = None
@@ -2961,7 +3069,7 @@ def department_member_save(
     ok, message = repo.save_department_member(scope, payload.user_id, payload.department_id, payload.member_user_id, payload.display_name, payload.role_level, payload.operation_keys)
     if not ok:
         raise HTTPException(status_code=403, detail=message)
-    return {"message": message, "departments": repo.list_departments(scope, None if repo.is_system_admin_id(payload.user_id) else payload.user_id)}
+    return {"message": message, "departments": repo.list_departments(scope, None if repo.is_tenant_admin(scope, payload.user_id) else payload.user_id)}
 
 
 @app.delete("/api/departments/member")
@@ -2979,7 +3087,7 @@ def department_member_delete(
     ok, message = repo.archive_department_member(scope, user_id, department_id, member_user_id)
     if not ok:
         raise HTTPException(status_code=403, detail=message)
-    return {"message": message, "departments": repo.list_departments(scope, None if repo.is_system_admin_id(user_id) else user_id)}
+    return {"message": message, "departments": repo.list_departments(scope, None if repo.is_tenant_admin(scope, user_id) else user_id)}
 
 
 @app.post("/api/job-titles")
@@ -3082,7 +3190,7 @@ def inventory_history(
     _check_user(chat_id, user_id)
     scope = repo.resolve_scope_chat_id(chat_id)
     permissions = repo.user_permissions_current_context(scope, user_id)
-    if not (permissions.get("stock") or permissions.get("edit") or permissions.get("setup") or permissions.get("reports")) and not repo.is_global_owner_id(user_id):
+    if not (permissions.get("stock") or permissions.get("edit") or permissions.get("setup") or permissions.get("reports")) and not repo.is_tenant_admin(scope, user_id):
         raise HTTPException(status_code=403, detail="access denied")
     if area_id is not None:
         area = repo.get_area(area_id)
@@ -3092,7 +3200,7 @@ def inventory_history(
             raise HTTPException(status_code=403, detail="area access denied")
     elif repo.area_section_access_for_user(scope, user_id, "inventory").get("restricted"):
         raise HTTPException(status_code=400, detail="area required")
-    if repo.user_has_department_membership(scope, user_id) and not repo.is_system_admin_id(user_id):
+    if repo.user_has_department_membership(scope, user_id) and not repo.is_tenant_admin(scope, user_id):
         if entity_id is None:
             raise HTTPException(status_code=400, detail="entity required")
         visible_ids = repo.visible_entity_ids_for_user(scope, user_id) or set()
@@ -3114,7 +3222,7 @@ def inventory_correction(
     _check_user(payload.chat_id, payload.user_id, submit=True)
     scope = repo.resolve_scope_chat_id(payload.chat_id)
     permissions = repo.user_permissions_current_context(scope, payload.user_id)
-    if not repo.is_global_owner_id(payload.user_id) and not (permissions.get("setup") or (permissions.get("stock") and permissions.get("edit"))):
+    if not repo.is_tenant_admin(scope, payload.user_id) and not (permissions.get("setup") or (permissions.get("stock") and permissions.get("edit"))):
         raise HTTPException(status_code=403, detail="access denied")
     if payload.actual_quantity < 0:
         raise HTTPException(status_code=400, detail="bad quantity")
@@ -3179,7 +3287,7 @@ def save_report_preset(
     _check_user(payload.chat_id, payload.user_id)
     scope = repo.resolve_scope_chat_id(payload.chat_id)
     permissions = repo.user_permissions_current_context(scope, payload.user_id)
-    if not (permissions.get("reports") or permissions.get("export") or permissions.get("setup")) and not repo.is_global_owner_id(payload.user_id):
+    if not (permissions.get("reports") or permissions.get("export") or permissions.get("setup")) and not repo.is_tenant_admin(scope, payload.user_id):
         raise HTTPException(status_code=403, detail="access denied")
     if payload.area_id is not None and not repo.user_area_action_allowed(scope, payload.user_id, "reports", payload.area_id, "view"):
         raise HTTPException(status_code=403, detail="area access denied")
@@ -3307,7 +3415,7 @@ def remove_area_access(
 
 
 def _inventory_session_permission(scope: int, user_id: int, area_id: int, action: str) -> None:
-    if repo.is_global_owner_id(user_id):
+    if repo.is_tenant_admin(scope, user_id):
         return
     permissions = repo.user_permissions_current_context(scope, user_id)
     if not permissions.get("stock"):
@@ -3319,7 +3427,7 @@ def _inventory_session_permission(scope: int, user_id: int, area_id: int, action
 def _deny_department_inventory_session_access(scope: int, user_id: int) -> None:
     # Массовый пересчёт содержит данные всего участка. Сотрудники отделов
     # работают только через разрешённые им позиции и не получают этот API.
-    if repo.user_has_department_membership(scope, user_id) and not repo.is_system_admin_id(user_id):
+    if repo.user_has_department_membership(scope, user_id) and not repo.is_tenant_admin(scope, user_id):
         raise HTTPException(status_code=403, detail="access denied")
 
 
@@ -3339,7 +3447,7 @@ def inventory_sessions_list(
     scope = repo.resolve_scope_chat_id(chat_id)
     _deny_department_inventory_session_access(scope, user_id)
     permissions = repo.user_permissions_current_context(scope, user_id)
-    if not repo.is_global_owner_id(user_id) and not (permissions.get("stock") or permissions.get("reports") or permissions.get("setup")):
+    if not repo.is_tenant_admin(scope, user_id) and not (permissions.get("stock") or permissions.get("reports") or permissions.get("setup")):
         raise HTTPException(status_code=403, detail="access denied")
     if session_id is not None:
         session = repo.get_inventory_session(scope, session_id)
@@ -3448,7 +3556,7 @@ def inventory_session_action(
         saved = 0
     elif action in {"approve", "reject"}:
         permissions = repo.user_permissions_current_context(scope, payload.user_id)
-        can_approve = repo.is_global_owner_id(payload.user_id) or repo.user_can_manage_current_context(scope, payload.user_id) or (permissions.get("stock") and permissions.get("edit"))
+        can_approve = repo.is_tenant_admin(scope, payload.user_id) or repo.user_can_manage_current_context(scope, payload.user_id) or (permissions.get("stock") and permissions.get("edit"))
         if not can_approve:
             raise HTTPException(status_code=403, detail="access denied")
         _inventory_session_permission(scope, payload.user_id, int(session["area_id"]), "edit")
@@ -3550,14 +3658,14 @@ def shift_start(
     target = int(payload.worker_user_id or payload.user_id)
     if target != int(payload.user_id) and not shift_continuity.can_review_worker_packages(scope, payload.user_id, target):
         raise HTTPException(status_code=403, detail="access denied")
-    if payload.area_id is not None and not repo.user_area_action_allowed(scope, target, "overview", payload.area_id, "view") and not repo.is_global_owner_id(payload.user_id):
+    if payload.area_id is not None and not repo.user_area_action_allowed(scope, target, "overview", payload.area_id, "view") and not repo.is_tenant_admin(scope, payload.user_id):
         raise HTTPException(status_code=403, detail="area access denied")
     ok, message, _shift_id = repo.start_worker_shift(scope, target, payload.area_id, payload.user_id, payload.note)
     if not ok:
         raise HTTPException(status_code=400, detail=message)
     repo.log_site_action(scope, payload.user_id, "shift_start", str(target))
     can_manage = repo.user_can_manage_current_context(scope, payload.user_id)
-    return {"message": message, "activity": repo.worker_activity_analytics(scope, 30, None if can_manage else payload.user_id), "shifts": repo.list_worker_shifts(scope, None if can_manage else payload.user_id), "current_open_shift": shift_continuity.current_open_shift(scope, payload.user_id), "shift_packages": _shift_packages_for_user(scope, payload.user_id), "shift_handovers": shift_continuity.list_handovers(scope, payload.user_id, can_manage=(repo.is_system_admin_id(payload.user_id) or repo.user_can_manage_departments(scope, payload.user_id))), "shift_plans": repo.list_shift_plans(scope, None if can_manage else payload.user_id), "attendance_deviations": repo.attendance_deviations(scope, None if can_manage else payload.user_id, 30)}
+    return {"message": message, "activity": repo.worker_activity_analytics(scope, 30, None if can_manage else payload.user_id), "shifts": repo.list_worker_shifts(scope, None if can_manage else payload.user_id), "current_open_shift": shift_continuity.current_open_shift(scope, payload.user_id), "shift_packages": _shift_packages_for_user(scope, payload.user_id), "shift_handovers": shift_continuity.list_handovers(scope, payload.user_id, can_manage=(repo.is_tenant_admin(scope, payload.user_id) or repo.user_can_manage_departments(scope, payload.user_id))), "shift_plans": repo.list_shift_plans(scope, None if can_manage else payload.user_id), "attendance_deviations": repo.attendance_deviations(scope, None if can_manage else payload.user_id, 30)}
 
 
 @app.post("/api/shifts/end")
@@ -3578,7 +3686,7 @@ def shift_end(
         raise HTTPException(status_code=400, detail=message)
     repo.log_site_action(scope, payload.user_id, "shift_end", str(target))
     can_manage = repo.user_can_manage_current_context(scope, payload.user_id)
-    return {"message": message, "activity": repo.worker_activity_analytics(scope, 30, None if can_manage else payload.user_id), "shifts": repo.list_worker_shifts(scope, None if can_manage else payload.user_id), "current_open_shift": shift_continuity.current_open_shift(scope, payload.user_id), "shift_packages": _shift_packages_for_user(scope, payload.user_id), "shift_handovers": shift_continuity.list_handovers(scope, payload.user_id, can_manage=(repo.is_system_admin_id(payload.user_id) or repo.user_can_manage_departments(scope, payload.user_id))), "shift_plans": repo.list_shift_plans(scope, None if can_manage else payload.user_id), "attendance_deviations": repo.attendance_deviations(scope, None if can_manage else payload.user_id, 30)}
+    return {"message": message, "activity": repo.worker_activity_analytics(scope, 30, None if can_manage else payload.user_id), "shifts": repo.list_worker_shifts(scope, None if can_manage else payload.user_id), "current_open_shift": shift_continuity.current_open_shift(scope, payload.user_id), "shift_packages": _shift_packages_for_user(scope, payload.user_id), "shift_handovers": shift_continuity.list_handovers(scope, payload.user_id, can_manage=(repo.is_tenant_admin(scope, payload.user_id) or repo.user_can_manage_departments(scope, payload.user_id))), "shift_plans": repo.list_shift_plans(scope, None if can_manage else payload.user_id), "attendance_deviations": repo.attendance_deviations(scope, None if can_manage else payload.user_id, 30)}
 
 
 # --- Планирование смен step67 ---
@@ -3593,7 +3701,7 @@ def shift_plan_save(
     payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
     _check_user(payload.chat_id, payload.user_id, manage=True)
     scope = repo.resolve_scope_chat_id(payload.chat_id)
-    if payload.area_id is not None and not repo.user_area_action_allowed(scope, payload.worker_user_id, "overview", payload.area_id, "view") and not repo.is_global_owner_id(payload.user_id):
+    if payload.area_id is not None and not repo.user_area_action_allowed(scope, payload.worker_user_id, "overview", payload.area_id, "view") and not repo.is_tenant_admin(scope, payload.user_id):
         raise HTTPException(status_code=403, detail="area access denied")
     ok, message, plan_id = repo.create_shift_plan(
         scope, payload.worker_user_id, payload.area_id, payload.planned_start, payload.planned_end, payload.user_id, payload.note
@@ -3642,7 +3750,7 @@ def shift_template_save(
     payload.user_id = _request_user(payload.user_id, auth_user_id) or payload.user_id
     _check_user(payload.chat_id, payload.user_id, manage=True)
     scope = repo.resolve_scope_chat_id(payload.chat_id)
-    if payload.area_id is not None and not repo.user_area_action_allowed(scope, payload.worker_user_id, "overview", payload.area_id, "view") and not repo.is_global_owner_id(payload.user_id):
+    if payload.area_id is not None and not repo.user_area_action_allowed(scope, payload.worker_user_id, "overview", payload.area_id, "view") and not repo.is_tenant_admin(scope, payload.user_id):
         raise HTTPException(status_code=403, detail="area access denied")
     ok, message, template_id = repo.save_shift_template(
         scope, payload.worker_user_id, payload.area_id, payload.pattern_type, payload.weekdays,
@@ -3793,7 +3901,7 @@ def report_schedule_save(
     _check_user(payload.chat_id, payload.user_id)
     scope = repo.resolve_scope_chat_id(payload.chat_id)
     permissions = repo.user_permissions_current_context(scope, payload.user_id)
-    if not repo.is_global_owner_id(payload.user_id) and not (permissions.get("reports") or permissions.get("export") or permissions.get("setup")):
+    if not repo.is_tenant_admin(scope, payload.user_id) and not (permissions.get("reports") or permissions.get("export") or permissions.get("setup")):
         raise HTTPException(status_code=403, detail="access denied")
     preset = repo.get_report_preset(scope, payload.user_id, payload.preset_id)
     if not preset:
@@ -3867,3 +3975,110 @@ def report_delivery_retry(
         raise HTTPException(status_code=400, detail=message)
     repo.log_site_action(scope, payload.user_id, "report_delivery_retry", str(history_id or ""))
     return {"message": message, "delivery_history": repo.list_report_delivery_history(scope, payload.user_id)}
+
+
+# ---------------- Step 82: company structure / transfers / Excel ----------
+@app.get("/api/company/structure")
+def company_structure_api(chat_id:int=Query(...), user_id:int|None=Query(None),
+    x_access_token:Annotated[str|None,Header()]=None,x_telegram_init_data:Annotated[str|None,Header()]=None)->dict[str,object]:
+    auth=_check_token(x_access_token,x_telegram_init_data);uid=_request_user(user_id,auth)
+    if uid is None:raise HTTPException(status_code=403,detail="access denied")
+    _check_user(chat_id,uid);scope=repo.resolve_scope_chat_id(chat_id)
+    areas=[]
+    for a in repo.list_areas(scope):
+        row=db.fetchone('SELECT site_id FROM areas WHERE id=? AND chat_id=?',(a.id,scope));areas.append({'id':a.id,'name':a.name,'site_id':row['site_id'] if row else None})
+    # This endpoint is used by the ordinary workplace and transfer forms. Never send
+    # department members/rules here: only neutral destination names are required.
+    departments=[dict(r) for r in db.fetchall("SELECT id,name FROM departments WHERE chat_id=? AND is_archived=0 ORDER BY name",(scope,))]
+    stock=repo.stock_location_breakdown(scope)
+    visible=repo.visible_entity_ids_for_user(scope,uid)
+    if visible is not None:
+        stock=[x for x in stock if int(x.get('entity_id') or 0) in visible]
+    return {'sites':repo.list_company_sites(scope),'areas':areas,'departments':departments,'storage_locations':repo.list_storage_locations(scope),'stock':stock}
+
+@app.post("/api/company/sites")
+def company_site_api(payload:CompanySitePayload,x_access_token:Annotated[str|None,Header()]=None,x_telegram_init_data:Annotated[str|None,Header()]=None)->dict[str,object]:
+    auth=_check_token(x_access_token,x_telegram_init_data);payload.user_id=_request_user(payload.user_id,auth) or payload.user_id
+    _check_system_admin(payload.chat_id,payload.user_id);ok,msg,site_id=repo.create_company_site(payload.chat_id,payload.user_id,payload.settlement,payload.name,payload.address)
+    if not ok:raise HTTPException(status_code=400,detail=msg)
+    return {'message':msg,'site_id':site_id,'sites':repo.list_company_sites(payload.chat_id)}
+
+@app.post("/api/company/area-site")
+def area_site_api(payload:AreaSitePayload,x_access_token:Annotated[str|None,Header()]=None,x_telegram_init_data:Annotated[str|None,Header()]=None)->dict[str,object]:
+    auth=_check_token(x_access_token,x_telegram_init_data);payload.user_id=_request_user(payload.user_id,auth) or payload.user_id
+    _check_system_admin(payload.chat_id,payload.user_id);ok,msg=repo.bind_area_to_site(payload.chat_id,payload.user_id,payload.area_id,payload.site_id)
+    if not ok:raise HTTPException(status_code=400,detail=msg)
+    return {'message':msg}
+
+@app.post("/api/company/storage-locations")
+def storage_location_api(payload:StorageLocationPayload,x_access_token:Annotated[str|None,Header()]=None,x_telegram_init_data:Annotated[str|None,Header()]=None)->dict[str,object]:
+    auth=_check_token(x_access_token,x_telegram_init_data);payload.user_id=_request_user(payload.user_id,auth) or payload.user_id
+    _check_system_admin(payload.chat_id,payload.user_id);ok,msg,lid=repo.create_storage_location(payload.chat_id,payload.user_id,payload.name,payload.site_id,payload.area_id,payload.department_id,payload.code)
+    if not ok:raise HTTPException(status_code=400,detail=msg)
+    return {'message':msg,'location_id':lid,'storage_locations':repo.list_storage_locations(payload.chat_id)}
+
+@app.get("/api/stock/locations")
+def stock_locations_api(chat_id:int=Query(...),user_id:int|None=Query(None),entity_type:str|None=Query(None),entity_id:int|None=Query(None),x_access_token:Annotated[str|None,Header()]=None,x_telegram_init_data:Annotated[str|None,Header()]=None)->dict[str,object]:
+    auth=_check_token(x_access_token,x_telegram_init_data);uid=_request_user(user_id,auth)
+    if uid is None:raise HTTPException(status_code=403,detail='access denied')
+    _check_user(chat_id,uid);scope=repo.resolve_scope_chat_id(chat_id)
+    rows=repo.stock_location_breakdown(scope,entity_type,entity_id);visible=repo.visible_entity_ids_for_user(scope,uid)
+    if visible is not None:rows=[x for x in rows if int(x.get('entity_id') or 0) in visible]
+    return {'stock':rows}
+
+@app.get("/api/transfers")
+def transfers_api(chat_id:int=Query(...),user_id:int|None=Query(None),status:str|None=Query(None),x_access_token:Annotated[str|None,Header()]=None,x_telegram_init_data:Annotated[str|None,Header()]=None)->dict[str,object]:
+    auth=_check_token(x_access_token,x_telegram_init_data);uid=_request_user(user_id,auth)
+    if uid is None:raise HTTPException(status_code=403,detail='access denied')
+    _check_user(chat_id,uid)
+    try:return {'transfers':stock_transfers.list_transfers(chat_id,uid,status)}
+    except PermissionError as exc:raise HTTPException(status_code=403,detail=str(exc))
+
+@app.post("/api/transfers")
+def create_transfer_api(payload:TransferCreatePayload,x_access_token:Annotated[str|None,Header()]=None,x_telegram_init_data:Annotated[str|None,Header()]=None)->dict[str,object]:
+    auth=_check_token(x_access_token,x_telegram_init_data);payload.user_id=_request_user(payload.user_id,auth) or payload.user_id;_check_user(payload.chat_id,payload.user_id,submit=True)
+    try:t=stock_transfers.create_transfer(payload.chat_id,payload.user_id,from_area_id=payload.from_area_id,to_area_id=payload.to_area_id,from_department_id=payload.from_department_id,to_department_id=payload.to_department_id,from_location_id=payload.from_location_id,to_location_id=payload.to_location_id,note=payload.note,items=[x.model_dump() for x in payload.items])
+    except PermissionError as exc:raise HTTPException(status_code=403,detail=str(exc))
+    except ValueError as exc:raise HTTPException(status_code=400,detail=str(exc))
+    return {'message':'Передача создана. Остаток получателя изменится только после приёмки.','transfer':t,'transfers':stock_transfers.list_transfers(payload.chat_id,payload.user_id)}
+
+@app.post("/api/transfers/accept")
+def accept_transfer_api(payload:TransferAcceptPayload,x_access_token:Annotated[str|None,Header()]=None,x_telegram_init_data:Annotated[str|None,Header()]=None)->dict[str,object]:
+    auth=_check_token(x_access_token,x_telegram_init_data);payload.user_id=_request_user(payload.user_id,auth) or payload.user_id;_check_user(payload.chat_id,payload.user_id,submit=True)
+    try:t=stock_transfers.accept_transfer(payload.chat_id,payload.user_id,payload.transfer_id,[x.model_dump() for x in payload.items],payload.note)
+    except PermissionError as exc:raise HTTPException(status_code=403,detail=str(exc))
+    except ValueError as exc:raise HTTPException(status_code=400,detail=str(exc))
+    return {'message':'Передача принята. Остатки перемещены.','transfer':t,'transfers':stock_transfers.list_transfers(payload.chat_id,payload.user_id)}
+
+@app.post("/api/excel/import/analyze")
+async def excel_analyze_api(chat_id:int=Form(...),user_id:int=Form(...),file:UploadFile=File(...),x_access_token:Annotated[str|None,Header()]=None,x_telegram_init_data:Annotated[str|None,Header()]=None)->dict[str,object]:
+    auth=_check_token(x_access_token,x_telegram_init_data);uid=_request_user(user_id,auth) or user_id;_check_system_admin(chat_id,uid)
+    data=await file.read()
+    try:return excel_bridge.analyze_bytes(chat_id,uid,data,file.filename or 'import.xlsx')
+    except (ValueError,PermissionError) as exc:raise HTTPException(status_code=400,detail=str(exc))
+
+@app.get("/api/excel/import/preview")
+def excel_preview_api(chat_id:int=Query(...),user_id:int|None=Query(None),batch_id:str=Query(...),x_access_token:Annotated[str|None,Header()]=None,x_telegram_init_data:Annotated[str|None,Header()]=None)->dict[str,object]:
+    auth=_check_token(x_access_token,x_telegram_init_data);uid=_request_user(user_id,auth)
+    if uid is None:raise HTTPException(status_code=403,detail='access denied')
+    _check_system_admin(chat_id,uid)
+    try:return excel_bridge.get_preview(chat_id,uid,batch_id)
+    except Exception as exc:raise HTTPException(status_code=400,detail=str(exc))
+
+@app.post("/api/excel/import/confirm")
+def excel_confirm_api(payload:ExcelConfirmPayload,x_access_token:Annotated[str|None,Header()]=None,x_telegram_init_data:Annotated[str|None,Header()]=None)->dict[str,object]:
+    auth=_check_token(x_access_token,x_telegram_init_data);payload.user_id=_request_user(payload.user_id,auth) or payload.user_id;_check_system_admin(payload.chat_id,payload.user_id)
+    try:return excel_bridge.confirm_import(payload.chat_id,payload.user_id,payload.batch_id,payload.create_missing)
+    except Exception as exc:raise HTTPException(status_code=400,detail=str(exc))
+
+@app.post("/api/excel/import/cancel")
+def excel_cancel_api(payload:ExcelConfirmPayload,x_access_token:Annotated[str|None,Header()]=None,x_telegram_init_data:Annotated[str|None,Header()]=None)->dict[str,object]:
+    auth=_check_token(x_access_token,x_telegram_init_data);payload.user_id=_request_user(payload.user_id,auth) or payload.user_id;_check_system_admin(payload.chat_id,payload.user_id);excel_bridge.cancel_import(payload.chat_id,payload.user_id,payload.batch_id);return {'message':'Импорт отменён.'}
+
+@app.get("/api/reports/location-ledger.xlsx")
+def location_ledger_api(chat_id:int=Query(...),user_id:int|None=Query(None),entity_type:str=Query('component'),date_from:str=Query(''),date_to:str=Query(''),x_access_token:Annotated[str|None,Header()]=None,x_telegram_init_data:Annotated[str|None,Header()]=None):
+    auth=_check_token(x_access_token,x_telegram_init_data);uid=_request_user(user_id,auth)
+    if uid is None:raise HTTPException(status_code=403,detail='access denied')
+    _check_user(chat_id,uid)
+    data=excel_bridge.build_location_ledger_xlsx(chat_id,uid,entity_type,date_from,date_to)
+    return StreamingResponse(io.BytesIO(data),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="uchet_{entity_type}.xlsx"'})

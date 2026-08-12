@@ -34,7 +34,7 @@ def build_rows(chat_id:int,user_id:int,*,start_date:str|None=None,end_date:str|N
     rows=[]
     for tr in tasks:
         t=dict(tr)
-        if not repo.is_system_admin_id(user_id) and int(repo.department_actor_level(int(t["department_id"]),user_id) or 0)<10:continue
+        if not repo.is_tenant_admin(scope, user_id) and int(repo.department_actor_level(int(t["department_id"]),user_id) or 0)<10:continue
         comps=db.fetchall("SELECT pc.component_id,pc.quantity,e.name,e.default_unit FROM product_components pc JOIN entities e ON e.id=pc.component_id WHERE pc.product_id=?",(int(t["entity_id"]),))
         requirements=[dict(c) for c in comps]
         # Also include direct yield rule for materials tied to this planned output.

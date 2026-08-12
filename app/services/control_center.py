@@ -53,7 +53,7 @@ def get_sla_settings(chat_id: int) -> dict[str, Any]:
 
 def save_sla_settings(chat_id: int, actor_user_id: int, values: dict[str, Any]) -> dict[str, Any]:
     scope = _scope(chat_id)
-    if not repo.is_system_admin_id(actor_user_id):
+    if not repo.is_tenant_admin(scope, actor_user_id):
         raise PermissionError('Настраивать SLA может только владелец или полный администратор.')
     package = max(5, min(int(values.get('package_sla_minutes') or 120), 10080))
     handover = max(5, min(int(values.get('handover_sla_minutes') or 60), 10080))
@@ -104,7 +104,7 @@ def list_decisions(chat_id: int, user_id: int, limit: int = 100) -> list[dict[st
         '''SELECT * FROM supervisor_decisions WHERE chat_id=? ORDER BY id DESC LIMIT ?''',
         (scope, max(1, min(int(limit), 500))),
     )]
-    if repo.is_system_admin_id(user_id):
+    if repo.is_tenant_admin(scope, user_id):
         return rows
     if not repo.user_can_manage_departments(scope, user_id):
         return []
@@ -120,7 +120,7 @@ def list_decisions(chat_id: int, user_id: int, limit: int = 100) -> list[dict[st
 
 def _managed_worker_ids(chat_id: int, user_id: int) -> set[int] | None:
     scope = _scope(chat_id)
-    if repo.is_system_admin_id(user_id):
+    if repo.is_tenant_admin(scope, user_id):
         return None
     rows = db.fetchall(
         '''SELECT DISTINCT worker.user_id
@@ -136,7 +136,7 @@ def _managed_worker_ids(chat_id: int, user_id: int) -> set[int] | None:
 def workspace_profile(chat_id: int, user_id: int) -> dict[str, Any]:
     scope = _scope(chat_id)
     memberships = repo.user_department_memberships(scope, user_id)
-    if repo.is_system_admin_id(user_id):
+    if repo.is_tenant_admin(scope, user_id):
         return {
             'role': 'admin', 'label': 'Полный контроль', 'home_tab': 'control',
             'primary_tabs': ['control', 'work', 'overview', 'risks', 'shifts', 'inbox', 'departments', 'reports', 'security'],
@@ -188,7 +188,7 @@ def control_summary(chat_id: int, user_id: int, now: datetime | None = None) -> 
             'review_count': int(p.get('review_count') or 0), 'error_count': int(p.get('error_count') or 0)+int(p.get('rejected_count') or 0),
         })
 
-    can_manage = repo.is_system_admin_id(user_id) or repo.user_can_manage_departments(scope, user_id)
+    can_manage = repo.is_tenant_admin(scope, user_id) or repo.user_can_manage_departments(scope, user_id)
     handovers = shift_continuity.list_handovers(scope, user_id, can_manage=can_manage, limit=200)
     if managed is not None:
         handovers = [x for x in handovers if int(x.get('from_user_id') or 0) in managed or int(x.get('to_user_id') or 0) in managed]
@@ -240,7 +240,7 @@ def control_summary(chat_id: int, user_id: int, now: datetime | None = None) -> 
 
 
 def _breach_recipients(scope: int, target_type: str, row: dict[str, Any]) -> set[int]:
-    recipients = set(repo.list_system_admin_ids())
+    recipients = set(repo.tenant_admin_user_ids(scope))
     worker = 0
     if target_type == 'package':
         worker = int(row.get('user_id') or 0)
@@ -268,7 +268,7 @@ def queue_sla_breach_notifications(now: datetime | None = None) -> int:
             if _age_minutes(started, now) <= sla:
                 continue
             target_id = int(row['id'])
-            recipients = _breach_recipients(scope, kind, row) if kind != 'critical_alert' else set(repo.list_system_admin_ids())
+            recipients = _breach_recipients(scope, kind, row) if kind != 'critical_alert' else set(repo.tenant_admin_user_ids(scope))
             for uid in recipients:
                 exists = db.fetchone('SELECT id FROM sla_breach_notifications WHERE chat_id=? AND target_type=? AND target_id=? AND recipient_user_id=?', (scope, kind, target_id, uid))
                 if exists:
@@ -296,7 +296,7 @@ def heartbeat(service_key: str, status: str = 'ok', details: str = '') -> None:
 
 def diagnostics_snapshot(chat_id: int, user_id: int) -> dict[str, Any]:
     scope = _scope(chat_id)
-    if not repo.is_system_admin_id(user_id):
+    if not repo.is_tenant_admin(scope, user_id):
         raise PermissionError('Диагностика доступна только владельцу или полному администратору.')
     db_status = 'ok'
     db_message = 'ok'
@@ -333,8 +333,8 @@ def diagnostics_snapshot(chat_id: int, user_id: int) -> dict[str, Any]:
         latest_backup = {'name': b.name, 'size': b.stat().st_size, 'modified_at': datetime.fromtimestamp(b.stat().st_mtime).isoformat(timespec='seconds')}
     db_files = db.database_file_state()
     device_rows = [dict(r) for r in db.fetchall(
-        "SELECT * FROM miniapp_devices WHERE last_chat_id=? OR user_id=? ORDER BY last_seen_at DESC LIMIT 200",
-        (scope, int(settings.primary_owner_id)),
+        "SELECT * FROM miniapp_devices WHERE last_chat_id=? ORDER BY last_seen_at DESC LIMIT 200",
+        (scope,),
     )]
     now_dt = datetime.now()
     sync_devices = {"total": len(device_rows), "recent": 0, "stale": 0, "with_pending": 0, "pending_total": 0, "with_errors": 0}

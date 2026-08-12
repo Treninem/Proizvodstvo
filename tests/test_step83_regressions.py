@@ -154,6 +154,7 @@ class Step83RegressionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "уже обработана"):
                 stock_transfers.accept_transfer(-100, 55, 5)
 
+
     def test_replenishment_rejects_foreign_source_rule(self):
         entity = {"id": 10, "entity_type": "stock_item", "default_unit": "шт", "name": "Тест"}
         def fake_fetchone(sql, params=()):

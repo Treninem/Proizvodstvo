@@ -5,7 +5,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from .config import settings
 
 
-MINI_UI_VERSION = "20260811b"
+MINI_UI_VERSION = "20260812a"
 
 def miniapp_url(user_id: int | None = None) -> str:
     """Return a Mini App URL pinned to the account currently selected in private bot chat."""
@@ -56,25 +56,23 @@ ENTITY_LABELS: dict[str, str] = {
 
 def main_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
+    can_manage = False
     try:
         from .services import repository as repo
-        has_full_access = repo.is_global_owner_id(user_id)
+        can_manage = bool(user_id and repo.user_can_manage_current_context(int(user_id), int(user_id)))
     except Exception:
-        has_full_access = bool(user_id and settings.primary_owner_id and int(user_id) == int(settings.primary_owner_id))
-    if has_full_access:
-        rows.extend([
-            [InlineKeyboardButton(text="Настроить учёт", callback_data="menu:setup")],
-            [InlineKeyboardButton(text="Группы", callback_data="menu:chats")],
-            [InlineKeyboardButton(text="Склад", callback_data="menu:stock"), InlineKeyboardButton(text="Отчёты", callback_data="menu:reports")],
-            [InlineKeyboardButton(text="Работники", callback_data="menu:workers")],
-        ])
+        pass
+    if can_manage:
+        rows.extend([[InlineKeyboardButton(text="Настроить организацию", callback_data="menu:setup")],[InlineKeyboardButton(text="Мои рабочие группы", callback_data="menu:chats")],[InlineKeyboardButton(text="Склад", callback_data="menu:stock"), InlineKeyboardButton(text="Отчёты", callback_data="menu:reports")],[InlineKeyboardButton(text="Сотрудники", callback_data="menu:workers")]])
     if settings.public_base_url:
-        rows.append([InlineKeyboardButton(
-            text="Открыть рабочую панель",
-            web_app=WebAppInfo(url=miniapp_url(user_id)),
-        )])
+        rows.append([InlineKeyboardButton(text="Открыть рабочую панель", web_app=WebAppInfo(url=miniapp_url(user_id)))])
     rows.append([InlineKeyboardButton(text="Мои последние записи", callback_data="menu:recent")])
     rows.append([InlineKeyboardButton(text="Как пользоваться", callback_data="menu:help")])
+    try:
+        from .services import repository as repo
+        if repo.is_primary_owner_id(user_id): rows.append([InlineKeyboardButton(text="🔐 Системное меню", callback_data="owner:panel")])
+    except Exception:
+        pass
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

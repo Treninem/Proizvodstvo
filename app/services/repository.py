@@ -147,15 +147,8 @@ def revoke_system_admin(actor_user_id: int, target_user_id: int) -> tuple[bool, 
 
 
 def is_global_owner_id(user_id: int | None) -> bool:
-    if not user_id:
-        return False
-    if is_primary_owner_id(user_id):
-        return True
-    try:
-        row = db.fetchone("SELECT 1 FROM system_admins WHERE user_id=? AND is_active=1", (int(user_id),))
-        return bool(row)
-    except Exception:
-        return False
+    """Platform/root owner only. Never implies tenant membership."""
+    return is_primary_owner_id(user_id)
 
 
 def get_active_account(chat_id: int) -> AccountingAccount | None:
@@ -271,7 +264,10 @@ def list_accounts_for_user(user_id: int, chat_id: int | None = None, include_acc
                 seen.add(acc.id)
         if chat_id is not None:
             for acc in list_accounts_for_chat(chat_id):
-                if acc.id not in seen:
+                # A chat link alone must never reveal another tenant to a user.
+                # The user needs explicit tenant access (group creators receive it
+                # when their accounting context is initialized).
+                if acc.id not in seen and user_has_account_access(acc.id, user_id):
                     accounts.append(acc)
                     seen.add(acc.id)
     return accounts
@@ -446,8 +442,7 @@ def attach_chat_to_account(account_id: int, chat_id: int, can_manage: bool = Fal
 
 
 def user_has_account_access(account_id: int, user_id: int | None, require_manage: bool = False) -> bool:
-    if is_global_owner_id(user_id):
-        return True
+    # Ordinary bot/Mini App access is always tenant-scoped, even for platform owner.
     if not user_id:
         return False
     account = get_account_by_id(account_id)
@@ -486,8 +481,6 @@ def grant_account_user_access(account_id: int, user_id: int, job_title_id: int |
 
 
 def user_can_manage_current_context(chat_id: int, user_id: int | None) -> bool:
-    if is_global_owner_id(user_id):
-        return True
     account = get_active_account(chat_id)
     if account:
         return user_has_account_access(account.id, user_id, require_manage=True)
@@ -496,8 +489,6 @@ def user_can_manage_current_context(chat_id: int, user_id: int | None) -> bool:
 
 
 def user_permissions_current_context(chat_id: int, user_id: int | None) -> dict[str, bool]:
-    if is_global_owner_id(user_id):
-        return full_permissions()
     account = get_active_account(chat_id)
     if account and user_id:
         if account.owner_user_id == user_id:
@@ -1339,8 +1330,6 @@ def list_known_group_chats(limit: int = 200) -> list[dict]:
 
 
 def user_has_manage_access_to_chat(chat_id: int, user_id: int | None) -> bool:
-    if is_global_owner_id(user_id):
-        return True
     if not user_id:
         return False
     rows = db.fetchall(
@@ -1442,7 +1431,7 @@ def owner_account_report(account_id: int) -> str:
 
 
 def set_user_test_mode(user_id: int, enabled: bool) -> None:
-    if not is_global_owner_id(user_id):
+    if not is_primary_owner_id(user_id):
         return
     db.execute(
         """
@@ -1457,7 +1446,7 @@ def set_user_test_mode(user_id: int, enabled: bool) -> None:
 
 
 def is_user_test_mode_enabled(user_id: int | None) -> bool:
-    if not is_global_owner_id(user_id):
+    if not is_primary_owner_id(user_id):
         return False
     row = db.fetchone("SELECT is_enabled FROM user_test_modes WHERE user_id=?", (user_id,))
     return bool(row and row["is_enabled"])
@@ -1858,9 +1847,9 @@ def delete_area_section_access(chat_id: int, job_title_id: int, area_id: int, se
 
 def area_section_access_for_user(chat_id: int, user_id: int | None, section_key: str) -> dict[str, object]:
     scope = resolve_scope_chat_id(chat_id)
-    if is_global_owner_id(user_id):
-        return {"restricted": False, "view": None, "submit": None, "edit": None}
     account = get_account_by_scope(scope)
+    if is_tenant_admin(scope, user_id):
+        return {"restricted": False, "view": None, "submit": None, "edit": None}
     if account and user_id and account.owner_user_id == int(user_id):
         return {"restricted": False, "view": None, "submit": None, "edit": None}
     job_id = current_user_job_title_id(scope, user_id)
@@ -1912,8 +1901,6 @@ def area_access_map_for_user(chat_id: int, user_id: int | None) -> dict[str, dic
 
 # Учитываем прямой scope учёта при обращении сайта.
 def user_can_manage_current_context(chat_id: int, user_id: int | None) -> bool:
-    if is_global_owner_id(user_id):
-        return True
     scope = resolve_scope_chat_id(chat_id)
     account = get_active_account(chat_id) or get_account_by_scope(scope)
     if account:
@@ -1923,8 +1910,6 @@ def user_can_manage_current_context(chat_id: int, user_id: int | None) -> bool:
 
 
 def user_permissions_current_context(chat_id: int, user_id: int | None) -> dict[str, bool]:
-    if is_global_owner_id(user_id):
-        return full_permissions()
     scope = resolve_scope_chat_id(chat_id)
     account = get_active_account(chat_id) or get_account_by_scope(scope)
     if account and user_id:
@@ -2778,7 +2763,7 @@ REPORT_DELIVERY_STATUSES = {"queued", "running", "sent", "error"}
 
 def _approval_recipient_ids(chat_id: int, area_id: int | None = None) -> list[int]:
     scope = resolve_scope_chat_id(chat_id)
-    recipients: set[int] = set(list_system_admin_ids())
+    recipients: set[int] = set(tenant_admin_user_ids(scope))
     account = get_account_by_scope(scope)
     if account:
         recipients.add(int(account.owner_user_id))
@@ -2805,7 +2790,7 @@ def _approval_recipient_ids(chat_id: int, area_id: int | None = None) -> list[in
             recipients.add(int(row["user_id"]))
     result = []
     for user_id in sorted(recipients):
-        if area_id is not None and not is_global_owner_id(user_id):
+        if area_id is not None and not is_tenant_admin(scope, user_id):
             if not user_area_action_allowed(scope, user_id, "inventory", int(area_id), "edit"):
                 continue
         result.append(user_id)
@@ -2870,7 +2855,7 @@ def queue_inventory_approval_notifications(chat_id: int, session_id: int) -> int
         return 0
     created = 0
     for user_id in _approval_recipient_ids(scope, int(session["area_id"])):
-        if int(user_id) == int(session.get("created_by") or 0) and not is_global_owner_id(user_id):
+        if int(user_id) == int(session.get("created_by") or 0) and not is_tenant_admin(scope, user_id):
             continue
         create_inbox_item(
             scope,
@@ -3315,7 +3300,7 @@ def save_shift_template(
     scope = resolve_scope_chat_id(chat_id)
     worker = db.fetchone("SELECT is_active FROM workers WHERE chat_id=? AND user_id=?", (scope, int(user_id)))
     account = get_account_by_scope(scope)
-    if not worker and not (account and int(account.owner_user_id) == int(user_id)) and not is_global_owner_id(user_id):
+    if not worker and not (account and int(account.owner_user_id) == int(user_id)) and not is_tenant_admin(scope, user_id):
         return False, "Сотрудник не найден.", None
     if worker and not bool(worker["is_active"]):
         return False, "Сотрудник отключён.", None
@@ -3636,7 +3621,7 @@ def queue_overdue_inventory_approval_escalations(now: datetime | None = None) ->
         except ValueError: continue
         elapsed=max(0,(now-submitted).total_seconds()/60)
         for recipient in _approval_recipient_ids(int(session["chat_id"]), int(session["area_id"])):
-            if int(recipient)==int(session.get("created_by") or 0) and not is_global_owner_id(recipient): continue
+            if int(recipient)==int(session.get("created_by") or 0) and not is_tenant_admin(int(session["chat_id"]), recipient): continue
             prefs=get_notification_preferences(int(session["chat_id"]),recipient)
             if not prefs.get("approval_reminders_enabled",True): continue
             max_level=max(0,int(prefs.get("max_reminders") or 0))
@@ -3682,7 +3667,8 @@ DEPARTMENT_ROLE_NAMES = {10: "Просмотр", 20: "Ввод данных", 30
 
 
 def is_system_admin_id(user_id: int | None) -> bool:
-    return is_global_owner_id(user_id)
+    """Platform-level owner only. Tenant admins are separate."""
+    return is_primary_owner_id(user_id)
 
 
 def _department_scope(chat_id: int) -> int:
@@ -3698,7 +3684,7 @@ def list_departments(chat_id: int, user_id: int | None = None, *, manageable_onl
     scope = _department_scope(chat_id)
     params: list[object] = [scope]
     where = ["d.chat_id=?", "d.is_archived=0"]
-    if user_id is not None and not is_system_admin_id(user_id):
+    if user_id is not None and not is_tenant_admin(scope, user_id):
         where.append("EXISTS(SELECT 1 FROM department_members dm WHERE dm.department_id=d.id AND dm.user_id=? AND dm.is_active=1" + (" AND dm.role_level>=50" if manageable_only else "") + ")")
         params.append(int(user_id))
     rows = db.fetchall(
@@ -3723,8 +3709,8 @@ def list_departments(chat_id: int, user_id: int | None = None, *, manageable_onl
 
 def save_department(chat_id: int, actor_user_id: int, name: str, description: str = "", department_id: int | None = None) -> tuple[bool, str, int | None]:
     scope = _department_scope(chat_id)
-    if not is_system_admin_id(actor_user_id):
-        return False, "Создавать и изменять отделы может только администратор.", None
+    if not is_tenant_admin(scope, actor_user_id):
+        return False, "Создавать и изменять отделы может только администратор фирмы.", None
     clean_name = (name or "").strip()
     key = normalize_key(clean_name)
     if not key:
@@ -3753,7 +3739,7 @@ def save_department(chat_id: int, actor_user_id: int, name: str, description: st
 
 def _disable_department_only_account_access(scope: int, user_id: int) -> None:
     """Закрывает доступ, выданный только через отдел, если активных отделов больше нет."""
-    if is_system_admin_id(user_id):
+    if is_tenant_admin(scope, user_id):
         return
     remaining = db.fetchone(
         """
@@ -3783,8 +3769,8 @@ def _disable_department_only_account_access(scope: int, user_id: int) -> None:
 
 def archive_department(chat_id: int, actor_user_id: int, department_id: int) -> tuple[bool, str]:
     scope = _department_scope(chat_id)
-    if not is_system_admin_id(actor_user_id):
-        return False, "Удалять отдел может только администратор."
+    if not is_tenant_admin(scope, actor_user_id):
+        return False, "Удалять отдел может только администратор фирмы."
     row = db.fetchone("SELECT id,normalized FROM departments WHERE id=? AND chat_id=? AND is_archived=0", (int(department_id), scope))
     if not row:
         return False, "Отдел не найден."
@@ -3805,8 +3791,8 @@ def set_department_operation_rule(chat_id: int, actor_user_id: int, department_i
     operation_key = (operation_key or "").strip()
     if not department or int(department["chat_id"]) != scope:
         return False, "Отдел не найден."
-    if not is_system_admin_id(actor_user_id):
-        return False, "Настраивать возможности отдела может только администратор."
+    if not is_tenant_admin(scope, actor_user_id):
+        return False, "Настраивать возможности отдела может только администратор фирмы."
     if operation_key not in DEPARTMENT_OPERATION_KEYS:
         return False, "Неизвестное действие."
     view = bool(can_view or can_submit or can_edit)
@@ -3824,9 +3810,9 @@ def set_department_operation_rule(chat_id: int, actor_user_id: int, department_i
 
 
 def delete_department_operation_rule(chat_id: int, actor_user_id: int, department_id: int, operation_key: str) -> tuple[bool, str]:
-    if not is_system_admin_id(actor_user_id):
-        return False, "Настраивать возможности отдела может только администратор."
     scope = _department_scope(chat_id)
+    if not is_tenant_admin(scope, actor_user_id):
+        return False, "Настраивать возможности отдела может только администратор фирмы."
     department = _department_row(department_id)
     if not department or int(department["chat_id"]) != scope:
         return False, "Отдел не найден."
@@ -3853,8 +3839,8 @@ def set_department_entity_rule(chat_id: int, actor_user_id: int, department_id: 
     department = _department_row(department_id)
     if not department or int(department["chat_id"]) != scope:
         return False, "Отдел не найден."
-    if not is_system_admin_id(actor_user_id):
-        return False, "Назначать позиции отделу может только администратор."
+    if not is_tenant_admin(scope, actor_user_id):
+        return False, "Назначать позиции отделу может только администратор фирмы."
     operation_key = (operation_key or "").strip()
     if operation_key not in DEPARTMENT_OPERATION_KEYS:
         return False, "Неизвестное действие."
@@ -3874,9 +3860,9 @@ def set_department_entity_rule(chat_id: int, actor_user_id: int, department_id: 
 
 
 def delete_department_entity_rule(chat_id: int, actor_user_id: int, department_id: int, operation_key: str, entity_id: int) -> tuple[bool, str]:
-    if not is_system_admin_id(actor_user_id):
-        return False, "Назначать позиции отделу может только администратор."
     scope = _department_scope(chat_id)
+    if not is_tenant_admin(scope, actor_user_id):
+        return False, "Назначать позиции отделу может только администратор фирмы."
     department = _department_row(department_id)
     if not department or int(department["chat_id"]) != scope:
         return False, "Отдел не найден."
@@ -3904,7 +3890,8 @@ def _member_row(department_id: int, user_id: int) -> dict | None:
 
 
 def department_actor_level(department_id: int, user_id: int | None) -> int:
-    if is_system_admin_id(user_id):
+    department=_department_row(department_id)
+    if department and is_tenant_admin(int(department["chat_id"]), user_id):
         return 100
     if not user_id:
         return 0
@@ -3939,7 +3926,7 @@ def save_department_member(chat_id: int, actor_user_id: int, department_id: int,
         return False, "Укажите Telegram ID сотрудника."
     allowed_department_ops = {str(r["operation_key"]) for r in list_department_operation_rules(department_id)}
     cleaned_ops = {str(x) for x in (operation_keys or []) if str(x) in allowed_department_ops}
-    if not is_system_admin_id(actor_user_id):
+    if not is_tenant_admin(scope, actor_user_id):
         actor = _member_row(department_id, actor_user_id)
         actor_subset = _member_operation_subset(actor)
         if actor_subset is not None:
@@ -3983,7 +3970,7 @@ def archive_department_member(chat_id: int, actor_user_id: int, department_id: i
         return False, "Доступ не найден."
     if int(target.get("role_level") or 0) > actor_level:
         return False, "Нельзя отключить сотрудника с более высоким уровнем."
-    if int(member_user_id) == int(actor_user_id) and not is_system_admin_id(actor_user_id):
+    if int(member_user_id) == int(actor_user_id) and not is_tenant_admin(scope, actor_user_id):
         return False, "Руководитель не может отключить собственный доступ."
     db.execute("UPDATE department_members SET is_active=0,updated_at=CURRENT_TIMESTAMP WHERE department_id=? AND user_id=?", (int(department_id), int(member_user_id)))
     _disable_department_only_account_access(scope, int(member_user_id))
@@ -4018,7 +4005,7 @@ def user_has_department_membership(chat_id: int, user_id: int | None) -> bool:
 
 
 def department_operation_allowed(chat_id: int, user_id: int | None, operation_key: str, action: str = "view", entity_type: str | None = None, entity_id: int | None = None) -> bool | None:
-    if is_system_admin_id(user_id):
+    if is_tenant_admin(chat_id, user_id):
         return True
     memberships = user_department_memberships(chat_id, user_id)
     if not memberships:
@@ -4053,7 +4040,7 @@ def department_operation_allowed(chat_id: int, user_id: int | None, operation_ke
 
 def department_work_access_for_user(chat_id: int, user_id: int | None) -> list[dict]:
     """Возвращает только разрешённые действия и позиции без состава отдела и списка людей."""
-    if not user_id or is_system_admin_id(user_id):
+    if not user_id or is_tenant_admin(chat_id, user_id):
         return []
     memberships = user_department_memberships(chat_id, user_id)
     if not memberships:
@@ -4118,7 +4105,7 @@ def department_work_access_for_user(chat_id: int, user_id: int | None) -> list[d
 
 
 def visible_entity_ids_for_user(chat_id: int, user_id: int | None) -> set[int] | None:
-    if is_system_admin_id(user_id):
+    if is_tenant_admin(chat_id, user_id):
         return None
     memberships = user_department_memberships(chat_id, user_id)
     if not memberships:
@@ -4169,31 +4156,58 @@ def department_permissions_for_user(chat_id: int, user_id: int | None) -> dict[s
     return result
 
 
-# Позднее определение намеренно заменяет старую модель прав для участников отделов.
+# Step 82: tenant owner/admin and department permissions are separate from platform owner.
+def _account_access_row(account_id: int, user_id: int | None) -> dict | None:
+    if not user_id:
+        return None
+    row = db.fetchone("SELECT job_title_id,can_manage,can_view,can_submit FROM account_user_access WHERE account_id=? AND user_id=?", (int(account_id), int(user_id)))
+    return dict(row) if row else None
+
+def is_tenant_admin(chat_id: int, user_id: int | None) -> bool:
+    if not user_id:
+        return False
+    scope = resolve_scope_chat_id(chat_id)
+    account = get_active_account(chat_id) or get_account_by_scope(scope)
+    if not account:
+        return False
+    if int(account.owner_user_id) == int(user_id):
+        return True
+    row = _account_access_row(account.id, user_id)
+    return bool(row and row.get("can_manage"))
+
+def tenant_admin_user_ids(chat_id: int) -> list[int]:
+    scope = resolve_scope_chat_id(chat_id)
+    account = get_active_account(chat_id) or get_account_by_scope(scope)
+    if not account:
+        return []
+    ids = {int(account.owner_user_id)}
+    rows = db.fetchall("SELECT user_id FROM account_user_access WHERE account_id=? AND can_manage=1", (int(account.id),))
+    ids.update(int(r["user_id"]) for r in rows if r["user_id"])
+    return sorted(ids)
+
 def user_permissions_current_context(chat_id: int, user_id: int | None) -> dict[str, bool]:
-    if is_system_admin_id(user_id):
-        return full_permissions()
-    department_permissions = department_permissions_for_user(chat_id, user_id)
-    if department_permissions is not None:
-        return department_permissions
     scope = resolve_scope_chat_id(chat_id)
     account = get_active_account(chat_id) or get_account_by_scope(scope)
     if account and user_id:
-        if account.owner_user_id == int(user_id) and is_system_admin_id(user_id):
+        if int(account.owner_user_id) == int(user_id):
             return full_permissions()
-        row = db.fetchone("SELECT job_title_id FROM account_user_access WHERE account_id=? AND user_id=?", (account.id, int(user_id)))
+        row = _account_access_row(account.id, user_id)
+        if row and row.get("can_manage"):
+            return full_permissions()
+    department_permissions = department_permissions_for_user(scope, user_id)
+    if department_permissions is not None:
+        return department_permissions
+    if account and user_id:
+        row = _account_access_row(account.id, user_id)
         if row:
-            return _permissions_from_job_id(int(row["job_title_id"]) if row["job_title_id"] else None)
+            return _permissions_from_job_id(int(row["job_title_id"]) if row.get("job_title_id") else None)
     return worker_permissions(scope, user_id or 0)
 
-
 def user_can_manage_current_context(chat_id: int, user_id: int | None) -> bool:
-    # Полная административная панель видна только ID из .env.
-    return is_system_admin_id(user_id)
-
+    return is_tenant_admin(chat_id, user_id)
 
 def user_can_manage_departments(chat_id: int, user_id: int | None) -> bool:
-    if is_system_admin_id(user_id):
+    if is_tenant_admin(chat_id, user_id):
         return True
     return any(int(item.get("role_level") or 0) >= 50 for item in user_department_memberships(chat_id, user_id))
 
@@ -4401,3 +4415,119 @@ def setup_health(chat_id: int) -> dict[str, object]:
     ]
     ready = sum(1 for item in checks if item["ok"])
     return {"checks": checks, "counts": counts, "ready": ready, "total": len(checks)}
+
+
+# --- Step 82: company sites, tenant audit and owner-safe inspection ----------
+def tenant_audit(chat_id: int, actor_user_id: int, event_type: str, object_type: str = '', object_id: str = '', details: str = '', severity: str = 'info') -> None:
+    scope = resolve_scope_chat_id(chat_id)
+    db.execute('INSERT INTO tenant_audit_events(chat_id,actor_user_id,event_type,object_type,object_id,severity,details) VALUES(?,?,?,?,?,?,?)',
+               (scope,int(actor_user_id),str(event_type)[:80],str(object_type)[:80],str(object_id)[:120],str(severity)[:20],str(details)[:2000]))
+
+def list_company_sites(chat_id: int) -> list[dict]:
+    scope=resolve_scope_chat_id(chat_id)
+    return [dict(r) for r in db.fetchall('SELECT * FROM company_sites WHERE chat_id=? AND is_archived=0 ORDER BY settlement,name',(scope,))]
+
+def create_company_site(chat_id: int, actor_user_id: int, settlement: str, name: str, address: str = '') -> tuple[bool,str,int|None]:
+    if not is_tenant_admin(chat_id, actor_user_id): return False,'Нет права настройки организации.',None
+    scope=resolve_scope_chat_id(chat_id); key=normalize_key(f'{settlement} {name}')
+    if not key: return False,'Укажите название площадки.',None
+    try:
+        with db.connect() as conn:
+            cur=conn.execute('INSERT INTO company_sites(chat_id,settlement,name,normalized,address,created_by) VALUES(?,?,?,?,?,?)',(scope,(settlement or '').strip(),(name or '').strip(),key,(address or '').strip(),int(actor_user_id)))
+            site_id=int(cur.lastrowid); conn.commit()
+        tenant_audit(scope,actor_user_id,'site_create','site',str(site_id),f'{settlement} / {name}')
+        return True,'Площадка создана.',site_id
+    except Exception:
+        return False,'Такая площадка уже существует.',None
+
+def bind_area_to_site(chat_id: int, actor_user_id: int, area_id: int, site_id: int|None) -> tuple[bool,str]:
+    if not is_tenant_admin(chat_id,actor_user_id): return False,'Нет права настройки.'
+    scope=resolve_scope_chat_id(chat_id)
+    if not db.fetchone('SELECT id FROM areas WHERE id=? AND chat_id=? AND is_archived=0',(int(area_id),scope)): return False,'Участок не найден.'
+    if site_id is not None and not db.fetchone('SELECT id FROM company_sites WHERE id=? AND chat_id=? AND is_archived=0',(int(site_id),scope)): return False,'Площадка не найдена.'
+    db.execute('UPDATE areas SET site_id=? WHERE id=?',(int(site_id) if site_id else None,int(area_id)))
+    tenant_audit(scope,actor_user_id,'area_site_bind','area',str(area_id),str(site_id or ''))
+    return True,'Привязка сохранена.'
+
+def list_storage_locations(chat_id: int) -> list[dict]:
+    scope=resolve_scope_chat_id(chat_id)
+    q="""SELECT l.*,s.name AS site_name,s.settlement,a.name AS area_name,d.name AS department_name
+           FROM storage_locations l LEFT JOIN company_sites s ON s.id=l.site_id LEFT JOIN areas a ON a.id=l.area_id
+           LEFT JOIN departments d ON d.id=l.department_id WHERE l.chat_id=? AND l.is_archived=0
+           ORDER BY COALESCE(s.settlement,''),COALESCE(s.name,''),COALESCE(a.name,''),COALESCE(d.name,''),l.name"""
+    return [dict(r) for r in db.fetchall(q,(scope,))]
+
+def create_storage_location(chat_id:int, actor_user_id:int, name:str, site_id:int|None=None, area_id:int|None=None, department_id:int|None=None, code:str='')->tuple[bool,str,int|None]:
+    if not is_tenant_admin(chat_id,actor_user_id): return False,'Нет права настройки.',None
+    scope=resolve_scope_chat_id(chat_id); key=normalize_key(name)
+    if not key: return False,'Укажите название места хранения.',None
+    for table,obj_id in (('company_sites',site_id),('areas',area_id),('departments',department_id)):
+        if obj_id is not None and not db.fetchone(f'SELECT id FROM {table} WHERE id=? AND chat_id=?',(int(obj_id),scope)): return False,'Выбрано место из другого учёта.',None
+    try:
+        with db.connect() as conn:
+            cur=conn.execute('INSERT INTO storage_locations(chat_id,site_id,area_id,department_id,name,normalized,code,created_by) VALUES(?,?,?,?,?,?,?,?)',(scope,site_id,area_id,department_id,name.strip(),key,(code or '').strip(),int(actor_user_id)))
+            lid=int(cur.lastrowid); conn.commit()
+        tenant_audit(scope,actor_user_id,'storage_location_create','storage_location',str(lid),name)
+        return True,'Место хранения создано.',lid
+    except Exception:
+        return False,'Такое место хранения уже существует.',None
+
+def owner_company_summaries(limit:int=100)->list[dict]:
+    q="""SELECT a.id,a.name,a.scope_chat_id,a.owner_user_id,a.owner_chat_id,a.created_at,
+       (SELECT COUNT(*) FROM operations o WHERE o.chat_id=a.scope_chat_id) operations,
+       (SELECT COUNT(*) FROM inventory i WHERE i.chat_id=a.scope_chat_id) inventory_rows,
+       (SELECT COUNT(*) FROM departments d WHERE d.chat_id=a.scope_chat_id AND d.is_archived=0) departments,
+       (SELECT COUNT(*) FROM account_user_access ua WHERE ua.account_id=a.id) users
+       FROM accounting_accounts a WHERE a.is_archived=0 ORDER BY a.created_at DESC LIMIT ?"""
+    return [dict(r) for r in db.fetchall(q,(int(limit),))]
+
+def owner_company_report(account_id:int)->str:
+    a=get_account_by_id(account_id)
+    if not a: return 'Организация не найдена.'
+    q="""SELECT (SELECT COUNT(*) FROM operations WHERE chat_id=?) operations,
+       (SELECT COUNT(*) FROM inventory WHERE chat_id=?) inventory_rows,
+       (SELECT COUNT(*) FROM departments WHERE chat_id=? AND is_archived=0) departments,
+       (SELECT COUNT(*) FROM areas WHERE chat_id=? AND is_archived=0) areas,
+       (SELECT MAX(created_at) FROM operations WHERE chat_id=?) last_operation"""
+    r=db.fetchone(q,(a.scope_chat_id,)*5); d=dict(r or {})
+    return (f'Организация: {a.name}\nID учёта: {a.id}\nВладелец Telegram: {a.owner_user_id}\n'
+            f'Участков: {d.get("areas",0)}\nОтделов: {d.get("departments",0)}\nСтрок склада: {d.get("inventory_rows",0)}\n'
+            f'Операций: {d.get("operations",0)}\nПоследняя операция: {d.get("last_operation") or "нет данных"}')
+
+# --- Step 82 physical stock view ------------------------------------------
+def stock_location_breakdown(chat_id:int, entity_type:str|None=None, entity_id:int|None=None)->list[dict]:
+    scope=resolve_scope_chat_id(chat_id)
+    where=['i.chat_id=?','e.is_archived=0']; params:list[object]=[scope]
+    if entity_type:
+        where.append('i.entity_type=?'); params.append(entity_type)
+    if entity_id is not None:
+        where.append('i.entity_id=?'); params.append(int(entity_id))
+    rows=db.fetchall(f"""SELECT i.area_id,a.name area_name,a.site_id,s.name site_name,s.settlement,
+        i.entity_type,i.entity_id,e.name entity_name,i.unit,i.quantity,
+        COALESCE((SELECT SUM(x.quantity) FROM inventory_allocations x WHERE x.chat_id=i.chat_id
+          AND ((x.area_id IS NULL AND i.area_id IS NULL) OR x.area_id=i.area_id)
+          AND x.entity_type=i.entity_type AND x.entity_id=i.entity_id AND x.unit=i.unit),0) allocated
+        FROM inventory i JOIN entities e ON e.id=i.entity_id AND e.chat_id=i.chat_id
+        LEFT JOIN areas a ON a.id=i.area_id LEFT JOIN company_sites s ON s.id=a.site_id
+        WHERE {' AND '.join(where)} ORDER BY COALESCE(s.settlement,''),COALESCE(s.name,''),COALESCE(a.name,''),e.name""",tuple(params))
+    out=[]
+    for r in rows:
+        d=dict(r)
+        d['unallocated']=float(d.get('quantity') or 0)-float(d.get('allocated') or 0)
+        alloc=db.fetchall("""SELECT x.*,d.name department_name,l.name location_name,l.code location_code
+            FROM inventory_allocations x LEFT JOIN departments d ON d.id=x.department_id LEFT JOIN storage_locations l ON l.id=x.location_id
+            WHERE x.chat_id=? AND ((x.area_id IS NULL AND ? IS NULL) OR x.area_id=?) AND x.entity_type=? AND x.entity_id=? AND x.unit=? AND ABS(x.quantity)>0.0000001
+            ORDER BY COALESCE(d.name,''),COALESCE(l.name,'')""",(scope,d.get('area_id'),d.get('area_id'),d['entity_type'],d['entity_id'],d['unit']))
+        d['allocations']=[dict(x) for x in alloc]
+        out.append(d)
+    return out
+
+
+def allocation_quantity(chat_id:int,entity_type:str,entity_id:int,unit:str='шт',area_id:int|None=None,department_id:int|None=None,location_id:int|None=None)->float:
+    scope=resolve_scope_chat_id(chat_id)
+    where=['chat_id=?','entity_type=?','entity_id=?','unit=?']; params:list[object]=[scope,entity_type,int(entity_id),unit]
+    for col,val in [('area_id',area_id),('department_id',department_id),('location_id',location_id)]:
+        if val is not None:
+            where.append(f'{col}=?'); params.append(int(val))
+    r=db.fetchone(f"SELECT COALESCE(SUM(quantity),0) q FROM inventory_allocations WHERE {' AND '.join(where)}",tuple(params))
+    return float(r['q'] if r else 0)

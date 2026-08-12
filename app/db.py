@@ -1657,6 +1657,132 @@ CREATE TABLE IF NOT EXISTS setup_sessions (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(chat_id, user_id)
 );
+
+-- Step 82: tenant-safe company structure, physical locations, transfers and Excel import review.
+CREATE TABLE IF NOT EXISTS company_sites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    settlement TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    normalized TEXT NOT NULL,
+    address TEXT NOT NULL DEFAULT '',
+    is_archived INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(chat_id, normalized),
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS storage_locations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    site_id INTEGER,
+    area_id INTEGER,
+    department_id INTEGER,
+    name TEXT NOT NULL,
+    normalized TEXT NOT NULL,
+    code TEXT NOT NULL DEFAULT '',
+    is_archived INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(chat_id, normalized),
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(site_id) REFERENCES company_sites(id) ON DELETE SET NULL,
+    FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL,
+    FOREIGN KEY(department_id) REFERENCES departments(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS stock_transfers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    from_area_id INTEGER,
+    to_area_id INTEGER,
+    from_department_id INTEGER,
+    to_department_id INTEGER,
+    from_location_id INTEGER,
+    to_location_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'sent',
+    sent_by INTEGER NOT NULL,
+    accepted_by INTEGER,
+    note TEXT NOT NULL DEFAULT '',
+    receiver_note TEXT NOT NULL DEFAULT '',
+    sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    accepted_at TEXT,
+    cancelled_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(from_area_id) REFERENCES areas(id) ON DELETE SET NULL,
+    FOREIGN KEY(to_area_id) REFERENCES areas(id) ON DELETE SET NULL,
+    FOREIGN KEY(from_department_id) REFERENCES departments(id) ON DELETE SET NULL,
+    FOREIGN KEY(to_department_id) REFERENCES departments(id) ON DELETE SET NULL,
+    FOREIGN KEY(from_location_id) REFERENCES storage_locations(id) ON DELETE SET NULL,
+    FOREIGN KEY(to_location_id) REFERENCES storage_locations(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_stock_transfers_scope_status ON stock_transfers(chat_id,status,created_at DESC);
+CREATE TABLE IF NOT EXISTS stock_transfer_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    transfer_id INTEGER NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id INTEGER NOT NULL,
+    unit TEXT NOT NULL DEFAULT 'шт',
+    sent_quantity REAL NOT NULL,
+    received_quantity REAL,
+    difference_quantity REAL NOT NULL DEFAULT 0,
+    discrepancy_reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(transfer_id) REFERENCES stock_transfers(id) ON DELETE CASCADE,
+    FOREIGN KEY(entity_id) REFERENCES entities(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_stock_transfer_items_entity ON stock_transfer_items(entity_id,transfer_id);
+CREATE TABLE IF NOT EXISTS excel_import_batches (
+    batch_id TEXT PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    file_name TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'preview',
+    created_by INTEGER NOT NULL DEFAULT 0,
+    preview_json TEXT NOT NULL DEFAULT '{}',
+    result_json TEXT NOT NULL DEFAULT '{}',
+    confirmed_by INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    confirmed_at TEXT,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_excel_import_batches_scope ON excel_import_batches(chat_id,status,created_at DESC);
+CREATE TABLE IF NOT EXISTS tenant_audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    actor_user_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    object_type TEXT NOT NULL DEFAULT '',
+    object_id TEXT NOT NULL DEFAULT '',
+    severity TEXT NOT NULL DEFAULT 'info',
+    details TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_tenant_audit_scope ON tenant_audit_events(chat_id,created_at DESC);
+
+
+CREATE TABLE IF NOT EXISTS inventory_allocations (
+    chat_id INTEGER NOT NULL,
+    area_id INTEGER,
+    department_id INTEGER,
+    location_id INTEGER,
+    entity_type TEXT NOT NULL,
+    entity_id INTEGER NOT NULL,
+    unit TEXT NOT NULL DEFAULT 'шт',
+    quantity REAL NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(chat_id, area_id, department_id, location_id, entity_type, entity_id, unit),
+    FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
+    FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE SET NULL,
+    FOREIGN KEY(department_id) REFERENCES departments(id) ON DELETE SET NULL,
+    FOREIGN KEY(location_id) REFERENCES storage_locations(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_inventory_alloc_scope_entity ON inventory_allocations(chat_id,entity_type,entity_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_alloc_scope_place ON inventory_allocations(chat_id,area_id,department_id,location_id);
+
 """
 
 
@@ -1724,6 +1850,22 @@ def init_db() -> None:
         _ensure_column(conn, "stock_alert_rules", "planned_output_qty", "REAL NOT NULL DEFAULT 0")
         _ensure_column(conn, "stock_alert_rules", "planned_output_period", "TEXT NOT NULL DEFAULT 'shift'")
         _ensure_column(conn, "stock_alert_rules", "notify_work_chat", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "operations", "department_id", "INTEGER")
+        _ensure_column(conn, "operations", "from_department_id", "INTEGER")
+        _ensure_column(conn, "operations", "to_department_id", "INTEGER")
+        _ensure_column(conn, "operations", "storage_location_id", "INTEGER")
+        _ensure_column(conn, "operations", "from_location_id", "INTEGER")
+        _ensure_column(conn, "operations", "to_location_id", "INTEGER")
+        _ensure_column(conn, "areas", "site_id", "INTEGER")
+        _ensure_column(conn, "stock_transfer_items", "received_quantity", "REAL")
+        _ensure_column(conn, "stock_transfer_items", "difference_quantity", "REAL NOT NULL DEFAULT 0")
+        _ensure_column(conn, "stock_transfer_items", "discrepancy_reason", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "excel_import_batches", "batch_id", "TEXT")
+        _ensure_column(conn, "excel_import_batches", "created_by", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "excel_import_batches", "preview_json", "TEXT NOT NULL DEFAULT '{}'")
+        _ensure_column(conn, "excel_import_batches", "result_json", "TEXT NOT NULL DEFAULT '{}'")
+        _ensure_column(conn, "excel_import_batches", "confirmed_by", "INTEGER")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_areas_site ON areas(chat_id,site_id,is_archived)")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_shift_plan_template_occurrence ON shift_plans(template_id, occurrence_date) WHERE template_id IS NOT NULL AND occurrence_date IS NOT NULL")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_operations_client_request ON operations(chat_id, user_id, client_request_id) WHERE client_request_id IS NOT NULL AND client_request_id<>''")
         conn.commit()

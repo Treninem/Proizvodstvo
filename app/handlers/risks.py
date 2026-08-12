@@ -31,7 +31,7 @@ def _scope(message: Message) -> int:
 
 
 def _can_view(scope: int, user_id: int) -> bool:
-    if repo.is_system_admin_id(user_id):
+    if repo.is_tenant_admin(scope, user_id):
         return True
     if repo.user_has_department_membership(scope, user_id):
         return True
@@ -40,7 +40,7 @@ def _can_view(scope: int, user_id: int) -> bool:
 
 
 def _can_report_event(scope: int, user_id: int) -> bool:
-    return repo.is_system_admin_id(user_id) or repo.user_has_department_membership(scope, user_id) or repo.user_can_manage_current_context(scope, user_id)
+    return repo.is_tenant_admin(scope, user_id) or repo.user_has_department_membership(scope, user_id) or repo.user_can_manage_current_context(scope, user_id)
 
 
 def _fmt_status(scope: int, user_id: int) -> str:
@@ -91,7 +91,7 @@ def _find_area(scope: int, text: str):
 
 
 def _parse_rule_command(scope: int, user_id: int, text: str) -> tuple[bool, str]:
-    if not repo.is_system_admin_id(user_id):
+    if not repo.is_tenant_admin(scope, user_id):
         return True, "Настраивать тревоги может только владелец или полный администратор."
     key = text.lower().replace("ё", "е")
     consumption_match = re.search(r"(?:расход|потребление|норма)\s*(\d+(?:[.,]\d+)?)", key)

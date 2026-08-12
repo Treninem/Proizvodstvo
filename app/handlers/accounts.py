@@ -5,7 +5,7 @@ import re
 from aiogram import Router
 from aiogram.types import Message
 
-from ..access import can_manage_accounting, is_global_owner
+from ..access import can_manage_accounting
 from ..services import repository as repo
 
 router = Router()
@@ -87,15 +87,12 @@ async def try_handle_account_command(message: Message) -> bool:
             return True
         name = attach_match.group(1).strip()
         accounts = repo.list_accounts_for_user(user_id, message.chat.id)
-        if is_global_owner(user_id):
-            accounts = repo.owner_list_accounts()
-            choices_text = _account_choices_text(accounts, name)
-            if choices_text:
-                await message.answer(choices_text)
-                return True
-            account = _find_account_for_owner(accounts, name)
-        else:
-            account = _find_account_by_name(accounts, name)
+        choices_text = _account_choices_text(accounts, name)
+        if choices_text:
+            await message.answer(choices_text)
+            return True
+        account_id = _extract_account_id(name)
+        account = next((acc for acc in accounts if account_id is not None and int(acc.id) == account_id), None) if account_id is not None else _find_account_by_name(accounts, name)
         if not account:
             await message.answer("Учёт не найден. Сначала создайте его или проверьте название.")
             return True
@@ -108,15 +105,12 @@ async def try_handle_account_command(message: Message) -> bool:
     if select_match:
         name = select_match.group(1).strip()
         accounts = repo.list_accounts_for_user(user_id, message.chat.id)
-        if is_global_owner(user_id):
-            accounts = repo.owner_list_accounts()
-            choices_text = _account_choices_text(accounts, name)
-            if choices_text:
-                await message.answer(choices_text)
-                return True
-            account = _find_account_for_owner(accounts, name)
-        else:
-            account = _find_account_by_name(accounts, name)
+        choices_text = _account_choices_text(accounts, name)
+        if choices_text:
+            await message.answer(choices_text)
+            return True
+        account_id = _extract_account_id(name)
+        account = next((acc for acc in accounts if account_id is not None and int(acc.id) == account_id), None) if account_id is not None else _find_account_by_name(accounts, name)
         if not account:
             await message.answer("Учёт не подключён к этому чату или не найден.")
             return True

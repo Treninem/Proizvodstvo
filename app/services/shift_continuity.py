@@ -578,7 +578,7 @@ def list_devices(user_ids: Iterable[int], *, limit: int = 200) -> list[dict[str,
 
 def account_user_ids(chat_id: int) -> list[int]:
     scope = repo.resolve_scope_chat_id(chat_id)
-    ids = {int(repo.settings.primary_owner_id)} if getattr(repo, "settings", None) else set()
+    ids: set[int] = set()
     account = repo.get_account_by_scope(scope)
     if account:
         rows = db.fetchall("SELECT user_id FROM account_user_access WHERE account_id=?", (account.id,))
@@ -596,7 +596,7 @@ def handover_recipients(chat_id: int, user_id: int) -> list[dict[str, Any]]:
     """Return only people the actor may safely hand a shift to."""
     scope = repo.resolve_scope_chat_id(chat_id)
     uid = int(user_id)
-    if repo.is_system_admin_id(uid):
+    if repo.is_tenant_admin(scope, uid):
         candidate_ids = account_user_ids(scope)
     else:
         rows = db.fetchall(
@@ -659,7 +659,7 @@ def restore_device(actor_user_id: int, target_user_id: int, device_id: str) -> b
 
 def can_review_worker_packages(chat_id: int, actor_user_id: int, worker_user_id: int) -> bool:
     scope = repo.resolve_scope_chat_id(chat_id)
-    if repo.is_system_admin_id(actor_user_id):
+    if repo.is_tenant_admin(scope, actor_user_id):
         return True
     row = db.fetchone(
         """
@@ -718,7 +718,7 @@ def save_continuity_settings(chat_id: int, actor_user_id: int, values: dict[str,
 
 def package_review_recipient_ids(chat_id: int, worker_user_id: int) -> list[int]:
     scope = repo.resolve_scope_chat_id(chat_id)
-    recipients = set(repo.list_system_admin_ids())
+    recipients = set(repo.tenant_admin_user_ids(scope))
     rows = db.fetchall(
         """SELECT DISTINCT head.user_id FROM department_members worker
         JOIN departments d ON d.id=worker.department_id AND d.chat_id=? AND d.is_archived=0
@@ -798,7 +798,7 @@ def queue_continuity_reminders(now: datetime | None = None) -> int:
             except Exception:
                 continue
             elapsed = max(0.0, (now - started).total_seconds() / 60.0)
-            recipients: set[int] = set(repo.list_system_admin_ids())
+            recipients: set[int] = set(repo.tenant_admin_user_ids(scope))
             if handover.get("to_user_id"):
                 recipients.add(int(handover["to_user_id"]))
             else:

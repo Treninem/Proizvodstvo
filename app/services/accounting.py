@@ -67,6 +67,42 @@ def _inventory_delta(
 
 
 
+def _allocation_delta(chat_id: int, area_id: int | None, department_id: int | None, location_id: int | None,
+                      entity_type: str, entity_id: int, unit: str, delta: float, *, conn=None) -> None:
+    """Optional exact-location ledger. Area inventory remains the authoritative aggregate."""
+    if department_id is None and location_id is None:
+        return
+    own_conn = conn is None
+    connection = conn or db.connect()
+    try:
+        row = connection.execute(
+            """SELECT quantity FROM inventory_allocations WHERE chat_id=?
+               AND ((area_id IS NULL AND ? IS NULL) OR area_id=?)
+               AND ((department_id IS NULL AND ? IS NULL) OR department_id=?)
+               AND ((location_id IS NULL AND ? IS NULL) OR location_id=?)
+               AND entity_type=? AND entity_id=? AND unit=?""",
+            (chat_id, area_id, area_id, department_id, department_id, location_id, location_id, entity_type, entity_id, unit),
+        ).fetchone()
+        if row:
+            connection.execute(
+                """UPDATE inventory_allocations SET quantity=quantity+?,updated_at=CURRENT_TIMESTAMP WHERE chat_id=?
+                   AND ((area_id IS NULL AND ? IS NULL) OR area_id=?)
+                   AND ((department_id IS NULL AND ? IS NULL) OR department_id=?)
+                   AND ((location_id IS NULL AND ? IS NULL) OR location_id=?)
+                   AND entity_type=? AND entity_id=? AND unit=?""",
+                (delta, chat_id, area_id, area_id, department_id, department_id, location_id, location_id, entity_type, entity_id, unit),
+            )
+        else:
+            connection.execute(
+                "INSERT INTO inventory_allocations(chat_id,area_id,department_id,location_id,entity_type,entity_id,unit,quantity) VALUES(?,?,?,?,?,?,?,?)",
+                (chat_id, area_id, department_id, location_id, entity_type, entity_id, unit, delta),
+            )
+        if own_conn: connection.commit()
+    finally:
+        if own_conn: connection.close()
+
+
+
 def _remember_confirmed_phrase(chat_id: int, op: dict[str, Any]) -> None:
     phrase = str(op.get("learning_phrase") or "").strip()
     target_type = op.get("entity_type")
@@ -84,47 +120,39 @@ def _remember_confirmed_phrase(chat_id: int, op: dict[str, Any]) -> None:
     repo.remember_lexicon(chat_id, phrase, str(target_type), int(target_id))
 
 def _apply_inventory_effect(chat_id: int, op: dict[str, Any], *, conn=None) -> None:
-    operation_type = op.get("operation_type")
-    entity_type = op.get("entity_type")
-    entity_id = op.get("entity_id")
-    quantity = op.get("quantity")
-    unit = op.get("unit") or "шт"
-    area_id = op.get("area_id")
-    if quantity is None:
-        return
-    qty = float(quantity)
-    if operation_type == "production" and entity_type and entity_id:
-        _inventory_delta(chat_id, area_id, str(entity_type), int(entity_id), unit, qty, conn=conn)
-    elif operation_type == "material_in" and entity_type == "material" and entity_id:
-        _inventory_delta(chat_id, area_id, "material", int(entity_id), unit, qty, conn=conn)
-    elif operation_type == "material_out" and entity_type == "material" and entity_id:
-        _inventory_delta(chat_id, area_id, "material", int(entity_id), unit, -qty, conn=conn)
-    elif operation_type == "assembly" and entity_type == "product" and entity_id:
-        _inventory_delta(chat_id, area_id, "product", int(entity_id), unit, qty, conn=conn)
+    operation_type=op.get("operation_type"); entity_type=op.get("entity_type"); entity_id=op.get("entity_id")
+    quantity=op.get("quantity"); unit=op.get("unit") or "шт"; area_id=op.get("area_id")
+    dept=op.get("department_id"); loc=op.get("storage_location_id")
+    if quantity is None: return
+    qty=float(quantity)
+    def d(area, et, eid, amount, department=dept, location=loc):
+        _inventory_delta(chat_id, area, str(et), int(eid), unit, amount, conn=conn)
+        _allocation_delta(chat_id, area, int(department) if department else None, int(location) if location else None, str(et), int(eid), unit, amount, conn=conn)
+    if operation_type=="production" and entity_type and entity_id: d(area_id,entity_type,entity_id,qty)
+    elif operation_type=="material_in" and entity_type=="material" and entity_id: d(area_id,"material",entity_id,qty)
+    elif operation_type=="material_out" and entity_type=="material" and entity_id: d(area_id,"material",entity_id,-qty)
+    elif operation_type=="assembly" and entity_type=="product" and entity_id:
+        d(area_id,"product",entity_id,qty)
         for comp in repo.list_product_components(int(entity_id)):
-            comp_id = int(comp["component_id"])
-            need = float(comp["quantity"] or 0) * qty
-            comp_unit = comp.get("default_unit") or "шт"
-            _inventory_delta(chat_id, area_id, "component", comp_id, comp_unit, -need, conn=conn)
-    elif operation_type in {"shipment", "shipment_client", "shipment_fulfillment"} and entity_type in {"product", "stock_item"} and entity_id:
-        _inventory_delta(chat_id, area_id, str(entity_type), int(entity_id), unit, -qty, conn=conn)
-    elif operation_type == "return" and entity_type in {"product", "stock_item"} and entity_id:
-        _inventory_delta(chat_id, area_id, str(entity_type), int(entity_id), unit, qty, conn=conn)
-    elif operation_type in {"movement", "transfer_to_assembly"} and entity_type and entity_id:
-        from_area_id = op.get("from_area_id")
-        to_area_id = op.get("to_area_id") or area_id
-        if from_area_id:
-            _inventory_delta(chat_id, int(from_area_id), str(entity_type), int(entity_id), unit, -qty, conn=conn)
-        if to_area_id:
-            _inventory_delta(chat_id, int(to_area_id), str(entity_type), int(entity_id), unit, qty, conn=conn)
-    elif operation_type == "stock_in" and entity_type and entity_id:
-        _inventory_delta(chat_id, area_id, str(entity_type), int(entity_id), unit, qty, conn=conn)
-    elif operation_type == "stock_out" and entity_type and entity_id:
-        _inventory_delta(chat_id, area_id, str(entity_type), int(entity_id), unit, -qty, conn=conn)
-    elif operation_type == "write_off" and entity_type and entity_id:
-        _inventory_delta(chat_id, area_id, str(entity_type), int(entity_id), unit, -qty, conn=conn)
-    elif operation_type == "inventory_adjust" and entity_type and entity_id:
-        _inventory_delta(chat_id, area_id, str(entity_type), int(entity_id), unit, qty, conn=conn)
+            need=float(comp["quantity"] or 0)*qty
+            _inventory_delta(chat_id,area_id,"component",int(comp["component_id"]),comp.get("default_unit") or "шт",-need,conn=conn)
+            _allocation_delta(chat_id,area_id,int(dept) if dept else None,int(loc) if loc else None,"component",int(comp["component_id"]),comp.get("default_unit") or "шт",-need,conn=conn)
+    elif operation_type in {"shipment","shipment_client","shipment_fulfillment"} and entity_type in {"product","stock_item"} and entity_id: d(area_id,entity_type,entity_id,-qty)
+    elif operation_type=="return" and entity_type in {"product","stock_item"} and entity_id: d(area_id,entity_type,entity_id,qty)
+    elif operation_type in {"movement","transfer_to_assembly"} and entity_type and entity_id:
+        fa=op.get("from_area_id"); ta=op.get("to_area_id") or area_id
+        fd=op.get("from_department_id"); td=op.get("to_department_id")
+        fl=op.get("from_location_id"); tl=op.get("to_location_id")
+        if fa:
+            _inventory_delta(chat_id,int(fa),str(entity_type),int(entity_id),unit,-qty,conn=conn)
+            _allocation_delta(chat_id,int(fa),int(fd) if fd else None,int(fl) if fl else None,str(entity_type),int(entity_id),unit,-qty,conn=conn)
+        if ta:
+            _inventory_delta(chat_id,int(ta),str(entity_type),int(entity_id),unit,qty,conn=conn)
+            _allocation_delta(chat_id,int(ta),int(td) if td else None,int(tl) if tl else None,str(entity_type),int(entity_id),unit,qty,conn=conn)
+    elif operation_type=="stock_in" and entity_type and entity_id: d(area_id,entity_type,entity_id,qty)
+    elif operation_type=="stock_out" and entity_type and entity_id: d(area_id,entity_type,entity_id,-qty)
+    elif operation_type=="write_off" and entity_type and entity_id: d(area_id,entity_type,entity_id,-qty)
+    elif operation_type=="inventory_adjust" and entity_type and entity_id: d(area_id,entity_type,entity_id,qty)
 
 
 def _insert_operation(chat_id: int, group_chat_id: int, user_id: int, op: dict[str, Any], raw_text: str) -> int:
@@ -136,8 +164,8 @@ def _insert_operation(chat_id: int, group_chat_id: int, user_id: int, op: dict[s
             conn.execute("BEGIN IMMEDIATE")
             cur = conn.execute(
                 """
-                INSERT INTO operations(chat_id,group_chat_id,area_id,user_id,operation_type,entity_type,entity_id,quantity,unit,raw_text,from_area_id,to_area_id,destination_type,storage_place,client_request_id,source_channel,task_id,lot_id)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO operations(chat_id,group_chat_id,area_id,user_id,operation_type,entity_type,entity_id,quantity,unit,raw_text,from_area_id,to_area_id,destination_type,storage_place,client_request_id,source_channel,task_id,lot_id,department_id,from_department_id,to_department_id,storage_location_id,from_location_id,to_location_id)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     chat_id,
@@ -158,6 +186,12 @@ def _insert_operation(chat_id: int, group_chat_id: int, user_id: int, op: dict[s
                     op.get("source_channel") or ("mini" if str(raw_text or "").strip().lower().startswith("mini app") else "bot"),
                     int(op.get("task_id")) if op.get("task_id") else None,
                     int(op.get("lot_id")) if op.get("lot_id") else None,
+                    int(op.get("department_id")) if op.get("department_id") else None,
+                    int(op.get("from_department_id")) if op.get("from_department_id") else None,
+                    int(op.get("to_department_id")) if op.get("to_department_id") else None,
+                    int(op.get("storage_location_id")) if op.get("storage_location_id") else None,
+                    int(op.get("from_location_id")) if op.get("from_location_id") else None,
+                    int(op.get("to_location_id")) if op.get("to_location_id") else None,
                 ),
             )
             operation_id = int(cur.lastrowid)
@@ -341,7 +375,7 @@ def _already_changed(operation_id: int) -> bool:
 
 
 def _can_change_operation(chat_id: int, actor_user_id: int, operation: dict[str, Any]) -> bool:
-    if repo.is_global_owner_id(actor_user_id):
+    if repo.is_tenant_admin(chat_id, actor_user_id):
         return True
     permissions = repo.user_permissions_current_context(chat_id, actor_user_id)
     if permissions.get("edit"):

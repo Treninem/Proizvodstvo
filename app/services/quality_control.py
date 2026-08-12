@@ -33,14 +33,14 @@ def _member_level(department_id: int | None, user_id: int) -> int:
 
 
 def _visible_entity(scope: int, user_id: int, entity_id: int) -> bool:
-    if repo.is_system_admin_id(user_id):
+    if repo.is_tenant_admin(scope, user_id):
         return True
     visible = repo.visible_entity_ids_for_user(scope, user_id)
     return visible is None or int(entity_id) in {int(x) for x in visible}
 
 
 def _can_manage_department(scope: int, user_id: int, department_id: int | None) -> bool:
-    if repo.is_system_admin_id(user_id):
+    if repo.is_tenant_admin(scope, user_id):
         return True
     if not department_id:
         return False
@@ -49,7 +49,7 @@ def _can_manage_department(scope: int, user_id: int, department_id: int | None) 
 
 
 def _manager_ids(scope: int, department_id: int | None) -> list[int]:
-    ids = set(repo.list_system_admin_ids(include_owner=True))
+    ids = set(repo.tenant_admin_user_ids(scope))
     if department_id:
         rows = db.fetchall(
             """
@@ -113,7 +113,7 @@ def save_rule(chat_id: int, actor_user_id: int, values: dict[str, Any]) -> dict[
     if not entity:
         raise ValueError("Позиция не найдена.")
     department_id = int(values["department_id"]) if values.get("department_id") else None
-    if not repo.is_system_admin_id(actor_user_id) and not _can_manage_department(scope, actor_user_id, department_id):
+    if not repo.is_tenant_admin(scope, actor_user_id) and not _can_manage_department(scope, actor_user_id, department_id):
         raise PermissionError("Настраивать контроль качества может владелец, администратор или руководитель своего отдела.")
     if not _visible_entity(scope, actor_user_id, entity_id):
         raise PermissionError("Позиция недоступна вашему рабочему контуру.")
@@ -126,7 +126,7 @@ def save_rule(chat_id: int, actor_user_id: int, values: dict[str, Any]) -> dict[
         dep = db.fetchone("SELECT id FROM departments WHERE id=? AND chat_id=? AND is_archived=0", (rework_department_id, scope))
         if not dep:
             raise ValueError("Отдел доработки не найден.")
-        if not repo.is_system_admin_id(actor_user_id) and not _can_manage_department(scope, actor_user_id, rework_department_id):
+        if not repo.is_tenant_admin(scope, actor_user_id) and not _can_manage_department(scope, actor_user_id, rework_department_id):
             raise PermissionError("Нельзя назначить автоматическую доработку в отдел, которым вы не управляете.")
     payload = (
         scope, department_id, entity_id, operation_type, inspection_type,
@@ -171,8 +171,8 @@ def list_rules(chat_id: int, user_id: int) -> list[dict[str, Any]]:
     rows = db.fetchall(
         """
         SELECT q.*,e.name AS entity_name,d.name AS department_name,rd.name AS rework_department_name
-        FROM quality_rules q JOIN entities e ON e.id=q.entity_id
-        LEFT JOIN departments d ON d.id=q.department_id LEFT JOIN departments rd ON rd.id=q.rework_department_id
+        FROM quality_rules q JOIN entities e ON e.id=q.entity_id AND e.chat_id=q.chat_id
+        LEFT JOIN departments d ON d.id=q.department_id AND d.chat_id=q.chat_id LEFT JOIN departments rd ON rd.id=q.rework_department_id AND rd.chat_id=q.chat_id
         WHERE q.chat_id=? ORDER BY q.is_enabled DESC,e.name,q.id DESC
         """,
         (scope,),
@@ -180,8 +180,8 @@ def list_rules(chat_id: int, user_id: int) -> list[dict[str, Any]]:
     result = []
     for row in rows:
         item = dict(row)
-        if repo.is_system_admin_id(user_id) or (not item.get("department_id") and _visible_entity(scope, user_id, int(item["entity_id"]))) or _member_level(item.get("department_id"), user_id) >= 10:
-            item["can_manage"] = bool(repo.is_system_admin_id(user_id) or _can_manage_department(scope, user_id, item.get("department_id")))
+        if repo.is_tenant_admin(scope, user_id) or (not item.get("department_id") and _visible_entity(scope, user_id, int(item["entity_id"]))) or _member_level(item.get("department_id"), user_id) >= 10:
+            item["can_manage"] = bool(repo.is_tenant_admin(scope, user_id) or _can_manage_department(scope, user_id, item.get("department_id")))
             result.append(item)
     return result
 
@@ -203,7 +203,7 @@ def _inspection_row(scope: int, inspection_id: int) -> dict[str, Any] | None:
 
 
 def _can_view(scope: int, user_id: int, item: dict[str, Any]) -> bool:
-    if repo.is_system_admin_id(user_id):
+    if repo.is_tenant_admin(scope, user_id):
         return True
     if int(item.get("inspector_user_id") or 0) == int(user_id) or int(item.get("worker_user_id") or 0) == int(user_id):
         return True
@@ -212,7 +212,7 @@ def _can_view(scope: int, user_id: int, item: dict[str, Any]) -> bool:
 
 
 def _can_decide(scope: int, user_id: int, item: dict[str, Any]) -> bool:
-    return bool(repo.is_system_admin_id(user_id) or _can_manage_department(scope, user_id, item.get("department_id")))
+    return bool(repo.is_tenant_admin(scope, user_id) or _can_manage_department(scope, user_id, item.get("department_id")))
 
 
 def _decorate(scope: int, user_id: int, item: dict[str, Any]) -> dict[str, Any]:
@@ -335,6 +335,18 @@ def create_inspection(
     task = _task(scope, task_id)
     lot = _lot(scope, lot_id)
     eq = _equipment(scope, equipment_id)
+    if task_id and not task:
+        raise ValueError("Задание не найдено в этой организации.")
+    if lot_id and not lot:
+        raise ValueError("Партия не найдена в этой организации.")
+    if equipment_id and not eq:
+        raise ValueError("Оборудование не найдено в этой организации.")
+    if shift_plan_id and not db.fetchone("SELECT id FROM shift_plans WHERE id=? AND chat_id=?", (int(shift_plan_id), scope)):
+        raise ValueError("План смены не найден в этой организации.")
+    if parent_inspection_id and not db.fetchone("SELECT id FROM quality_inspections WHERE id=? AND chat_id=?", (int(parent_inspection_id), scope)):
+        raise ValueError("Родительский контроль не найден в этой организации.")
+    if rework_task_id and not _task(scope, int(rework_task_id)):
+        raise ValueError("Задание на доработку не найдено в этой организации.")
     if task:
         if int(task["entity_id"]) != int(entity_id):
             raise ValueError("Задание относится к другой позиции.")
@@ -353,9 +365,9 @@ def create_inspection(
         dep = db.fetchone("SELECT id FROM departments WHERE id=? AND chat_id=? AND is_archived=0", (int(department_id), scope))
         if not dep:
             raise ValueError("Отдел не найден.")
-        if not repo.is_system_admin_id(actor_user_id) and _member_level(department_id, actor_user_id) < 20:
+        if not repo.is_tenant_admin(scope, actor_user_id) and _member_level(department_id, actor_user_id) < 20:
             raise PermissionError("Нет права проводить контроль в этом отделе.")
-    elif not repo.is_system_admin_id(actor_user_id):
+    elif not repo.is_tenant_admin(scope, actor_user_id):
         raise PermissionError("Для контроля без отдела нужен полный административный доступ.")
     if area_id is not None:
         area = db.fetchone("SELECT id FROM areas WHERE id=? AND chat_id=? AND is_archived=0", (int(area_id), scope))

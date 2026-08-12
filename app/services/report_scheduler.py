@@ -121,7 +121,7 @@ async def _send_report(bot, schedule: dict) -> None:
         scope = int(schedule["chat_id"])
         user_id = int(schedule["user_id"])
         account = repo.get_account_by_scope(scope)
-        if account and not repo.is_global_owner_id(user_id) and not repo.user_has_account_access(account.id, user_id):
+        if account and not repo.user_has_account_access(account.id, user_id):
             raise PermissionError("Доступ сотрудника к учёту отключён.")
         area_ids = _area_ids_for_schedule(schedule)
         if str(schedule.get("report_format") or "xlsx").lower() == "pdf":

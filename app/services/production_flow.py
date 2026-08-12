@@ -58,14 +58,14 @@ def _member_level(department_id: int, user_id: int) -> int:
 
 
 def _can_manage_department(scope: int, user_id: int, department_id: int) -> bool:
-    if repo.is_system_admin_id(user_id):
+    if repo.is_tenant_admin(scope, user_id):
         return True
     dep = _department(department_id)
     return bool(dep and int(dep["chat_id"]) == scope and _member_level(department_id, user_id) >= 50)
 
 
 def _can_work_department(scope: int, user_id: int, department_id: int) -> bool:
-    if repo.is_system_admin_id(user_id):
+    if repo.is_tenant_admin(scope, user_id):
         return True
     dep = _department(department_id)
     return bool(dep and int(dep["chat_id"]) == scope and _member_level(department_id, user_id) >= 20)
@@ -86,14 +86,14 @@ def _department_allows_entity(department_id: int, operation_type: str, entity_id
 
 
 def _entity_visible_to(scope: int, user_id: int, entity_id: int) -> bool:
-    if repo.is_system_admin_id(user_id):
+    if repo.is_tenant_admin(scope, user_id):
         return True
     visible = repo.visible_entity_ids_for_user(scope, user_id)
     return visible is None or int(entity_id) in {int(x) for x in visible}
 
 
 def _department_manager_ids(scope: int, department_id: int) -> list[int]:
-    ids = set(repo.list_system_admin_ids(include_owner=True))
+    ids = set(repo.tenant_admin_user_ids(scope))
     rows = db.fetchall(
         """
         SELECT dm.user_id FROM department_members dm
@@ -138,7 +138,7 @@ def create_task(
     entity = _entity(scope, entity_id)
     if not entity:
         raise ValueError("Позиция не найдена.")
-    if not repo.is_system_admin_id(actor_user_id) and not _department_allows_entity(department_id, operation_type, entity_id):
+    if not repo.is_tenant_admin(scope, actor_user_id) and not _department_allows_entity(department_id, operation_type, entity_id):
         raise PermissionError("Эта операция или позиция не разрешена выбранному отделу.")
     target_quantity = float(target_quantity)
     if target_quantity <= 0:
@@ -203,11 +203,11 @@ def _task_row(scope: int, task_id: int) -> dict[str, Any] | None:
                l.lot_code AS output_lot_code,sp.planned_start AS shift_planned_start,sp.planned_end AS shift_planned_end,
                sp.user_id AS shift_user_id,COALESCE(NULLIF(w.display_name,''),CAST(sp.user_id AS TEXT)) AS shift_worker_name
         FROM production_tasks t
-        JOIN departments d ON d.id=t.department_id
-        JOIN entities e ON e.id=t.entity_id
-        LEFT JOIN areas a ON a.id=t.area_id
-        LEFT JOIN production_lots l ON l.id=t.output_lot_id
-        LEFT JOIN shift_plans sp ON sp.id=t.shift_plan_id
+        JOIN departments d ON d.id=t.department_id AND d.chat_id=t.chat_id
+        JOIN entities e ON e.id=t.entity_id AND e.chat_id=t.chat_id
+        LEFT JOIN areas a ON a.id=t.area_id AND a.chat_id=t.chat_id
+        LEFT JOIN production_lots l ON l.id=t.output_lot_id AND l.chat_id=t.chat_id
+        LEFT JOIN shift_plans sp ON sp.id=t.shift_plan_id AND sp.chat_id=t.chat_id
         LEFT JOIN workers w ON w.chat_id=t.chat_id AND w.user_id=sp.user_id
         WHERE t.chat_id=? AND t.id=?
         """,
@@ -217,7 +217,7 @@ def _task_row(scope: int, task_id: int) -> dict[str, Any] | None:
 
 
 def can_view_task(scope: int, user_id: int, task: dict[str, Any]) -> bool:
-    if repo.is_system_admin_id(user_id):
+    if repo.is_tenant_admin(scope, user_id):
         return True
     if int(task.get("assignee_user_id") or 0) == int(user_id):
         return True
@@ -271,11 +271,11 @@ def list_tasks(chat_id: int, user_id: int, *, status: str | None = None, departm
                sp.planned_start AS shift_planned_start,sp.planned_end AS shift_planned_end,sp.user_id AS shift_user_id,
                COALESCE(NULLIF(w.display_name,''),CAST(sp.user_id AS TEXT)) AS shift_worker_name
         FROM production_tasks t
-        JOIN departments d ON d.id=t.department_id
-        JOIN entities e ON e.id=t.entity_id
-        LEFT JOIN areas a ON a.id=t.area_id
-        LEFT JOIN production_lots l ON l.id=t.output_lot_id
-        LEFT JOIN shift_plans sp ON sp.id=t.shift_plan_id
+        JOIN departments d ON d.id=t.department_id AND d.chat_id=t.chat_id
+        JOIN entities e ON e.id=t.entity_id AND e.chat_id=t.chat_id
+        LEFT JOIN areas a ON a.id=t.area_id AND a.chat_id=t.chat_id
+        LEFT JOIN production_lots l ON l.id=t.output_lot_id AND l.chat_id=t.chat_id
+        LEFT JOIN shift_plans sp ON sp.id=t.shift_plan_id AND sp.chat_id=t.chat_id
         LEFT JOIN workers w ON w.chat_id=t.chat_id AND w.user_id=sp.user_id
         WHERE {' AND '.join(where)}
         ORDER BY CASE t.status WHEN 'in_progress' THEN 0 WHEN 'paused' THEN 1 WHEN 'planned' THEN 2 ELSE 3 END,
@@ -459,7 +459,7 @@ def create_request(
     scope = _scope(chat_id)
     if int(requester_department_id) == int(supplier_department_id):
         raise ValueError("Отдел-источник и отдел-получатель должны отличаться.")
-    if not _can_work_department(scope, actor_user_id, requester_department_id) and not repo.is_system_admin_id(actor_user_id):
+    if not _can_work_department(scope, actor_user_id, requester_department_id) and not repo.is_tenant_admin(scope, actor_user_id):
         raise PermissionError("Нет права создавать заявку от этого отдела.")
     if not _department(supplier_department_id) or int(_department(supplier_department_id)["chat_id"]) != scope:
         raise ValueError("Отдел-поставщик не найден.")
@@ -497,24 +497,24 @@ def _request_row(scope:int, request_id:int)->dict[str,Any]|None:
         SELECT r.*,rd.name AS requester_department_name,sd.name AS supplier_department_name,e.name AS entity_name,
                fa.name AS from_area_name,ta.name AS to_area_name
         FROM interdepartment_requests r
-        JOIN departments rd ON rd.id=r.requester_department_id
-        JOIN departments sd ON sd.id=r.supplier_department_id
-        JOIN entities e ON e.id=r.entity_id
-        LEFT JOIN areas fa ON fa.id=r.from_area_id LEFT JOIN areas ta ON ta.id=r.to_area_id
+        JOIN departments rd ON rd.id=r.requester_department_id AND rd.chat_id=r.chat_id
+        JOIN departments sd ON sd.id=r.supplier_department_id AND sd.chat_id=r.chat_id
+        JOIN entities e ON e.id=r.entity_id AND e.chat_id=r.chat_id
+        LEFT JOIN areas fa ON fa.id=r.from_area_id AND fa.chat_id=r.chat_id LEFT JOIN areas ta ON ta.id=r.to_area_id AND ta.chat_id=r.chat_id
         WHERE r.chat_id=? AND r.id=?
     """,(scope,int(request_id)))
     return dict(row) if row else None
 
 
 def can_view_request(scope:int,user_id:int,item:dict[str,Any])->bool:
-    if repo.is_system_admin_id(user_id): return True
+    if repo.is_tenant_admin(scope, user_id): return True
     return _member_level(int(item["requester_department_id"]),user_id)>=10 or _member_level(int(item["supplier_department_id"]),user_id)>=10
 
 
 def _decorate_request(scope:int,user_id:int,item:dict[str,Any])->dict[str,Any]:
     req_level=_member_level(int(item["requester_department_id"]),user_id)
     sup_level=_member_level(int(item["supplier_department_id"]),user_id)
-    admin=repo.is_system_admin_id(user_id); status=str(item.get("status") or "")
+    admin=repo.is_tenant_admin(scope, user_id); status=str(item.get("status") or "")
     issued=float(item.get("issued_quantity") or 0)
     item.update({
         "can_approve": bool((admin or sup_level>=50) and status=="requested"),
@@ -559,7 +559,7 @@ def request_action(chat_id:int,actor_user_id:int,request_id:int,action:str,*,qua
     if not item: raise ValueError("Заявка не найдена.")
     req_level=_member_level(int(item["requester_department_id"]),actor_user_id)
     sup_level=_member_level(int(item["supplier_department_id"]),actor_user_id)
-    admin=repo.is_system_admin_id(actor_user_id)
+    admin=repo.is_tenant_admin(scope, actor_user_id)
     status=str(item["status"])
     updates=[]; values=[]; target=status; event_qty=quantity
     if action=="approve":
@@ -622,7 +622,7 @@ def request_action(chat_id:int,actor_user_id:int,request_id:int,action:str,*,qua
 
 def create_lot(chat_id:int,actor_user_id:int,entity_id:int,lot_code:str,*,supplier_code:str="",manufacture_date:str|None=None,expiry_date:str|None=None,note:str="")->dict[str,Any]:
     scope=_scope(chat_id)
-    if not (repo.is_system_admin_id(actor_user_id) or repo.user_can_manage_departments(scope,actor_user_id)):
+    if not (repo.is_tenant_admin(scope, actor_user_id) or repo.user_can_manage_departments(scope,actor_user_id)):
         raise PermissionError("Создание партий доступно ответственным сотрудникам.")
     entity=_entity(scope,entity_id)
     if not entity: raise ValueError("Позиция не найдена.")
@@ -644,31 +644,37 @@ def list_lots(chat_id:int,user_id:int,limit:int=200)->list[dict[str,Any]]:
     rows=db.fetchall("""
       SELECT l.*,e.name AS entity_name,COALESCE(SUM(li.quantity),0) AS tracked_quantity,
              GROUP_CONCAT(DISTINCT a.name) AS area_names
-      FROM production_lots l JOIN entities e ON e.id=l.entity_id
-      LEFT JOIN lot_inventory li ON li.lot_id=l.id LEFT JOIN areas a ON a.id=li.area_id
+      FROM production_lots l JOIN entities e ON e.id=l.entity_id AND e.chat_id=l.chat_id
+      LEFT JOIN lot_inventory li ON li.lot_id=l.id LEFT JOIN areas a ON a.id=li.area_id AND a.chat_id=l.chat_id
       WHERE l.chat_id=? GROUP BY l.id ORDER BY l.id DESC LIMIT ?
     """,(scope,max(1,min(int(limit),500))))
     return [dict(r) for r in rows if visible is None or int(r["entity_id"]) in visible]
 
 
 def get_lot(chat_id:int,lot_id:int,user_id:int)->dict[str,Any]|None:
-    scope=_scope(chat_id); row=db.fetchone("SELECT l.*,e.name AS entity_name FROM production_lots l JOIN entities e ON e.id=l.entity_id WHERE l.chat_id=? AND l.id=?",(scope,int(lot_id)))
+    scope=_scope(chat_id); row=db.fetchone("SELECT l.*,e.name AS entity_name FROM production_lots l JOIN entities e ON e.id=l.entity_id AND e.chat_id=l.chat_id WHERE l.chat_id=? AND l.id=?",(scope,int(lot_id)))
     if not row: return None
     item=dict(row); visible=repo.visible_entity_ids_for_user(scope,user_id)
     if visible is not None and int(item["entity_id"]) not in visible: return None
-    item["inventory"]=[dict(r) for r in db.fetchall("SELECT li.*,a.name AS area_name FROM lot_inventory li LEFT JOIN areas a ON a.id=li.area_id WHERE li.lot_id=?",(int(lot_id),))]
-    item["components"]=[dict(r) for r in db.fetchall("SELECT lr.*,l.lot_code,e.name AS entity_name FROM lot_relations lr JOIN production_lots l ON l.id=lr.component_lot_id JOIN entities e ON e.id=l.entity_id WHERE lr.parent_lot_id=?",(int(lot_id),))]
-    item["used_in"]=[dict(r) for r in db.fetchall("SELECT lr.*,l.lot_code,e.name AS entity_name FROM lot_relations lr JOIN production_lots l ON l.id=lr.parent_lot_id JOIN entities e ON e.id=l.entity_id WHERE lr.component_lot_id=?",(int(lot_id),))]
+    item["inventory"]=[dict(r) for r in db.fetchall("SELECT li.*,a.name AS area_name FROM lot_inventory li JOIN production_lots pl ON pl.id=li.lot_id LEFT JOIN areas a ON a.id=li.area_id AND a.chat_id=pl.chat_id WHERE li.lot_id=? AND pl.chat_id=?",(int(lot_id),scope))]
+    item["components"]=[dict(r) for r in db.fetchall("SELECT lr.*,l.lot_code,e.name AS entity_name FROM lot_relations lr JOIN production_lots p ON p.id=lr.parent_lot_id JOIN production_lots l ON l.id=lr.component_lot_id AND l.chat_id=p.chat_id JOIN entities e ON e.id=l.entity_id AND e.chat_id=p.chat_id WHERE lr.parent_lot_id=? AND p.chat_id=?",(int(lot_id),scope))]
+    item["used_in"]=[dict(r) for r in db.fetchall("SELECT lr.*,l.lot_code,e.name AS entity_name FROM lot_relations lr JOIN production_lots c ON c.id=lr.component_lot_id JOIN production_lots l ON l.id=lr.parent_lot_id AND l.chat_id=c.chat_id JOIN entities e ON e.id=l.entity_id AND e.chat_id=c.chat_id WHERE lr.component_lot_id=? AND c.chat_id=?",(int(lot_id),scope))]
     return item
 
 
 def link_lots(chat_id:int,actor_user_id:int,parent_lot_id:int,component_lot_id:int,quantity:float,unit:str="шт",task_id:int|None=None)->None:
     scope=_scope(chat_id)
-    if not (repo.is_system_admin_id(actor_user_id) or repo.user_can_manage_departments(scope,actor_user_id)): raise PermissionError("Нет права связывать партии.")
+    if not (repo.is_tenant_admin(scope, actor_user_id) or repo.user_can_manage_departments(scope,actor_user_id)): raise PermissionError("Нет права связывать партии.")
     if int(parent_lot_id)==int(component_lot_id): raise ValueError("Партия не может содержать саму себя.")
     for lot_id in (parent_lot_id,component_lot_id):
         if not db.fetchone("SELECT id FROM production_lots WHERE chat_id=? AND id=?",(scope,int(lot_id))): raise ValueError("Партия не найдена.")
         if not get_lot(scope,int(lot_id),actor_user_id): raise PermissionError("Нет доступа к одной из выбранных партий.")
+    if task_id:
+        task = _task_row(scope, int(task_id))
+        if not task:
+            raise ValueError("Задание не найдено в этой организации.")
+        if not can_view_task(scope, actor_user_id, task):
+            raise PermissionError("Нет доступа к выбранному заданию.")
     q=float(quantity)
     if q<=0: raise ValueError("Количество должно быть больше нуля.")
     db.execute("INSERT OR REPLACE INTO lot_relations(parent_lot_id,component_lot_id,quantity_used,unit,task_id,created_by,created_at) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP)",(int(parent_lot_id),int(component_lot_id),q,str(unit or "шт")[:30],int(task_id) if task_id else None,int(actor_user_id)))
@@ -717,7 +723,7 @@ def save_equipment(chat_id:int,actor_user_id:int,name:str,*,equipment_id:int|Non
     _require_area(scope,area_id)
     if department_id and not _can_manage_department(scope,actor_user_id,int(department_id)):
         raise PermissionError("Нет права управлять оборудованием этого отдела.")
-    if not department_id and not repo.is_system_admin_id(actor_user_id):
+    if not department_id and not repo.is_tenant_admin(scope, actor_user_id):
         raise PermissionError("Оборудование без отдела может создавать только владелец/администратор.")
     if not str(name or "").strip(): raise ValueError("Укажите название оборудования.")
     status=status if status in EQUIPMENT_STATUSES else "active"; interval=max(0,min(int(service_interval_days),3650)); warning=max(0,min(int(warning_before_days),365))
@@ -737,12 +743,12 @@ def save_equipment(chat_id:int,actor_user_id:int,name:str,*,equipment_id:int|Non
 
 
 def _equipment_row(scope:int,equipment_id:int)->dict[str,Any]|None:
-    row=db.fetchone("SELECT eq.*,d.name AS department_name,a.name AS area_name FROM equipment eq LEFT JOIN departments d ON d.id=eq.department_id LEFT JOIN areas a ON a.id=eq.area_id WHERE eq.chat_id=? AND eq.id=? AND eq.is_archived=0",(scope,int(equipment_id)))
+    row=db.fetchone("SELECT eq.*,d.name AS department_name,a.name AS area_name FROM equipment eq LEFT JOIN departments d ON d.id=eq.department_id AND d.chat_id=eq.chat_id LEFT JOIN areas a ON a.id=eq.area_id AND a.chat_id=eq.chat_id WHERE eq.chat_id=? AND eq.id=? AND eq.is_archived=0",(scope,int(equipment_id)))
     return dict(row) if row else None
 
 
 def can_view_equipment(scope:int,user_id:int,item:dict[str,Any])->bool:
-    if repo.is_system_admin_id(user_id): return True
+    if repo.is_tenant_admin(scope, user_id): return True
     dep=item.get("department_id")
     return bool(dep and _member_level(int(dep),user_id)>=10)
 
@@ -756,12 +762,12 @@ def get_equipment(chat_id:int,equipment_id:int,user_id:int)->dict[str,Any]|None:
 
 
 def list_equipment(chat_id:int,user_id:int)->list[dict[str,Any]]:
-    scope=_scope(chat_id); rows=db.fetchall("SELECT eq.*,d.name AS department_name,a.name AS area_name,(SELECT COUNT(*) FROM equipment_downtimes ed WHERE ed.equipment_id=eq.id AND ed.status='open') AS open_downtimes,(SELECT ed.id FROM equipment_downtimes ed WHERE ed.equipment_id=eq.id AND ed.status='open' ORDER BY ed.id DESC LIMIT 1) AS open_downtime_id FROM equipment eq LEFT JOIN departments d ON d.id=eq.department_id LEFT JOIN areas a ON a.id=eq.area_id WHERE eq.chat_id=? AND eq.is_archived=0 ORDER BY eq.name",(scope,))
+    scope=_scope(chat_id); rows=db.fetchall("SELECT eq.*,d.name AS department_name,a.name AS area_name,(SELECT COUNT(*) FROM equipment_downtimes ed WHERE ed.equipment_id=eq.id AND ed.status='open') AS open_downtimes,(SELECT ed.id FROM equipment_downtimes ed WHERE ed.equipment_id=eq.id AND ed.status='open' ORDER BY ed.id DESC LIMIT 1) AS open_downtime_id FROM equipment eq LEFT JOIN departments d ON d.id=eq.department_id AND d.chat_id=eq.chat_id LEFT JOIN areas a ON a.id=eq.area_id AND a.chat_id=eq.chat_id WHERE eq.chat_id=? AND eq.is_archived=0 ORDER BY eq.name",(scope,))
     result=[]
     for r in rows:
         item=dict(r)
         if not can_view_equipment(scope,user_id,item): continue
-        level=_member_level(int(item["department_id"]),user_id) if item.get("department_id") else 0; admin=repo.is_system_admin_id(user_id)
+        level=_member_level(int(item["department_id"]),user_id) if item.get("department_id") else 0; admin=repo.is_tenant_admin(scope, user_id)
         item["can_report_downtime"]=True
         item["can_close_downtime"]=bool(admin or level>=30)
         item["can_maintain"]=bool(admin or level>=30)
@@ -787,10 +793,10 @@ def open_downtime(chat_id:int,actor_user_id:int,equipment_id:int,*,reason_type:s
 
 
 def close_downtime(chat_id:int,actor_user_id:int,downtime_id:int,resolution:str)->dict[str,Any]:
-    scope=_scope(chat_id); row=db.fetchone("SELECT ed.*,eq.department_id,eq.name FROM equipment_downtimes ed JOIN equipment eq ON eq.id=ed.equipment_id WHERE ed.chat_id=? AND ed.id=?",(scope,int(downtime_id)))
+    scope=_scope(chat_id); row=db.fetchone("SELECT ed.*,eq.department_id,eq.name FROM equipment_downtimes ed JOIN equipment eq ON eq.id=ed.equipment_id AND eq.chat_id=ed.chat_id WHERE ed.chat_id=? AND ed.id=?",(scope,int(downtime_id)))
     if not row: raise ValueError("Простой не найден.")
     item=dict(row)
-    if not (repo.is_system_admin_id(actor_user_id) or (item.get("department_id") and _member_level(int(item["department_id"]),actor_user_id)>=30)):
+    if not (repo.is_tenant_admin(scope, actor_user_id) or (item.get("department_id") and _member_level(int(item["department_id"]),actor_user_id)>=30)):
         raise PermissionError("Закрыть простой может ответственный сотрудник.")
     if item["status"]!="open": raise ValueError("Простой уже закрыт.")
     if not str(resolution or "").strip(): raise ValueError("Укажите результат устранения причины.")
@@ -802,7 +808,7 @@ def close_downtime(chat_id:int,actor_user_id:int,downtime_id:int,resolution:str)
 def record_maintenance(chat_id:int,actor_user_id:int,equipment_id:int,*,maintenance_type:str="planned",note:str="")->dict[str,Any]:
     scope=_scope(chat_id); item=_equipment_row(scope,equipment_id)
     if not item: raise ValueError("Оборудование не найдено.")
-    if not (repo.is_system_admin_id(actor_user_id) or (item.get("department_id") and _member_level(int(item["department_id"]),actor_user_id)>=30)): raise PermissionError("Нет права отмечать обслуживание.")
+    if not (repo.is_tenant_admin(scope, actor_user_id) or (item.get("department_id") and _member_level(int(item["department_id"]),actor_user_id)>=30)): raise PermissionError("Нет права отмечать обслуживание.")
     interval=int(item.get("service_interval_days") or 0); next_due=(datetime.now()+timedelta(days=interval)).strftime("%Y-%m-%d %H:%M:%S") if interval else None
     with db.connect() as conn:
         cur=conn.execute("INSERT INTO maintenance_records(equipment_id,chat_id,actor_user_id,maintenance_type,status,next_due_at,note) VALUES(?,?,?,?,?,?,?)",(int(equipment_id),scope,int(actor_user_id),str(maintenance_type or "planned")[:80],"completed",next_due,str(note or "")[:1000]));rid=int(cur.lastrowid)
@@ -829,7 +835,7 @@ def plan_fact_summary(chat_id:int,user_id:int,*,start_date:str|None=None,end_dat
     """,(scope,start,end))
     downtime={int(r["department_id"]):round(float(r["minutes"] or 0),1) for r in downtime_rows if r["department_id"] is not None}
     for dep_id in downtime:
-        if dep_id not in by_dep and (repo.is_system_admin_id(user_id) or _member_level(dep_id,user_id)>=10):
+        if dep_id not in by_dep and (repo.is_tenant_admin(scope, user_id) or _member_level(dep_id,user_id)>=10):
             dep=_department(dep_id)
             if dep: by_dep[dep_id]={"department_id":dep_id,"department_name":dep.get("name") or "Отдел","tasks":0,"target":0.0,"actual":0.0,"completed":0,"overdue":0}
     rows=[]
@@ -887,7 +893,7 @@ def queue_workflow_reminders(now:datetime|None=None)->int:
         for row in eqs:
             eq=dict(row); due=_parse_dt(eq.get("next_service_at")); warning=int(eq.get("warning_before_days") or 0)
             if not due or due>now+timedelta(days=warning): continue
-            recipients=_department_manager_ids(scope,int(eq["department_id"])) if eq.get("department_id") else repo.list_system_admin_ids(include_owner=True)
+            recipients=_department_manager_ids(scope,int(eq["department_id"])) if eq.get("department_id") else repo.tenant_admin_user_ids(scope)
             for uid in set(recipients):
                 if _workflow_once(scope,"equipment",int(eq["id"]),f"maintenance:{day_key}",uid):
                     priority="urgent" if due<now else "high"

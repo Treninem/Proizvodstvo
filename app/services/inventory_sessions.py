@@ -11,7 +11,7 @@ def approve_session(chat_id: int, session_id: int, actor_user_id: int, note: str
         return False, "Инвентаризация не найдена.", 0
     if session.get("status") != "submitted":
         return False, "Инвентаризация не ожидает подтверждения.", 0
-    if int(session.get("created_by") or 0) == int(actor_user_id) and not repo.is_global_owner_id(actor_user_id):
+    if int(session.get("created_by") or 0) == int(actor_user_id) and not repo.is_tenant_admin(chat_id, actor_user_id):
         return False, "Подтвердить пересчёт должен другой ответственный сотрудник.", 0
 
     operations: list[dict] = []

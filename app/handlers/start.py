@@ -5,7 +5,7 @@ from aiogram import F, Router
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, Message
 
-from ..access import is_chat_creator, is_global_owner
+from ..access import is_chat_creator
 from ..keyboards import chat_list_keyboard, help_topic_keyboard, main_menu, setup_menu
 from ..services import repository as repo
 from ..services import accounting
@@ -246,7 +246,7 @@ async def _manageable_group_chats(bot, user_id: int | None) -> list[dict]:
     result: list[dict] = []
     for chat in repo.list_known_group_chats(limit=200):
         chat_id = int(chat["chat_id"])
-        if is_global_owner(user_id) or repo.user_has_manage_access_to_chat(chat_id, user_id):
+        if repo.user_has_manage_access_to_chat(chat_id, user_id):
             result.append(chat)
             continue
         if await is_chat_creator(bot, chat_id, user_id):
@@ -344,11 +344,23 @@ async def recent_text(message: Message) -> None:
 
 @router.callback_query(F.data == "menu:setup")
 async def menu_setup(callback: CallbackQuery) -> None:
-    if not repo.is_system_admin_id(callback.from_user.id if callback.from_user else None):
+    uid = callback.from_user.id if callback.from_user else None
+    if not uid:
         await callback.answer("Нет доступа.", show_alert=True)
         return
+    groups = []
+    if callback.message.chat.type == "private":
+        groups = await _manageable_group_chats(callback.bot, uid)
+        if not groups and not repo.user_can_manage_current_context(callback.message.chat.id, uid):
+            await callback.answer("Нет доступа.", show_alert=True)
+            return
+    elif not repo.user_can_manage_current_context(callback.message.chat.id, uid):
+        # В самой группе создатель получает tenant-права после проверки Telegram.
+        if not await is_chat_creator(callback.bot, callback.message.chat.id, uid):
+            await callback.answer("Нет доступа.", show_alert=True)
+            return
+        repo.ensure_group_account_context(callback.message.chat.id, callback.message.chat.title or "Рабочая группа", callback.message.chat.type, uid)
     if callback.message.chat.type == "private" and callback.from_user:
-        groups = await _manageable_group_chats(callback.bot, callback.from_user.id)
         if len(groups) == 1:
             group = groups[0]
             group_chat_id = int(group["chat_id"])

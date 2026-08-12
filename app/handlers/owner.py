@@ -5,13 +5,11 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from ..access import is_global_owner
 from ..services import repository as repo
 from ..services import stock_risk
 from ..config import settings
-from ..keyboards import miniapp_url
 
 router = Router()
 
@@ -26,23 +24,15 @@ def _is_primary_owner(user_id: int | None) -> bool:
 
 def _owner_menu(user_id: int | None = None) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="Организации", callback_data="owner:accounts")],
         [InlineKeyboardButton(text="Все чаты", callback_data="owner:chats")],
-        [InlineKeyboardButton(text="Все учёты", callback_data="owner:accounts")],
         [InlineKeyboardButton(text="Общая статистика", callback_data="owner:stats")],
-        [InlineKeyboardButton(text="Состояние базы", callback_data="owner:db")],
-        [InlineKeyboardButton(text="Критические остатки", callback_data="owner:risks")],
+        [InlineKeyboardButton(text="Состояние платформы", callback_data="owner:db")],
+        [InlineKeyboardButton(text="Критические события", callback_data="owner:risks")],
+        [InlineKeyboardButton(text="Версия", callback_data="owner:version")],
         [InlineKeyboardButton(text="Режим проверки", callback_data="owner:testmode")],
+        [InlineKeyboardButton(text="Вернуться в обычное меню", callback_data="menu:main")],
     ]
-    if _is_primary_owner(user_id):
-        rows.append([InlineKeyboardButton(text="Доступы администраторов", callback_data="owner:access")])
-    if settings.public_base_url:
-        rows.append([
-            InlineKeyboardButton(
-                text="Открыть Mini App",
-                web_app=WebAppInfo(url=miniapp_url(user_id)),
-            )
-        ])
-    rows.append([InlineKeyboardButton(text="Обновить", callback_data="owner:panel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -118,7 +108,6 @@ def _accounts_keyboard() -> InlineKeyboardMarkup:
 def _owner_account_keyboard(account_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Выбрать для ввода", callback_data=f"owner:activateaccount:{account_id}")],
             [InlineKeyboardButton(text="Назад", callback_data="owner:accounts")],
         ]
     )
@@ -127,9 +116,10 @@ def _owner_account_keyboard(account_id: int) -> InlineKeyboardMarkup:
 def _format_panel(user_id: int | None = None) -> str:
     stats = repo.owner_global_stats()
     test_mode = "включён" if repo.is_user_test_mode_enabled(user_id) else "выключен"
-    role = "Владелец" if _is_primary_owner(user_id) else "Администратор"
+    role = "Владелец платформы"
     return (
-        f"Закрытый раздел · {role}\n\n"
+        f"Системное меню · {role}\n"
+        f"Версия бота: 82 · Mini App 20260812a\n\n"
         f"Подключённых групп: {stats['connected_chats']}\n"
         f"Всего чатов в базе: {stats['total_chats']}\n"
         f"Записей учёта: {stats['operations']}\n"
@@ -208,16 +198,25 @@ async def _show_panel(message: Message) -> None:
     await message.answer(_format_panel(user_id), reply_markup=_owner_menu(user_id))
 
 
+@router.message(Command("version"))
+async def owner_version_command(message: Message) -> None:
+    if not _is_primary_owner(message.from_user.id if message.from_user else None):
+        return
+    if message.chat.type != "private":
+        return
+    await message.answer("Версия бота: 82\nMini App: 20260812a\nАрхитектура: tenant-isolation v2")
+
+
 @router.message(Command("owner"))
 async def owner_command(message: Message) -> None:
-    if not is_global_owner(message.from_user.id if message.from_user else None):
+    if not _is_primary_owner(message.from_user.id if message.from_user else None):
         return
     await _show_panel(message)
 
 
 @router.message(F.text.lower().in_({"закрытый раздел", "панель владельца бота", "служебный доступ"}))
 async def owner_text_command(message: Message) -> None:
-    if not is_global_owner(message.from_user.id if message.from_user else None):
+    if not _is_primary_owner(message.from_user.id if message.from_user else None):
         return
     await _show_panel(message)
 
@@ -257,7 +256,7 @@ async def owner_add_admin_message(message: Message, state: FSMContext) -> None:
 
 @router.message(F.text.lower().in_({"тестовый режим", "режим проверки", "тест вкл", "тест выкл"}))
 async def owner_test_mode_text(message: Message) -> None:
-    if not is_global_owner(message.from_user.id if message.from_user else None):
+    if not _is_primary_owner(message.from_user.id if message.from_user else None):
         return
     text = (message.text or "").lower().strip()
     if text == "тест вкл":
@@ -275,7 +274,7 @@ async def owner_test_mode_text(message: Message) -> None:
 @router.callback_query(F.data.startswith("owner:"))
 async def owner_callbacks(callback: CallbackQuery, state: FSMContext) -> None:
     user_id = callback.from_user.id if callback.from_user else None
-    if not is_global_owner(user_id):
+    if not _is_primary_owner(user_id):
         await callback.answer()
         return
     if callback.message and callback.message.chat.type != "private":
@@ -351,6 +350,11 @@ async def owner_callbacks(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer(result, show_alert=not ok)
         return
 
+    if action == "version":
+        await safe_edit_text(callback.message, "Версия бота: 82\nMini App: 20260812a\nАрхитектура: tenant-isolation v2", reply_markup=_owner_menu(user_id))
+        await callback.answer()
+        return
+
     if action == "testmode":
         enabled = repo.toggle_user_test_mode(callback.from_user.id)
         text = "Режим проверки включён. Ваши пробные записи не попадут в основной учёт." if enabled else "Режим проверки выключен."
@@ -380,31 +384,9 @@ async def owner_callbacks(callback: CallbackQuery, state: FSMContext) -> None:
         except ValueError:
             await callback.answer("Учёт не найден.", show_alert=True)
             return
-        report = repo.owner_account_report(account_id)
+        report = repo.owner_company_report(account_id)
         await safe_edit_text(callback.message, report, reply_markup=_owner_account_keyboard(account_id))
         await callback.answer()
-        return
-    if action.startswith("activateaccount:"):
-        raw_account_id = action.split(":", 1)[1]
-        try:
-            account_id = int(raw_account_id)
-        except ValueError:
-            await callback.answer("Учёт не найден.", show_alert=True)
-            return
-        ok, msg = repo.set_active_account(callback.message.chat.id, account_id, user_id=callback.from_user.id)
-        if not ok:
-            await callback.answer(msg, show_alert=True)
-            return
-        account = repo.get_account_by_id(account_id)
-        name = account.name if account else str(account_id)
-        await safe_edit_text(
-            callback.message,
-            f"Выбран учёт: {name}\n\n"
-            "Теперь записи, отчёты и исправления из личных сообщений будут относиться к этому учёту.\n"
-            "Режим проверки можно включить отдельно, если запись нужна только для теста.",
-            reply_markup=_owner_menu(user_id),
-        )
-        await callback.answer("Учёт выбран")
         return
     if action == "stats":
         await safe_edit_text(callback.message, _format_stats(), reply_markup=_owner_menu(user_id))

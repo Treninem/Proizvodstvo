@@ -11,14 +11,14 @@ from . import accounting
 def _scope(chat_id:int)->int: return repo.resolve_scope_chat_id(int(chat_id))
 
 def _eq(scope:int,equipment_id:int)->dict[str,Any]|None:
-    row=db.fetchone("SELECT eq.*,d.name AS department_name,a.name AS area_name FROM equipment eq LEFT JOIN departments d ON d.id=eq.department_id LEFT JOIN areas a ON a.id=eq.area_id WHERE eq.chat_id=? AND eq.id=? AND eq.is_archived=0",(scope,int(equipment_id)))
+    row=db.fetchone("SELECT eq.*,d.name AS department_name,a.name AS area_name FROM equipment eq LEFT JOIN departments d ON d.id=eq.department_id AND d.chat_id=eq.chat_id LEFT JOIN areas a ON a.id=eq.area_id AND a.chat_id=eq.chat_id WHERE eq.chat_id=? AND eq.id=? AND eq.is_archived=0",(scope,int(equipment_id)))
     return dict(row) if row else None
 
 def _level(dep:int|None,user:int)->int: return int(repo.department_actor_level(int(dep),int(user)) or 0) if dep else 0
 
-def _can_view(scope:int,user:int,eq:dict[str,Any])->bool: return repo.is_system_admin_id(user) or bool(eq.get("department_id") and _level(eq.get("department_id"),user)>=10)
+def _can_view(scope:int,user:int,eq:dict[str,Any])->bool: return repo.is_tenant_admin(scope,user) or bool(eq.get("department_id") and _level(eq.get("department_id"),user)>=10)
 
-def _can_manage(scope:int,user:int,eq:dict[str,Any])->bool: return repo.is_system_admin_id(user) or bool(eq.get("department_id") and _level(eq.get("department_id"),user)>=50)
+def _can_manage(scope:int,user:int,eq:dict[str,Any])->bool: return repo.is_tenant_admin(scope,user) or bool(eq.get("department_id") and _level(eq.get("department_id"),user)>=50)
 
 def _parse(value:str|None)->datetime|None:
     if not value:return None
@@ -35,7 +35,7 @@ def save_plan(chat_id:int,actor_user_id:int,values:dict[str,Any])->dict[str,Any]
     if not _can_manage(scope,actor_user_id,eq): raise PermissionError("Нет права настраивать ТО этого оборудования.")
     interval=max(0,int(values.get("interval_days") or eq.get("service_interval_days") or 0)); warning=max(0,int(values.get("warning_before_days") or eq.get("warning_before_days") or 3))
     responsible=int(values["responsible_user_id"]) if values.get("responsible_user_id") else None
-    if responsible and eq.get("department_id") and _level(int(eq["department_id"]),responsible)<10 and not repo.is_system_admin_id(responsible): raise ValueError("Ответственный не имеет доступа к отделу оборудования.")
+    if responsible and eq.get("department_id") and _level(int(eq["department_id"]),responsible)<10 and not repo.is_tenant_admin(scope,responsible): raise ValueError("Ответственный не имеет доступа к отделу оборудования.")
     next_due=str(values.get("next_due_at") or eq.get("next_service_at") or "")[:30] or None
     if not next_due and interval: next_due=(datetime.now()+timedelta(days=interval)).strftime("%Y-%m-%d %H:%M:%S")
     checklist=list(values.get("checklist") or []); parts=list(values.get("spare_parts") or [])
@@ -52,21 +52,23 @@ def save_plan(chat_id:int,actor_user_id:int,values:dict[str,Any])->dict[str,Any]
             if not isinstance(item,dict): continue
             eid=int(item.get("entity_id") or 0); qty=max(0,float(item.get("planned_quantity") or 0)); area=int(item["area_id"]) if item.get("area_id") else None
             ent=conn.execute("SELECT default_unit FROM entities WHERE chat_id=? AND id=? AND is_archived=0",(scope,eid)).fetchone()
+            if area is not None and not conn.execute("SELECT 1 FROM areas WHERE chat_id=? AND id=? AND is_archived=0",(scope,area)).fetchone():
+                raise ValueError("Площадка запчасти не принадлежит этой организации.")
             if eid and ent and qty>0: conn.execute("INSERT INTO maintenance_spare_parts(plan_id,entity_id,area_id,planned_quantity,unit) VALUES(?,?,?,?,?)",(pid,eid,area,qty,str(item.get("unit") or ent["default_unit"] or "шт")[:30]))
         conn.execute("UPDATE equipment SET service_interval_days=?,warning_before_days=?,next_service_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(interval,warning,next_due,equipment_id));conn.commit()
     ensure_work_orders(scope,now=datetime.now())
     return get_plan(scope,pid,actor_user_id) or {"id":pid}
 
 def get_plan(chat_id:int,plan_id:int,user_id:int)->dict[str,Any]|None:
-    scope=_scope(chat_id); row=db.fetchone("SELECT p.*,eq.name AS equipment_name,eq.department_id,eq.area_id,d.name AS department_name,a.name AS area_name FROM maintenance_plans p JOIN equipment eq ON eq.id=p.equipment_id LEFT JOIN departments d ON d.id=eq.department_id LEFT JOIN areas a ON a.id=eq.area_id WHERE p.chat_id=? AND p.id=?",(scope,int(plan_id)))
+    scope=_scope(chat_id); row=db.fetchone("SELECT p.*,eq.name AS equipment_name,eq.department_id,eq.area_id,d.name AS department_name,a.name AS area_name FROM maintenance_plans p JOIN equipment eq ON eq.id=p.equipment_id AND eq.chat_id=p.chat_id LEFT JOIN departments d ON d.id=eq.department_id AND d.chat_id=p.chat_id LEFT JOIN areas a ON a.id=eq.area_id AND a.chat_id=p.chat_id WHERE p.chat_id=? AND p.id=?",(scope,int(plan_id)))
     if not row:return None
     item=dict(row)
     if not _can_view(scope,user_id,item):return None
-    item["can_manage"]=_can_manage(scope,user_id,item); item["checklist"]=[dict(r) for r in db.fetchall("SELECT * FROM maintenance_checklist_items WHERE plan_id=? ORDER BY sort_order,id",(int(plan_id),))];item["spare_parts"]=[dict(r) for r in db.fetchall("SELECT ms.*,e.name AS entity_name,a.name AS area_name FROM maintenance_spare_parts ms JOIN entities e ON e.id=ms.entity_id LEFT JOIN areas a ON a.id=ms.area_id WHERE ms.plan_id=? ORDER BY ms.id",(int(plan_id),))]
+    item["can_manage"]=_can_manage(scope,user_id,item); item["checklist"]=[dict(r) for r in db.fetchall("SELECT * FROM maintenance_checklist_items WHERE plan_id=? ORDER BY sort_order,id",(int(plan_id),))];item["spare_parts"]=[dict(r) for r in db.fetchall("SELECT ms.*,e.name AS entity_name,a.name AS area_name FROM maintenance_spare_parts ms JOIN maintenance_plans p ON p.id=ms.plan_id JOIN entities e ON e.id=ms.entity_id AND e.chat_id=p.chat_id LEFT JOIN areas a ON a.id=ms.area_id AND a.chat_id=p.chat_id WHERE ms.plan_id=? AND p.chat_id=? ORDER BY ms.id",(int(plan_id),scope))]
     return item
 
 def list_plans(chat_id:int,user_id:int)->list[dict[str,Any]]:
-    scope=_scope(chat_id); rows=db.fetchall("SELECT p.*,eq.name AS equipment_name,eq.department_id,eq.area_id,d.name AS department_name,a.name AS area_name FROM maintenance_plans p JOIN equipment eq ON eq.id=p.equipment_id LEFT JOIN departments d ON d.id=eq.department_id LEFT JOIN areas a ON a.id=eq.area_id WHERE p.chat_id=? ORDER BY COALESCE(p.next_due_at,'9999'),eq.name",(scope,));out=[]
+    scope=_scope(chat_id); rows=db.fetchall("SELECT p.*,eq.name AS equipment_name,eq.department_id,eq.area_id,d.name AS department_name,a.name AS area_name FROM maintenance_plans p JOIN equipment eq ON eq.id=p.equipment_id AND eq.chat_id=p.chat_id LEFT JOIN departments d ON d.id=eq.department_id AND d.chat_id=p.chat_id LEFT JOIN areas a ON a.id=eq.area_id AND a.chat_id=p.chat_id WHERE p.chat_id=? ORDER BY COALESCE(p.next_due_at,'9999'),eq.name",(scope,));out=[]
     for r in rows:
         d=dict(r)
         if _can_view(scope,user_id,d):d["can_manage"]=_can_manage(scope,user_id,d);out.append(d)
@@ -89,15 +91,15 @@ def ensure_work_orders(chat_id:int,now:datetime|None=None)->int:
     return created
 
 def _work_row(scope:int,wid:int)->dict[str,Any]|None:
-    row=db.fetchone("SELECT w.*,eq.name AS equipment_name,eq.department_id,eq.area_id,d.name AS department_name,a.name AS area_name FROM maintenance_work_orders w JOIN equipment eq ON eq.id=w.equipment_id LEFT JOIN departments d ON d.id=eq.department_id LEFT JOIN areas a ON a.id=eq.area_id WHERE w.chat_id=? AND w.id=?",(scope,int(wid)));return dict(row) if row else None
+    row=db.fetchone("SELECT w.*,eq.name AS equipment_name,eq.department_id,eq.area_id,d.name AS department_name,a.name AS area_name FROM maintenance_work_orders w JOIN equipment eq ON eq.id=w.equipment_id AND eq.chat_id=w.chat_id LEFT JOIN departments d ON d.id=eq.department_id AND d.chat_id=w.chat_id LEFT JOIN areas a ON a.id=eq.area_id AND a.chat_id=w.chat_id WHERE w.chat_id=? AND w.id=?",(scope,int(wid)));return dict(row) if row else None
 
 def get_work_order(chat_id:int,wid:int,user_id:int)->dict[str,Any]|None:
     scope=_scope(chat_id);item=_work_row(scope,wid)
     if not item or not _can_view(scope,user_id,item):return None
-    item["can_manage"]=_can_manage(scope,user_id,item) or int(item.get("responsible_user_id") or 0)==int(user_id);item["checks"]=[dict(r) for r in db.fetchall("SELECT * FROM maintenance_work_checks WHERE work_order_id=? ORDER BY sort_order,id",(int(wid),))];item["parts"]=[dict(r) for r in db.fetchall("SELECT mp.*,e.name AS entity_name,a.name AS area_name FROM maintenance_work_parts mp JOIN entities e ON e.id=mp.entity_id LEFT JOIN areas a ON a.id=mp.area_id WHERE mp.work_order_id=? ORDER BY mp.id",(int(wid),))];return item
+    item["can_manage"]=_can_manage(scope,user_id,item) or int(item.get("responsible_user_id") or 0)==int(user_id);item["checks"]=[dict(r) for r in db.fetchall("SELECT * FROM maintenance_work_checks WHERE work_order_id=? ORDER BY sort_order,id",(int(wid),))];item["parts"]=[dict(r) for r in db.fetchall("SELECT mp.*,e.name AS entity_name,a.name AS area_name FROM maintenance_work_parts mp JOIN maintenance_work_orders w ON w.id=mp.work_order_id JOIN entities e ON e.id=mp.entity_id AND e.chat_id=w.chat_id LEFT JOIN areas a ON a.id=mp.area_id AND a.chat_id=w.chat_id WHERE mp.work_order_id=? AND w.chat_id=? ORDER BY mp.id",(int(wid),scope))];return item
 
 def list_work_orders(chat_id:int,user_id:int,limit:int=200)->list[dict[str,Any]]:
-    scope=_scope(chat_id);rows=db.fetchall("SELECT w.*,eq.name AS equipment_name,eq.department_id,d.name AS department_name FROM maintenance_work_orders w JOIN equipment eq ON eq.id=w.equipment_id LEFT JOIN departments d ON d.id=eq.department_id WHERE w.chat_id=? ORDER BY CASE w.status WHEN 'in_progress' THEN 0 WHEN 'planned' THEN 1 ELSE 2 END,w.due_at LIMIT ?",(scope,max(1,min(int(limit),500))));out=[]
+    scope=_scope(chat_id);rows=db.fetchall("SELECT w.*,eq.name AS equipment_name,eq.department_id,d.name AS department_name FROM maintenance_work_orders w JOIN equipment eq ON eq.id=w.equipment_id AND eq.chat_id=w.chat_id LEFT JOIN departments d ON d.id=eq.department_id AND d.chat_id=w.chat_id WHERE w.chat_id=? ORDER BY CASE w.status WHEN 'in_progress' THEN 0 WHEN 'planned' THEN 1 ELSE 2 END,w.due_at LIMIT ?",(scope,max(1,min(int(limit),500))));out=[]
     for r in rows:
         d=dict(r)
         if _can_view(scope,user_id,d):d["can_manage"]=_can_manage(scope,user_id,d) or int(d.get("responsible_user_id") or 0)==int(user_id);out.append(d)
