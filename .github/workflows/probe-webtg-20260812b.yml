@@ -19,7 +19,7 @@ jobs:
         run: |
           set +e
           ok=0
-          for i in $(seq 1 18); do
+          for i in $(seq 1 24); do
             health=$(curl -sS --max-time 20 -o /tmp/health.json -w '%{http_code}' https://procontrol.bothost.tech/health || echo 000)
             ready=$(curl -sS --max-time 20 -o /tmp/ready.json -w '%{http_code}' https://procontrol.bothost.tech/ready || echo 000)
             mini=$(curl -sS -L --max-time 20 -o /tmp/mini.html -w '%{http_code}' "https://procontrol.bothost.tech/mini?v=20260812b&probe=$i" || echo 000)
