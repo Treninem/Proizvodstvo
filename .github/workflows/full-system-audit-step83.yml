@@ -22,7 +22,6 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     env:
-      BOT_TOKEN: '123456789:TEST_TOKEN_FOR_CI_ONLY_1234567890'
       OWNER_TELEGRAM_ID: '2097006037'
       BOT_DATA_DIR: '/tmp/proizvodstvo-full-audit'
       PUBLIC_BASE_URL: 'https://example.invalid'
@@ -33,6 +32,9 @@ jobs:
       PYTHONPATH: '.'
     steps:
       - uses: actions/checkout@v4
+      - name: Set synthetic CI bot token
+        shell: bash
+        run: echo 'BOT_TOKEN=123456789:'"$(printf 'A%.0s' {1..30})" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
