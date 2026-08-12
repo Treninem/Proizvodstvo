@@ -270,7 +270,19 @@ def list_accounts_for_user(user_id: int, chat_id: int | None = None, include_acc
                 if acc.id not in seen and user_has_account_access(acc.id, user_id):
                     accounts.append(acc)
                     seen.add(acc.id)
-    return accounts
+    # Safe compatibility migration for accounts created after older releases
+    # had already stored business data directly under the Telegram group chat_id.
+    # The existing repair helper only switches the scope when the synthetic scope
+    # is completely empty and the original group scope contains real business rows;
+    # if both sides contain data or another account owns the scope, it does nothing.
+    repaired_accounts: list[AccountingAccount] = []
+    for account in accounts:
+        chat_row = db.fetchone("SELECT chat_type FROM chats WHERE chat_id=?", (int(account.owner_chat_id),))
+        chat_type = str(chat_row["chat_type"] or "") if chat_row else ""
+        if chat_type in {"group", "supergroup"}:
+            account = _repair_empty_account_scope_from_group(account, int(account.owner_chat_id))
+        repaired_accounts.append(account)
+    return repaired_accounts
 
 
 

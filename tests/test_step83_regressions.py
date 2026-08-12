@@ -33,6 +33,25 @@ class _DummyConn:
 
 
 class Step83RegressionTests(unittest.TestCase):
+    def test_account_listing_repairs_empty_synthetic_scope_from_legacy_group(self):
+        row = {
+            "id": 7, "owner_user_id": 55, "owner_chat_id": -100777,
+            "scope_chat_id": -900000000007, "name": "Цех",
+            "normalized": "цех", "is_general": 0,
+        }
+        repaired = repo.AccountingAccount(
+            id=7, owner_user_id=55, owner_chat_id=-100777,
+            scope_chat_id=-100777, name="Цех", normalized="цех", is_general=False,
+        )
+        with patch.object(repo.db, "fetchall", side_effect=[[row], []]), \
+             patch.object(repo.db, "fetchone", return_value={"chat_type": "supergroup"}), \
+             patch.object(repo, "_repair_empty_account_scope_from_group", return_value=repaired) as repair:
+            accounts = repo.list_accounts_for_user(55)
+        self.assertEqual(len(accounts), 1)
+        self.assertEqual(accounts[0].scope_chat_id, -100777)
+        repair.assert_called_once()
+        self.assertEqual(repair.call_args.args[1], -100777)
+
     def test_encrypted_backups_are_visible_in_backup_list(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
