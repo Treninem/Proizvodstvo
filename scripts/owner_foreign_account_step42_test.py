@@ -12,7 +12,7 @@ shutil.rmtree(BASE, ignore_errors=True)
 BASE.mkdir(parents=True)
 os.environ['BOT_DATA_DIR'] = str(BASE)
 os.environ['OWNER_TELEGRAM_ID'] = '2097006037'
-os.environ['BOT_TOKEN'] = '123456789:TEST_TOKEN_FOR_CI_ONLY'
+os.environ.setdefault('BOT_TOKEN', 'TEST_TOKEN_FOR_CI_ONLY')
 
 from app import db
 from app.services import accounting
