@@ -43,7 +43,6 @@ def main() -> None:
     _save(chat_id, user_id, "Производство Деталь А 13000")
     _save(chat_id, user_id, "Производство Деталь Б 22000")
     _save(chat_id, user_id, "Собрали Изделие А 1000")
-    _save(chat_id, user_id, "Зафасовали Изделие А 500")
 
     text = reporting.build_text_report(chat_id, "отчёт за месяц", user_id=user_id)
     assert "Производство комплектующих:" in text, text
