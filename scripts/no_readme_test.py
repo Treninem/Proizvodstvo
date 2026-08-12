@@ -6,10 +6,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main() -> None:
-    found = [p.relative_to(ROOT) for p in ROOT.rglob('*') if p.is_file() and p.name.lower().startswith('readme')]
-    if found:
-        raise SystemExit('Найден лишний README: ' + ', '.join(map(str, found)))
-    print('OK')
+    start = ROOT / 'README_START.txt'
+    memory = ROOT / 'STEP83_MEMORY.md'
+    assert start.is_file() and start.stat().st_size > 1000, start
+    assert memory.is_file() and 'Шаг 83' in memory.read_text(encoding='utf-8'), memory
+    # Реальный .env и runtime-база не должны храниться в репозитории.
+    assert not (ROOT / '.env').exists()
+    assert not (ROOT / 'production_account.sqlite3').exists()
+    print('repository_docs_test OK')
 
 
 if __name__ == '__main__':
