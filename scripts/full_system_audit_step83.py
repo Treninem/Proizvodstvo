@@ -245,11 +245,16 @@ def audit_sql_join_tenant_hardening() -> None:
             # is reviewed in a short neighborhood to avoid obvious false positives.
             lines = text.splitlines()
             neighborhood = " ".join(lines[max(0, lineno-2): min(len(lines), lineno+2)]).lower()
+            if "operation_corrections" in neighborhood:
+                # Child table has no chat_id by schema; original_operation_id points to
+                # globally unique operations.id, while the parent operation itself is scoped.
+                continue
             if "chat_id" not in neighborhood and any(t in neighborhood for t in ("areas", "entities", "departments", "equipment", "production_lots", "company_sites", "storage_locations")):
                 warnings.append(f"{path.relative_to(ROOT)}:{lineno}: {line.strip()[:180]}")
     print(f"SQL_JOIN_REVIEW candidates={len(warnings)}")
     for item in warnings[:80]:
         print("SQL_JOIN_CANDIDATE", item)
+    check(not warnings, "Unreviewed tenant JOINs remain: " + "; ".join(warnings[:20]))
 
 
 def audit_repository_hygiene() -> None:

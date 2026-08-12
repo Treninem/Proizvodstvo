@@ -146,10 +146,10 @@ def list_rules(chat_id: int, *, include_disabled: bool = True) -> list[dict[str,
         f"""
         SELECT r.*,e.name AS entity_name,e.default_unit,a.name AS area_name,yo.name AS yield_output_name,po.name AS planned_output_name
         FROM stock_alert_rules r
-        JOIN entities e ON e.id=r.entity_id AND e.is_archived=0
-        LEFT JOIN areas a ON a.id=r.area_id
-        LEFT JOIN entities yo ON yo.id=r.yield_output_entity_id
-        LEFT JOIN entities po ON po.id=r.planned_output_entity_id
+        JOIN entities e ON e.id=r.entity_id AND e.chat_id=r.chat_id AND e.is_archived=0
+        LEFT JOIN areas a ON a.id=r.area_id AND a.chat_id=r.chat_id
+        LEFT JOIN entities yo ON yo.id=r.yield_output_entity_id AND yo.chat_id=r.chat_id
+        LEFT JOIN entities po ON po.id=r.planned_output_entity_id AND po.chat_id=r.chat_id
         WHERE r.chat_id=? {where}
         ORDER BY CASE WHEN r.is_enabled=1 THEN 0 ELSE 1 END,e.name,a.name
         """,
@@ -168,9 +168,9 @@ def get_rule(rule_id: int) -> dict[str, Any] | None:
     row = db.fetchone(
         """
         SELECT r.*,e.name AS entity_name,e.default_unit,a.name AS area_name,yo.name AS yield_output_name,po.name AS planned_output_name
-        FROM stock_alert_rules r JOIN entities e ON e.id=r.entity_id
-        LEFT JOIN areas a ON a.id=r.area_id LEFT JOIN entities yo ON yo.id=r.yield_output_entity_id
-        LEFT JOIN entities po ON po.id=r.planned_output_entity_id
+        FROM stock_alert_rules r JOIN entities e ON e.id=r.entity_id AND e.chat_id=r.chat_id
+        LEFT JOIN areas a ON a.id=r.area_id AND a.chat_id=r.chat_id LEFT JOIN entities yo ON yo.id=r.yield_output_entity_id AND yo.chat_id=r.chat_id
+        LEFT JOIN entities po ON po.id=r.planned_output_entity_id AND po.chat_id=r.chat_id
         WHERE r.id=?
         """,
         (int(rule_id),),
@@ -356,7 +356,7 @@ def list_observations(chat_id: int, rule_id: int | None = None, limit: int = 100
     rows = db.fetchall(
         f"""
         SELECT o.*,e.name AS entity_name,a.name AS area_name
-        FROM stock_observations o JOIN entities e ON e.id=o.entity_id LEFT JOIN areas a ON a.id=o.area_id
+        FROM stock_observations o JOIN entities e ON e.id=o.entity_id AND e.chat_id=o.chat_id LEFT JOIN areas a ON a.id=o.area_id AND a.chat_id=o.chat_id
         WHERE {' AND '.join(where)} ORDER BY o.id DESC LIMIT ?
         """,
         params,
@@ -997,7 +997,7 @@ def list_incidents(chat_id: int, include_resolved: bool = False, limit: int = 20
     rows = db.fetchall(
         f"""SELECT i.*,r.entity_id,r.entity_type,r.area_id,e.name AS entity_name,e.default_unit,a.name AS area_name
             FROM stock_alert_incidents i JOIN stock_alert_rules r ON r.id=i.rule_id
-            JOIN entities e ON e.id=r.entity_id LEFT JOIN areas a ON a.id=r.area_id
+            JOIN entities e ON e.id=r.entity_id LEFT JOIN areas a ON a.id=r.area_id AND a.chat_id=r.chat_id
             WHERE i.chat_id=? {status}
             ORDER BY CASE i.severity WHEN 'emergency' THEN 0 WHEN 'critical' THEN 1 ELSE 2 END,i.last_seen_at DESC LIMIT ?""",
         (scope, max(1, min(int(limit), 500))),

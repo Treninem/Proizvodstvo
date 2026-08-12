@@ -542,8 +542,8 @@ def list_requests(chat_id:int,user_id:int,*,status:str|None=None,limit:int=200)-
         SELECT r.*,rd.name AS requester_department_name,sd.name AS supplier_department_name,e.name AS entity_name,
                fa.name AS from_area_name,ta.name AS to_area_name
         FROM interdepartment_requests r
-        JOIN departments rd ON rd.id=r.requester_department_id JOIN departments sd ON sd.id=r.supplier_department_id
-        JOIN entities e ON e.id=r.entity_id LEFT JOIN areas fa ON fa.id=r.from_area_id LEFT JOIN areas ta ON ta.id=r.to_area_id
+        JOIN departments rd ON rd.id=r.requester_department_id AND rd.chat_id=r.chat_id JOIN departments sd ON sd.id=r.supplier_department_id AND sd.chat_id=r.chat_id
+        JOIN entities e ON e.id=r.entity_id AND e.chat_id=r.chat_id LEFT JOIN areas fa ON fa.id=r.from_area_id AND fa.chat_id=r.chat_id LEFT JOIN areas ta ON ta.id=r.to_area_id AND ta.chat_id=r.chat_id
         WHERE {' AND '.join(where)} ORDER BY CASE r.status WHEN 'requested' THEN 0 WHEN 'approved' THEN 1 WHEN 'issued' THEN 2 WHEN 'partially_received' THEN 3 ELSE 4 END,
         CASE r.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,COALESCE(r.needed_at,'9999-12-31'),r.id DESC LIMIT ?
     """,tuple(params))

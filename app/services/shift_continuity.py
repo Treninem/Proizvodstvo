@@ -273,7 +273,7 @@ def list_shift_packages(
         f"""
         SELECT p.*,a.name AS area_name,{_display_name_sql('p')} AS worker_name
         FROM shift_sync_packages p
-        LEFT JOIN areas a ON a.id=p.area_id
+        LEFT JOIN areas a ON a.id=p.area_id AND a.chat_id=p.chat_id
         WHERE {' AND '.join(where)}
         ORDER BY CASE p.status WHEN 'review' THEN 0 WHEN 'partial' THEN 1 WHEN 'received' THEN 2 ELSE 3 END,
                  p.updated_at DESC,p.id DESC

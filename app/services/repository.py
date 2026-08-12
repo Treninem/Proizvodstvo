@@ -782,7 +782,7 @@ def list_entity_codes(chat_id: int, entity_ids: Iterable[int] | None = None) -> 
         params.extend(ids)
     rows = db.fetchall(
         f"""SELECT ec.*,e.name AS entity_name,e.entity_type,e.default_unit
-            FROM entity_codes ec JOIN entities e ON e.id=ec.entity_id AND e.is_archived=0
+            FROM entity_codes ec JOIN entities e ON e.id=ec.entity_id AND e.chat_id=ec.chat_id AND e.is_archived=0
             WHERE {' AND '.join(where)}
             ORDER BY e.name,ec.is_primary DESC,ec.code""",
         tuple(params),
@@ -797,7 +797,7 @@ def resolve_entity_code(chat_id: int, code: str) -> dict | None:
         return None
     row = db.fetchone(
         """SELECT ec.*,e.name AS entity_name,e.entity_type,e.default_unit
-           FROM entity_codes ec JOIN entities e ON e.id=ec.entity_id AND e.is_archived=0
+           FROM entity_codes ec JOIN entities e ON e.id=ec.entity_id AND e.chat_id=ec.chat_id AND e.is_archived=0
            WHERE ec.chat_id=? AND ec.normalized=?""",
         (scope, normalized),
     )
@@ -1093,8 +1093,9 @@ def list_meter_area_names(meter_id: int) -> list[str]:
     rows = db.fetchall(
         """
         SELECT a.name FROM meter_area_bindings b
-        JOIN areas a ON a.id=b.area_id
-        WHERE b.meter_id=? AND a.is_archived=0
+        JOIN entities m_scope ON m_scope.id=b.meter_id
+        JOIN areas a ON a.id=b.area_id AND a.chat_id=m_scope.chat_id
+        WHERE b.meter_id=? AND a.is_archived=0 AND m_scope.is_archived=0
         ORDER BY a.name
         """,
         (meter_id,),
@@ -1140,8 +1141,9 @@ def list_stock_item_area_names(stock_item_id: int) -> list[str]:
     rows = db.fetchall(
         """
         SELECT a.name FROM stock_item_area_bindings b
-        JOIN areas a ON a.id=b.area_id
-        WHERE b.stock_item_id=? AND a.is_archived=0
+        JOIN entities s_scope ON s_scope.id=b.stock_item_id
+        JOIN areas a ON a.id=b.area_id AND a.chat_id=s_scope.chat_id
+        WHERE b.stock_item_id=? AND a.is_archived=0 AND s_scope.is_archived=0
         ORDER BY a.name
         """,
         (stock_item_id,),
@@ -1304,8 +1306,9 @@ def list_product_components(product_id: int) -> list[dict]:
         """
         SELECT pc.component_id,pc.quantity,e.name,e.default_unit
         FROM product_components pc
-        JOIN entities e ON e.id=pc.component_id
-        WHERE pc.product_id=? AND e.is_archived=0
+        JOIN entities p_scope ON p_scope.id=pc.product_id AND p_scope.entity_type='product'
+        JOIN entities e ON e.id=pc.component_id AND e.chat_id=p_scope.chat_id
+        WHERE pc.product_id=? AND e.is_archived=0 AND p_scope.is_archived=0
         ORDER BY e.name
         """,
         (product_id,),
@@ -2231,10 +2234,10 @@ def list_inventory_history(
                CASE WHEN oc.id IS NULL THEN 0 ELSE 1 END AS is_corrected,
                w.display_name AS worker_name
         FROM operations o
-        LEFT JOIN entities e ON e.id=o.entity_id
-        LEFT JOIN areas a ON a.id=o.area_id
-        LEFT JOIN areas af ON af.id=o.from_area_id
-        LEFT JOIN areas at ON at.id=o.to_area_id
+        LEFT JOIN entities e ON e.id=o.entity_id AND e.chat_id=o.chat_id
+        LEFT JOIN areas a ON a.id=o.area_id AND a.chat_id=o.chat_id
+        LEFT JOIN areas af ON af.id=o.from_area_id AND af.chat_id=o.chat_id
+        LEFT JOIN areas at ON at.id=o.to_area_id AND at.chat_id=o.chat_id
         LEFT JOIN operation_corrections oc ON oc.original_operation_id=o.id
         LEFT JOIN workers w ON w.chat_id=o.chat_id AND w.user_id=o.user_id
         WHERE {' AND '.join(where)}
@@ -3895,7 +3898,8 @@ def list_department_entity_rules(department_id: int) -> list[dict]:
         """
         SELECT der.*,e.name AS entity_name,e.default_unit
         FROM department_entity_rules der
-        JOIN entities e ON e.id=der.entity_id AND e.is_archived=0
+        JOIN departments d_scope ON d_scope.id=der.department_id
+        JOIN entities e ON e.id=der.entity_id AND e.chat_id=d_scope.chat_id AND e.is_archived=0
         WHERE der.department_id=?
         ORDER BY der.operation_key,e.name
         """,
@@ -4145,9 +4149,10 @@ def department_work_access_for_user(chat_id: int, user_id: int | None) -> list[d
             entity_rows = db.fetchall(
                 """
                 SELECT der.entity_id,der.entity_type,e.name,e.default_unit,
-                       (SELECT ec.code FROM entity_codes ec WHERE ec.entity_id=e.id ORDER BY ec.is_primary DESC,ec.id LIMIT 1) AS code
+                       (SELECT ec.code FROM entity_codes ec WHERE ec.entity_id=e.id AND ec.chat_id=e.chat_id ORDER BY ec.is_primary DESC,ec.id LIMIT 1) AS code
                 FROM department_entity_rules der
-                JOIN entities e ON e.id=der.entity_id AND e.is_archived=0
+                JOIN departments d_scope ON d_scope.id=der.department_id
+        JOIN entities e ON e.id=der.entity_id AND e.chat_id=d_scope.chat_id AND e.is_archived=0
                 WHERE der.department_id=? AND der.operation_key=? AND der.can_submit=1
                 ORDER BY e.name
                 """,
@@ -4296,10 +4301,10 @@ def get_operation_by_client_request(chat_id: int, user_id: int, client_request_i
                o.source_channel,o.created_at,e.name AS entity_name,
                a.name AS area_name,fa.name AS from_area_name,ta.name AS to_area_name
         FROM operations o
-        LEFT JOIN entities e ON e.id=o.entity_id
-        LEFT JOIN areas a ON a.id=o.area_id
-        LEFT JOIN areas fa ON fa.id=o.from_area_id
-        LEFT JOIN areas ta ON ta.id=o.to_area_id
+        LEFT JOIN entities e ON e.id=o.entity_id AND e.chat_id=o.chat_id
+        LEFT JOIN areas a ON a.id=o.area_id AND a.chat_id=o.chat_id
+        LEFT JOIN areas fa ON fa.id=o.from_area_id AND fa.chat_id=o.chat_id
+        LEFT JOIN areas ta ON ta.id=o.to_area_id AND ta.chat_id=o.chat_id
         WHERE o.chat_id=? AND o.user_id=? AND o.client_request_id=?
         LIMIT 1
         """,
@@ -4318,10 +4323,10 @@ def list_recent_operation_templates(chat_id: int, user_id: int, limit: int = 8) 
                a.name AS area_name,fa.name AS from_area_name,ta.name AS to_area_name
         FROM operations o
         LEFT JOIN operation_corrections oc ON oc.original_operation_id=o.id
-        LEFT JOIN entities e ON e.id=o.entity_id
-        LEFT JOIN areas a ON a.id=o.area_id
-        LEFT JOIN areas fa ON fa.id=o.from_area_id
-        LEFT JOIN areas ta ON ta.id=o.to_area_id
+        LEFT JOIN entities e ON e.id=o.entity_id AND e.chat_id=o.chat_id
+        LEFT JOIN areas a ON a.id=o.area_id AND a.chat_id=o.chat_id
+        LEFT JOIN areas fa ON fa.id=o.from_area_id AND fa.chat_id=o.chat_id
+        LEFT JOIN areas ta ON ta.id=o.to_area_id AND ta.chat_id=o.chat_id
         WHERE o.chat_id=? AND o.user_id=? AND oc.id IS NULL AND e.is_archived=0
         ORDER BY o.created_at DESC,o.id DESC
         LIMIT ?
@@ -4350,10 +4355,10 @@ def list_operation_presets(chat_id: int, user_id: int) -> list[dict]:
         SELECT p.*,e.name AS entity_name,a.name AS area_name,
                fa.name AS from_area_name,ta.name AS to_area_name
         FROM operation_presets p
-        JOIN entities e ON e.id=p.entity_id AND e.is_archived=0
-        LEFT JOIN areas a ON a.id=p.area_id
-        LEFT JOIN areas fa ON fa.id=p.from_area_id
-        LEFT JOIN areas ta ON ta.id=p.to_area_id
+        JOIN entities e ON e.id=p.entity_id AND e.chat_id=p.chat_id AND e.is_archived=0
+        LEFT JOIN areas a ON a.id=p.area_id AND a.chat_id=p.chat_id
+        LEFT JOIN areas fa ON fa.id=p.from_area_id AND fa.chat_id=p.chat_id
+        LEFT JOIN areas ta ON ta.id=p.to_area_id AND ta.chat_id=p.chat_id
         WHERE p.chat_id=? AND p.user_id=?
         ORDER BY p.usage_count DESC,COALESCE(p.last_used_at,p.updated_at) DESC,p.id DESC
         """,

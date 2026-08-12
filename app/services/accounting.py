@@ -326,8 +326,8 @@ def list_recent_operations(chat_id: int, group_chat_id: int | None = None, user_
                e.name AS entity_name,a.name AS area_name,o.quantity,o.unit,o.raw_text
         FROM operations o
         LEFT JOIN operation_corrections oc ON oc.original_operation_id=o.id
-        LEFT JOIN entities e ON e.id=o.entity_id
-        LEFT JOIN areas a ON a.id=o.area_id
+        LEFT JOIN entities e ON e.id=o.entity_id AND e.chat_id=o.chat_id
+        LEFT JOIN areas a ON a.id=o.area_id AND a.chat_id=o.chat_id
         WHERE {' AND '.join(where)}
         ORDER BY o.created_at DESC
         LIMIT ?

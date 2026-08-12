@@ -29,16 +29,16 @@ def _usable_stock(scope:int,entity_id:int,area_id:int|None)->float:
 
 def build_rows(chat_id:int,user_id:int,*,start_date:str|None=None,end_date:str|None=None)->list[dict[str,Any]]:
     scope=_scope(chat_id);start=start_date or datetime.now().strftime("%Y-%m-%d");end=end_date or (datetime.now()+timedelta(days=7)).strftime("%Y-%m-%d")
-    tasks=db.fetchall("""SELECT t.*,e.name AS output_name,d.name AS department_name,a.name AS area_name FROM production_tasks t JOIN entities e ON e.id=t.entity_id JOIN departments d ON d.id=t.department_id LEFT JOIN areas a ON a.id=t.area_id WHERE t.chat_id=? AND t.status<>'cancelled' AND date(COALESCE(t.due_at,t.created_at)) BETWEEN date(?) AND date(?) ORDER BY COALESCE(t.due_at,t.created_at),t.id""",(scope,start,end))
+    tasks=db.fetchall("""SELECT t.*,e.name AS output_name,d.name AS department_name,a.name AS area_name FROM production_tasks t JOIN entities e ON e.id=t.entity_id AND e.chat_id=t.chat_id JOIN departments d ON d.id=t.department_id AND d.chat_id=t.chat_id LEFT JOIN areas a ON a.id=t.area_id AND a.chat_id=t.chat_id WHERE t.chat_id=? AND t.status<>'cancelled' AND date(COALESCE(t.due_at,t.created_at)) BETWEEN date(?) AND date(?) ORDER BY COALESCE(t.due_at,t.created_at),t.id""",(scope,start,end))
     visible=repo.visible_entity_ids_for_user(scope,user_id); visible_set=None if visible is None else {int(x) for x in visible}
     rows=[]
     for tr in tasks:
         t=dict(tr)
         if not repo.is_tenant_admin(scope, user_id) and int(repo.department_actor_level(int(t["department_id"]),user_id) or 0)<10:continue
-        comps=db.fetchall("SELECT pc.component_id,pc.quantity,e.name,e.default_unit FROM product_components pc JOIN entities e ON e.id=pc.component_id WHERE pc.product_id=?",(int(t["entity_id"]),))
+        comps=db.fetchall("SELECT pc.component_id,pc.quantity,e.name,e.default_unit FROM product_components pc JOIN entities p ON p.id=pc.product_id JOIN entities e ON e.id=pc.component_id AND e.chat_id=p.chat_id WHERE pc.product_id=? AND p.chat_id=?",(int(t["entity_id"]),scope))
         requirements=[dict(c) for c in comps]
         # Also include direct yield rule for materials tied to this planned output.
-        for rr in db.fetchall("""SELECT r.entity_id,r.yield_input_qty,r.yield_output_qty,e.name,e.default_unit FROM stock_alert_rules r JOIN entities e ON e.id=r.entity_id WHERE r.chat_id=? AND r.is_enabled=1 AND r.yield_output_entity_id=? AND r.yield_input_qty>0 AND r.yield_output_qty>0""",(scope,int(t["entity_id"]))):
+        for rr in db.fetchall("""SELECT r.entity_id,r.yield_input_qty,r.yield_output_qty,e.name,e.default_unit FROM stock_alert_rules r JOIN entities e ON e.id=r.entity_id AND e.chat_id=r.chat_id WHERE r.chat_id=? AND r.is_enabled=1 AND r.yield_output_entity_id=? AND r.yield_input_qty>0 AND r.yield_output_qty>0""",(scope,int(t["entity_id"]))):
             r=dict(rr);requirements.append({"component_id":int(r["entity_id"]),"quantity":float(r["yield_input_qty"])/float(r["yield_output_qty"]),"name":r["name"],"default_unit":r["default_unit"]})
         if not requirements:
             rows.append({"task_id":int(t["id"]),"department":t["department_name"],"output":t["output_name"],"plan":float(t["target_quantity"] or 0),"actual":float(t["actual_quantity"] or 0),"input":"—","required":0.0,"available":0.0,"open_replenishment":0.0,"shortage":0.0,"unit":t.get("unit") or "шт","due_at":t.get("due_at") or ""})

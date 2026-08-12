@@ -191,10 +191,10 @@ def _inspection_row(scope: int, inspection_id: int) -> dict[str, Any] | None:
         """
         SELECT qi.*,e.name AS entity_name,d.name AS department_name,a.name AS area_name,l.lot_code,
                eq.name AS equipment_name,t.title AS task_title,t.status AS task_status
-        FROM quality_inspections qi JOIN entities e ON e.id=qi.entity_id
-        LEFT JOIN departments d ON d.id=qi.department_id LEFT JOIN areas a ON a.id=qi.area_id
-        LEFT JOIN production_lots l ON l.id=qi.lot_id LEFT JOIN equipment eq ON eq.id=qi.equipment_id
-        LEFT JOIN production_tasks t ON t.id=qi.task_id
+        FROM quality_inspections qi JOIN entities e ON e.id=qi.entity_id AND e.chat_id=qi.chat_id
+        LEFT JOIN departments d ON d.id=qi.department_id AND d.chat_id=qi.chat_id LEFT JOIN areas a ON a.id=qi.area_id AND a.chat_id=qi.chat_id
+        LEFT JOIN production_lots l ON l.id=qi.lot_id AND l.chat_id=qi.chat_id LEFT JOIN equipment eq ON eq.id=qi.equipment_id AND eq.chat_id=qi.chat_id
+        LEFT JOIN production_tasks t ON t.id=qi.task_id AND t.chat_id=qi.chat_id
         WHERE qi.chat_id=? AND qi.id=?
         """,
         (scope, int(inspection_id)),
@@ -242,10 +242,10 @@ def list_inspections(chat_id: int, user_id: int, *, status: str | None = None, l
         f"""
         SELECT qi.*,e.name AS entity_name,d.name AS department_name,a.name AS area_name,l.lot_code,
                eq.name AS equipment_name,t.title AS task_title,t.status AS task_status
-        FROM quality_inspections qi JOIN entities e ON e.id=qi.entity_id
-        LEFT JOIN departments d ON d.id=qi.department_id LEFT JOIN areas a ON a.id=qi.area_id
-        LEFT JOIN production_lots l ON l.id=qi.lot_id LEFT JOIN equipment eq ON eq.id=qi.equipment_id
-        LEFT JOIN production_tasks t ON t.id=qi.task_id
+        FROM quality_inspections qi JOIN entities e ON e.id=qi.entity_id AND e.chat_id=qi.chat_id
+        LEFT JOIN departments d ON d.id=qi.department_id AND d.chat_id=qi.chat_id LEFT JOIN areas a ON a.id=qi.area_id AND a.chat_id=qi.chat_id
+        LEFT JOIN production_lots l ON l.id=qi.lot_id AND l.chat_id=qi.chat_id LEFT JOIN equipment eq ON eq.id=qi.equipment_id AND eq.chat_id=qi.chat_id
+        LEFT JOIN production_tasks t ON t.id=qi.task_id AND t.chat_id=qi.chat_id
         WHERE {' AND '.join(where)}
         ORDER BY CASE qi.status WHEN 'open' THEN 0 WHEN 'waiting_rework' THEN 1 WHEN 'quarantined' THEN 2 ELSE 3 END,qi.id DESC
         LIMIT ?

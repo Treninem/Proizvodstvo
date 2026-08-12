@@ -220,8 +220,8 @@ def operation_rows(chat_id: int, period: PeriodFilter) -> list[dict]:
         SELECT o.operation_type,o.entity_type,e.name AS entity_name,a.name AS area_name,o.unit,
                SUM(o.quantity) AS total_quantity, COUNT(o.id) AS count_rows
         FROM operations o
-        LEFT JOIN entities e ON e.id=o.entity_id
-        LEFT JOIN areas a ON a.id=o.area_id
+        LEFT JOIN entities e ON e.id=o.entity_id AND e.chat_id=o.chat_id
+        LEFT JOIN areas a ON a.id=o.area_id AND a.chat_id=o.chat_id
         WHERE o.chat_id=? AND {period.where_sql}
         GROUP BY o.operation_type,o.entity_type,o.entity_id,o.area_id,o.unit
         ORDER BY o.operation_type, COALESCE(a.name,''), e.name
@@ -239,8 +239,8 @@ def raw_operation_rows(chat_id: int, period: PeriodFilter, limit: int = 5000) ->
                COALESCE(NULLIF(w.display_name,''), CAST(o.user_id AS TEXT)) AS worker_name,
                COALESCE(NULLIF(c.title,''), CAST(o.group_chat_id AS TEXT)) AS group_title
         FROM operations o
-        LEFT JOIN entities e ON e.id=o.entity_id
-        LEFT JOIN areas a ON a.id=o.area_id
+        LEFT JOIN entities e ON e.id=o.entity_id AND e.chat_id=o.chat_id
+        LEFT JOIN areas a ON a.id=o.area_id AND a.chat_id=o.chat_id
         LEFT JOIN workers w ON w.chat_id=o.chat_id AND w.user_id=o.user_id AND w.is_active=1
         LEFT JOIN chats c ON c.chat_id=o.group_chat_id
         WHERE o.chat_id=? AND {period.where_sql}
@@ -280,7 +280,7 @@ def _production_summary_rows(chat_id: int, period: PeriodFilter) -> list[dict]:
         SELECT o.operation_type,o.entity_type,e.name AS entity_name,o.unit,
                SUM(o.quantity) AS total_quantity, COUNT(o.id) AS count_rows
         FROM operations o
-        LEFT JOIN entities e ON e.id=o.entity_id
+        LEFT JOIN entities e ON e.id=o.entity_id AND e.chat_id=o.chat_id
         WHERE o.chat_id=? AND {period.where_sql}
           AND o.operation_type='production'
         GROUP BY o.operation_type,o.entity_type,o.entity_id,o.unit
@@ -300,7 +300,7 @@ def _operation_summary_rows(chat_id: int, period: PeriodFilter, operation_types:
         SELECT o.operation_type,o.entity_type,e.name AS entity_name,o.unit,
                SUM(o.quantity) AS total_quantity, COUNT(o.id) AS count_rows
         FROM operations o
-        LEFT JOIN entities e ON e.id=o.entity_id
+        LEFT JOIN entities e ON e.id=o.entity_id AND e.chat_id=o.chat_id
         WHERE o.chat_id=? AND {period.where_sql}
           AND o.operation_type IN ({placeholders})
         GROUP BY o.operation_type,o.entity_type,o.entity_id,o.unit
@@ -831,7 +831,7 @@ def movement_matrix_rows(chat_id: int, period: PeriodFilter) -> tuple[list[str],
         SELECT o.operation_type,o.entity_type,e.name AS entity_name,o.unit,{bucket_sql} AS bucket,
                SUM(o.quantity) AS total_quantity
         FROM operations o
-        LEFT JOIN entities e ON e.id=o.entity_id
+        LEFT JOIN entities e ON e.id=o.entity_id AND e.chat_id=o.chat_id
         WHERE o.chat_id=? AND {period.where_sql}
         GROUP BY o.operation_type,o.entity_type,o.entity_id,o.unit,bucket
         ORDER BY o.operation_type,e.name,bucket
@@ -1939,10 +1939,10 @@ def _area_operation_totals_report_table(chat_id: int, period: PeriodFilter, area
                o.operation_type,o.entity_type,e.name AS entity_name,o.unit,
                COALESCE(SUM(o.quantity),0) AS quantity,COUNT(o.id) AS rows_count
         FROM operations o
-        LEFT JOIN entities e ON e.id=o.entity_id
-        LEFT JOIN areas a ON a.id=o.area_id
-        LEFT JOIN areas fa ON fa.id=o.from_area_id
-        LEFT JOIN areas ta ON ta.id=o.to_area_id
+        LEFT JOIN entities e ON e.id=o.entity_id AND e.chat_id=o.chat_id
+        LEFT JOIN areas a ON a.id=o.area_id AND a.chat_id=o.chat_id
+        LEFT JOIN areas fa ON fa.id=o.from_area_id AND fa.chat_id=o.chat_id
+        LEFT JOIN areas ta ON ta.id=o.to_area_id AND ta.chat_id=o.chat_id
         WHERE o.chat_id=? AND {period.where_sql} {clause}
         GROUP BY area_name,o.operation_type,o.entity_type,o.entity_id,e.name,o.unit
         ORDER BY area_name,o.operation_type,e.name
@@ -1967,9 +1967,9 @@ def _area_movement_report_table(chat_id: int, period: PeriodFilter, area_ids: se
         SELECT o.created_at,fa.name AS from_area,ta.name AS to_area,o.entity_type,e.name AS entity_name,
                o.quantity,o.unit,COALESCE(NULLIF(w.display_name,''),CAST(o.user_id AS TEXT)) AS worker_name
         FROM operations o
-        LEFT JOIN areas fa ON fa.id=o.from_area_id
-        LEFT JOIN areas ta ON ta.id=o.to_area_id
-        LEFT JOIN entities e ON e.id=o.entity_id
+        LEFT JOIN areas fa ON fa.id=o.from_area_id AND fa.chat_id=o.chat_id
+        LEFT JOIN areas ta ON ta.id=o.to_area_id AND ta.chat_id=o.chat_id
+        LEFT JOIN entities e ON e.id=o.entity_id AND e.chat_id=o.chat_id
         LEFT JOIN workers w ON w.chat_id=o.chat_id AND w.user_id=o.user_id AND w.is_active=1
         WHERE o.chat_id=? AND {period.where_sql}
           AND o.operation_type IN ('movement','transfer_to_assembly') {clause}
@@ -1997,10 +1997,10 @@ def _area_destination_report_table(chat_id: int, period: PeriodFilter, area_ids:
                e.name AS entity_name,o.quantity,o.unit,o.destination_type,o.storage_place,
                COALESCE(NULLIF(w.display_name,''),CAST(o.user_id AS TEXT)) AS worker_name
         FROM operations o
-        LEFT JOIN areas a ON a.id=o.area_id
-        LEFT JOIN areas fa ON fa.id=o.from_area_id
-        LEFT JOIN areas ta ON ta.id=o.to_area_id
-        LEFT JOIN entities e ON e.id=o.entity_id
+        LEFT JOIN areas a ON a.id=o.area_id AND a.chat_id=o.chat_id
+        LEFT JOIN areas fa ON fa.id=o.from_area_id AND fa.chat_id=o.chat_id
+        LEFT JOIN areas ta ON ta.id=o.to_area_id AND ta.chat_id=o.chat_id
+        LEFT JOIN entities e ON e.id=o.entity_id AND e.chat_id=o.chat_id
         LEFT JOIN workers w ON w.chat_id=o.chat_id AND w.user_id=o.user_id AND w.is_active=1
         WHERE o.chat_id=? AND {period.where_sql} {clause}
           AND (COALESCE(o.storage_place,'')<>'' OR COALESCE(o.destination_type,'')<>'')
