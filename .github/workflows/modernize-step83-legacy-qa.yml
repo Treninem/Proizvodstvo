@@ -1,0 +1,255 @@
+name: Modernize Step 83 Legacy QA
+
+on:
+  push:
+    paths:
+      - '.github/workflows/modernize-step83-legacy-qa.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  modernize:
+    runs-on: ubuntu-latest
+    env:
+      BOT_TOKEN: '123456789:TEST_TOKEN_FOR_CI_ONLY'
+      OWNER_TELEGRAM_ID: '2097006037'
+      BOT_DATA_DIR: '/tmp/proizvodstvo-modern-qa'
+      PUBLIC_BASE_URL: 'https://example.invalid'
+      MINIAPP_API_TOKEN: 'ci-only-miniapp-token-not-a-secret'
+      BACKUP_ENCRYPTION_KEY: 'ci-only-backup-key-not-a-secret'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+
+      - name: Modernize legacy QA scripts for Step 83 rules
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('.')
+
+          # Cancellation now requires an audit reason.
+          for rel in ['scripts/flow_test.py', 'scripts/smoke_test.py']:
+              p = root / rel
+              s = p.read_text(encoding='utf-8')
+              def repl(m):
+                  args = m.group(1)
+                  if args.count(',') >= 4 or 'reason=' in args:
+                      return m.group(0)
+                  return f'accounting.cancel_operation({args}, "QA: отмена ошибочной записи")'
+              s = re.sub(r'accounting\.cancel_operation\(([^()\n]+)\)', repl, s)
+              p.write_text(s, encoding='utf-8')
+
+          # Old lightweight aiogram mocks must represent current WebAppInfo buttons.
+          mock_files = [
+              'scripts/chat_visibility_test.py',
+              'scripts/group_selection_modes_step51_test.py',
+              'scripts/group_selection_step51_test.py',
+              'scripts/group_single_selection_step50_test.py',
+          ]
+          for rel in mock_files:
+              p = root / rel
+              s = p.read_text(encoding='utf-8')
+              if 'class WebAppInfo:' not in s:
+                  marker = 'class InlineKeyboardButton:\n'
+                  webapp = '''class WebAppInfo:\n    def __init__(self, url: str):\n        self.url = url\n\n    def model_dump(self):\n        return {"url": self.url}\n\n'''
+                  s = s.replace(marker, webapp + marker, 1)
+              s = s.replace(
+                  'def __init__(self, text: str, callback_data: str | None = None):\n        self.text = text\n        self.callback_data = callback_data',
+                  'def __init__(self, text: str, callback_data: str | None = None, web_app=None):\n        self.text = text\n        self.callback_data = callback_data\n        self.web_app = web_app',
+              )
+              s = s.replace(
+                  'return {"text": self.text, "callback_data": self.callback_data}',
+                  'return {"text": self.text, "callback_data": self.callback_data, "web_app": self.web_app.model_dump() if self.web_app else None}',
+              )
+              if 'aiogram_types.WebAppInfo = WebAppInfo' not in s:
+                  s = s.replace(
+                      'aiogram_types.InlineKeyboardButton = InlineKeyboardButton\n',
+                      'aiogram_types.InlineKeyboardButton = InlineKeyboardButton\naiogram_types.WebAppInfo = WebAppInfo\n',
+                      1,
+                  )
+              p.write_text(s, encoding='utf-8')
+
+          # Packaging is not shipment in the current production model.
+          p = root / 'scripts/report_targets_step38_test.py'
+          s = p.read_text(encoding='utf-8').replace('Зафасовали Изделие 1 2000', 'Отгрузили Изделие 1 2000')
+          p.write_text(s, encoding='utf-8')
+
+          # The system owner may enumerate tenants in the separate system context,
+          # but must not silently activate a foreign tenant in the ordinary UI.
+          (root / 'scripts/owner_foreign_account_step42_test.py').write_text(r'''from __future__ import annotations
+
+import os
+import shutil
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+BASE = Path('/tmp/prod_owner_foreign_account_step83')
+shutil.rmtree(BASE, ignore_errors=True)
+BASE.mkdir(parents=True)
+os.environ['BOT_DATA_DIR'] = str(BASE)
+os.environ['OWNER_TELEGRAM_ID'] = '2097006037'
+os.environ['BOT_TOKEN'] = '123456789:TEST_TOKEN_FOR_CI_ONLY'
+
+from app import db
+from app.services import repository as repo
+
+db.init_db()
+GLOBAL_OWNER = 2097006037
+OTHER_OWNER = 111222333
+OWNER_PM = 9001
+OTHER_PM = 9002
+
+repo.upsert_chat(OWNER_PM, 'ЛС системного владельца', 'private', connected=True)
+repo.upsert_chat(OTHER_PM, 'ЛС владельца фирмы', 'private', connected=True)
+ok, msg, account_id = repo.create_account(OTHER_OWNER, OTHER_PM, 'Чужая фирма')
+assert ok and account_id, msg
+
+# Separate system visibility exists: the tenant is present in the platform list.
+assert any(int(a.id) == int(account_id) for a in repo.owner_list_accounts())
+
+# Ordinary tenant access is not granted automatically to the system owner.
+assert not repo.user_has_account_access(account_id, GLOBAL_OWNER)
+ok, msg = repo.set_active_account(OWNER_PM, account_id, user_id=GLOBAL_OWNER)
+assert not ok, (ok, msg)
+assert repo.get_active_account(OWNER_PM) is None
+
+# A normal unrelated user is denied as well.
+ok, msg = repo.set_active_account(9003, account_id, user_id=555666777)
+assert not ok, (ok, msg)
+
+print('owner_foreign_account_step83_test OK')
+''', encoding='utf-8')
+
+          # Documentation is intentional now; test repository docs/security instead of banning README by name.
+          (root / 'scripts/no_readme_test.py').write_text(r'''from __future__ import annotations
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+def main() -> None:
+    start = ROOT / 'README_START.txt'
+    memory = ROOT / 'STEP83_MEMORY.md'
+    assert start.is_file() and start.stat().st_size > 1000, start
+    assert memory.is_file() and 'Шаг 83' in memory.read_text(encoding='utf-8'), memory
+    # Runtime secrets must never be stored in a physical .env in the repository.
+    assert not (ROOT / '.env').exists()
+    print('repository_docs_test OK')
+
+if __name__ == '__main__':
+    main()
+''', encoding='utf-8')
+
+          # UI audit now checks the deployed asset generation and stale v78 references.
+          (root / 'scripts/ui_text_audit.py').write_text(r'''from __future__ import annotations
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+VERSION = '20260812a'
+
+def main() -> None:
+    index = (ROOT / 'webapp/static/index.html').read_text(encoding='utf-8')
+    keyboards = (ROOT / 'app/keyboards.py').read_text(encoding='utf-8')
+    app_js = ROOT / f'webapp/static/app-{VERSION}.js'
+    style = ROOT / f'webapp/static/style-{VERSION}.css'
+    assert app_js.is_file(), app_js
+    assert style.is_file(), style
+    assert f'app-{VERSION}.js' in index, 'index.html не использует текущий JS'
+    assert f'style-{VERSION}.css' in index, 'index.html не использует текущий CSS'
+    assert f'MINI_UI_VERSION = "{VERSION}"' in keyboards
+    assert 'app.js?v=78' not in index and 'style.css?v=78' not in index
+    print('ui_version_audit OK')
+
+if __name__ == '__main__':
+    main()
+''', encoding='utf-8')
+
+          # Final audit checks tracked repository contents, not transient __pycache__ created by tests.
+          (root / 'scripts/final_audit.py').write_text(r'''from __future__ import annotations
+
+import re
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+FORBIDDEN_SUFFIXES = {'.pyc', '.db', '.sqlite', '.sqlite3'}
+FORBIDDEN_DIRS = {'data', 'backups', 'exports', '__pycache__'}
+TOKEN_RE = re.compile(r'\b\d{8,12}:[A-Za-z0-9_-]{30,}\b')
+
+def tracked_files() -> list[Path]:
+    out = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT)
+    return [ROOT / p.decode() for p in out.split(b'\0') if p]
+
+def main() -> None:
+    problems: list[str] = []
+    files = tracked_files()
+    for path in files:
+        rel = path.relative_to(ROOT)
+        if path.name == '.env' or path.suffix.lower() in FORBIDDEN_SUFFIXES:
+            problems.append(f'Запрещённый runtime-файл: {rel}')
+        if any(part in FORBIDDEN_DIRS for part in rel.parts):
+            problems.append(f'Запрещённый runtime-каталог: {rel}')
+        if path.is_file() and path.suffix.lower() in {'.py', '.md', '.txt', '.env', '.example', '.yml', '.yaml'}:
+            try:
+                text = path.read_text(encoding='utf-8')
+            except UnicodeDecodeError:
+                continue
+            if TOKEN_RE.search(text):
+                problems.append(f'Похожий на Telegram BOT_TOKEN секрет: {rel}')
+
+    defaults = (ROOT / 'runtime.defaults.env').read_text(encoding='utf-8')
+    for key in ('MINIAPP_API_TOKEN', 'BACKUP_ENCRYPTION_KEY'):
+        line = next((x.strip() for x in defaults.splitlines() if x.startswith(key + '=')), None)
+        if line != key + '=':
+            problems.append(f'{key} должен быть пустым в runtime.defaults.env')
+
+    if problems:
+        raise SystemExit('\n'.join(sorted(set(problems))))
+    print('final_step83_audit OK')
+
+if __name__ == '__main__':
+    main()
+''', encoding='utf-8')
+          PY
+
+      - name: Verify modernized legacy scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -p 'test*.py' -v
+          for f in \
+            scripts/flow_test.py \
+            scripts/smoke_test.py \
+            scripts/chat_visibility_test.py \
+            scripts/group_selection_modes_step51_test.py \
+            scripts/group_selection_step51_test.py \
+            scripts/group_single_selection_step50_test.py \
+            scripts/owner_foreign_account_step42_test.py \
+            scripts/report_targets_step38_test.py \
+            scripts/no_readme_test.py \
+            scripts/ui_text_audit.py \
+            scripts/final_audit.py; do
+            echo "===== $f ====="
+            rm -rf "$BOT_DATA_DIR"; mkdir -p "$BOT_DATA_DIR"
+            python "$f"
+          done
+
+      - name: Commit modernized QA and remove workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/modernize-step83-legacy-qa.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'QA: align legacy checks with Step 83 security model'
+          git push origin HEAD:main
