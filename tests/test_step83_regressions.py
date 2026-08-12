@@ -11,7 +11,7 @@ from openpyxl import Workbook
 
 from app.services import excel_bridge
 from app.services import repository as repo
-from app.services import replenishment, quality_control, stock_transfers, production_flow
+from app.services import replenishment, quality_control, stock_transfers, production_flow, inventory_adjustment
 from webapp import server
 
 
@@ -31,6 +31,20 @@ class _DummyConn:
 
 
 class Step83RegressionTests(unittest.TestCase):
+    def test_conversational_inventory_phrase_does_not_change_stock(self):
+        self.assertFalse(inventory_adjustment.looks_like_inventory_adjustment(
+            "Остаток трубы примерно 5 метров, надо проверить"
+        ))
+        self.assertFalse(inventory_adjustment.looks_like_inventory_adjustment(
+            "Остаток Трубка около 50 шт"
+        ))
+        self.assertTrue(inventory_adjustment.looks_like_inventory_adjustment(
+            "Инвентаризация Трубка 50 шт"
+        ))
+        self.assertTrue(inventory_adjustment.looks_like_inventory_adjustment(
+            "Остаток Трубка 50 шт"
+        ))
+
     def test_service_token_is_bound_to_platform_owner(self):
         test_settings = replace(
             server.settings,

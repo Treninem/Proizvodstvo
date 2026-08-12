@@ -47,6 +47,15 @@ def looks_like_inventory_adjustment(text: str) -> bool:
         "остаток",
         "осталось",
     }
+    # Разговорное описание остатка ("примерно 5", "надо проверить" и т.п.)
+    # не должно менять склад. Такие фразы часто встречаются в обычном чате.
+    conversational_hints = {
+        "примерно", "около", "приблизительно", "ориентировочно", "кажется", "вроде",
+        "наверное", "может", "надо", "нужно", "проверить", "уточнить", "посчитать",
+    }
+    tokens = set(key.split())
+    if "?" in text or tokens.intersection(conversational_hints):
+        return False
     return any(key == marker or key.startswith(marker + " ") for marker in explicit_starts)
 
 
