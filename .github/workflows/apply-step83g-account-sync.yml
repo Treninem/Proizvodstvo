@@ -1,4 +1,4 @@
-# rerun after security fixture cleanup
+# rerun after dynamic UI audit fix
 name: Apply Step83g account sync fix
 
 on:
