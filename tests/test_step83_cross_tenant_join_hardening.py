@@ -43,10 +43,10 @@ class CrossTenantJoinHardeningTests(unittest.TestCase):
             ok, msg = repo.create_entity(scope, "product", f"Изделие {suffix}", "шт")
             self.assertTrue(ok, msg)
 
-        self.area_a = int(db.fetchone("SELECT id FROM areas WHERE chat_id=? AND normalized=?", (self.scope_a, "площадка a"))["id"])
-        self.area_b = int(db.fetchone("SELECT id FROM areas WHERE chat_id=? AND normalized=?", (self.scope_b, "площадка b"))["id"])
-        self.entity_a = int(db.fetchone("SELECT id FROM entities WHERE chat_id=? AND normalized=?", (self.scope_a, "изделие a"))["id"])
-        self.entity_b = int(db.fetchone("SELECT id FROM entities WHERE chat_id=? AND normalized=?", (self.scope_b, "изделие b"))["id"])
+        self.area_a = int(db.fetchone("SELECT id FROM areas WHERE chat_id=? AND name=?", (self.scope_a, "Площадка A"))["id"])
+        self.area_b = int(db.fetchone("SELECT id FROM areas WHERE chat_id=? AND name=?", (self.scope_b, "Площадка B"))["id"])
+        self.entity_a = int(db.fetchone("SELECT id FROM entities WHERE chat_id=? AND name=?", (self.scope_a, "Изделие A"))["id"])
+        self.entity_b = int(db.fetchone("SELECT id FROM entities WHERE chat_id=? AND name=?", (self.scope_b, "Изделие B"))["id"])
 
     def tearDown(self) -> None:
         self.repo_patch.stop(); self.db_patch.stop(); self.tmp.cleanup()
@@ -63,7 +63,6 @@ class CrossTenantJoinHardeningTests(unittest.TestCase):
         )
         self.assertEqual(saved, 1)
         operation_id = int(db.fetchone("SELECT id FROM operations WHERE chat_id=? ORDER BY id DESC LIMIT 1", (self.scope_a,))["id"])
-        # Simulate an old/corrupted DB link that normal application validation would reject.
         db.execute("UPDATE operations SET entity_id=?,area_id=? WHERE id=?", (self.entity_b, self.area_b, operation_id))
 
         rows = accounting.list_recent_operations(self.scope_a, user_id=self.owner_a, limit=20)
@@ -83,7 +82,6 @@ class CrossTenantJoinHardeningTests(unittest.TestCase):
         )
         inspection_id = int(item["id"])
         db.execute("UPDATE quality_inspections SET entity_id=?,area_id=? WHERE id=?", (self.entity_b, self.area_b, inspection_id))
-        # Scoped inner entity join makes a corrupted foreign inspection invisible instead of decorating it with foreign data.
         self.assertIsNone(quality_control.get_inspection(self.scope_a, inspection_id, self.owner_a))
         self.assertFalse(any(int(x["id"]) == inspection_id for x in quality_control.list_inspections(self.scope_a, self.owner_a)))
 
