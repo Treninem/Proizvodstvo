@@ -9,7 +9,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-os.environ.setdefault("BOT_TOKEN", "123456789:TEST_TOKEN_FOR_CI_ONLY_1234567890")
 os.environ.setdefault("OWNER_TELEGRAM_ID", "2097006037")
 os.environ.setdefault("PUBLIC_BASE_URL", "https://example.invalid")
 
