@@ -119,7 +119,7 @@ def _format_panel(user_id: int | None = None) -> str:
     role = "Владелец платформы"
     return (
         f"Системное меню · {role}\n"
-        f"Версия бота: 83 · Mini App 20260812b\n\n"
+        f"Версия бота: 83 · Mini App 20260812c\n\n"
         f"Подключённых групп: {stats['connected_chats']}\n"
         f"Всего чатов в базе: {stats['total_chats']}\n"
         f"Записей учёта: {stats['operations']}\n"
@@ -204,7 +204,7 @@ async def owner_version_command(message: Message) -> None:
         return
     if message.chat.type != "private":
         return
-    await message.answer("Версия бота: 83\nMini App: 20260812b\nАрхитектура: tenant-isolation v2")
+    await message.answer("Версия бота: 83\nMini App: 20260812c\nАрхитектура: tenant-isolation v2")
 
 
 @router.message(Command("owner"))
@@ -351,7 +351,7 @@ async def owner_callbacks(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "version":
-        await safe_edit_text(callback.message, "Версия бота: 83\nMini App: 20260812b\nАрхитектура: tenant-isolation v2", reply_markup=_owner_menu(user_id))
+        await safe_edit_text(callback.message, "Версия бота: 83\nMini App: 20260812c\nАрхитектура: tenant-isolation v2", reply_markup=_owner_menu(user_id))
         await callback.answer()
         return
 
