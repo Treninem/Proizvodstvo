@@ -47,6 +47,12 @@ jobs:
               s = s.replace("backup.suffix == '.zip'", "backup.name.endswith('.zip.enc')")
               p.write_text(s, encoding='utf-8')
 
+          p = root / 'scripts/flow_test.py'
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('repo.user_permissions_current_context(group_a, owner_id).get("setup")', 'repo.user_permissions_current_context(group_a, user_full).get("setup")')
+          s = s.replace('repo.user_permissions_current_context(group_a, owner_id).get("export")', 'repo.user_permissions_current_context(group_a, user_full).get("export")')
+          p.write_text(s, encoding='utf-8')
+
           for rel in [
               'scripts/chat_visibility_test.py',
               'scripts/group_selection_modes_step51_test.py',
