@@ -1,0 +1,106 @@
+name: Full Step 83 QA V2
+
+on:
+  push:
+    paths:
+      - '.github/workflows/full-step83-qa-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    env:
+      BOT_TOKEN: '123456789:TEST_TOKEN_FOR_CI_ONLY'
+      OWNER_TELEGRAM_ID: '2097006037'
+      BOT_DATA_DIR: '/tmp/proizvodstvo-full-step83-v2'
+      PUBLIC_BASE_URL: 'https://example.invalid'
+      MINIAPP_API_TOKEN: 'ci-only-miniapp-token-not-a-secret'
+      BACKUP_ENCRYPTION_KEY: 'ci-only-backup-key-not-a-secret'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Compile and Step 83 regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q app webapp
+          node --check webapp/static/app-20260812a.js
+          python -m unittest discover -s tests -p 'test*.py' -v
+      - name: Run complete legacy QA set
+        shell: bash
+        run: |
+          set +e
+          failures=0
+          failed_names=''
+          for f in \
+            scripts/runtime_guard_test.py \
+            scripts/safe_edit_test.py \
+            scripts/handler_order_test.py \
+            scripts/help_button_test.py \
+            scripts/quick_setup_test.py \
+            scripts/flow_test.py \
+            scripts/chat_visibility_test.py \
+            scripts/component_button_selection_test.py \
+            scripts/component_management_test.py \
+            scripts/custom_plan_step40_test.py \
+            scripts/exact_entity_match_step39_test.py \
+            scripts/group_conversation_filter_step55_test.py \
+            scripts/group_conversation_filter_step56_test.py \
+            scripts/group_conversation_filter_step57_test.py \
+            scripts/group_intake_filter_step52_test.py \
+            scripts/group_selection_modes_step51_test.py \
+            scripts/group_selection_step51_test.py \
+            scripts/group_silence_step49_test.py \
+            scripts/group_single_selection_step50_test.py \
+            scripts/job_assignment_flow_test.py \
+            scripts/job_assignment_private_job_step46_test.py \
+            scripts/multi_report_step48_test.py \
+            scripts/no_readme_test.py \
+            scripts/no_zero_saved_message_step37_test.py \
+            scripts/owner_foreign_account_step42_test.py \
+            scripts/owner_test_mode_step41_test.py \
+            scripts/pdf_user_message_step53_test.py \
+            scripts/plan_settings_step54_test.py \
+            scripts/private_group_setup_access_step45_test.py \
+            scripts/quick_existing_prompt_step37_test.py \
+            scripts/report_callback_owner_test.py \
+            scripts/report_export_quality_test.py \
+            scripts/report_file_type_test.py \
+            scripts/report_flow_test.py \
+            scripts/report_targets_step38_test.py \
+            scripts/stock_position_exact_step37_test.py \
+            scripts/stock_position_production_match_test.py \
+            scripts/wizard_input_test.py \
+            scripts/security_audit.py \
+            scripts/ui_text_audit.py \
+            scripts/final_audit.py \
+            scripts/smoke_test.py; do
+            echo "===== $f ====="
+            rm -rf "$BOT_DATA_DIR"; mkdir -p "$BOT_DATA_DIR"
+            timeout 120s python "$f"
+            rc=$?
+            echo "RC=$rc $f"
+            if [ $rc -ne 0 ]; then
+              failures=$((failures+1))
+              failed_names="$failed_names $f"
+            fi
+          done
+          echo "FULL_QA_FAILURES=$failures"
+          echo "FAILED:$failed_names"
+          exit $failures
+      - name: Cleanup successful one-shot QA
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/full-step83-qa-v2.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'CI: complete full Step 83 QA'
+          git push origin HEAD:main
