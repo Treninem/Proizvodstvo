@@ -1,0 +1,87 @@
+name: Fix Telegram user context Step83
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-telegram-user-context-step83.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    env:
+      BOT_TOKEN: '123456789:TEST_TOKEN_FOR_CI_ONLY'
+      OWNER_TELEGRAM_ID: '2097006037'
+      BOT_DATA_DIR: '/tmp/proizvodstvo-step83-userctx'
+      PUBLIC_BASE_URL: 'https://example.invalid'
+      MINIAPP_API_TOKEN: 'ci-only-miniapp-token-not-a-secret'
+      BACKUP_ENCRYPTION_KEY: 'ci-only-backup-key-not-a-secret'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Build 20260812d
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp webapp/static/app-20260812c.js webapp/static/app-20260812d.js
+          python - <<'PY'
+          from pathlib import Path
+
+          js=Path('webapp/static/app-20260812d.js')
+          s=js.read_text(encoding='utf-8')
+          s=s.replace('const MINI_APP_VERSION="20260812c";','const MINI_APP_VERSION="20260812d";',1)
+          old="let userId = params.get('user_id') || params.get('uid') || localStorage.getItem('prodMiniUserId') || String(tg?.initDataUnsafe?.user?.id || '') || telegramUserIdFromInitData(initData);"
+          new="const signedTelegramUserId = telegramUserIdFromInitData(initData) || String(tg?.initDataUnsafe?.user?.id || '');\nlet userId = signedTelegramUserId || params.get('user_id') || params.get('uid') || localStorage.getItem('prodMiniUserId') || '';\nif(signedTelegramUserId){try{localStorage.setItem('prodMiniUserId',signedTelegramUserId);}catch(e){}}"
+          if old not in s: raise SystemExit('userId bootstrap line not found')
+          s=s.replace(old,new,1)
+          old2="if(!res.ok){state.accounts=[];chatId='';renderAccounts();return;}"
+          new2="if(!res.ok){state.accounts=[];chatId='';renderAccounts();const detail=await res.json().catch(()=>({}));renderRows(byId('alerts'),[{name:'Авторизация Telegram',value:detail.detail||('HTTP '+res.status)}]);showNotice('Не удалось подтвердить Telegram-аккаунт. Закройте Mini App и откройте его кнопкой бота.',true);return;}"
+          if old2 not in s: raise SystemExit('loadAccounts failure block not found')
+          s=s.replace(old2,new2,1)
+          s=s.replace("location.search=`?v=20260811b&chat_id=${encodeURIComponent(chatId)}`;","location.search=`?v=${encodeURIComponent(MINI_APP_VERSION)}&chat_id=${encodeURIComponent(chatId)}`;",1)
+          js.write_text(s,encoding='utf-8')
+
+          p=Path('webapp/static/index.html')
+          x=p.read_text(encoding='utf-8')
+          if '/static/app-20260812c.js?v=83-webtg-headers' not in x: raise SystemExit('20260812c index ref not found')
+          p.write_text(x.replace('/static/app-20260812c.js?v=83-webtg-headers','/static/app-20260812d.js?v=83-userctx',1),encoding='utf-8')
+
+          p=Path('app/keyboards.py')
+          x=p.read_text(encoding='utf-8')
+          if 'MINI_UI_VERSION = "20260812c"' not in x: raise SystemExit('keyboard version not found')
+          p.write_text(x.replace('MINI_UI_VERSION = "20260812c"','MINI_UI_VERSION = "20260812d"',1),encoding='utf-8')
+
+          p=Path('app/handlers/owner.py')
+          x=p.read_text(encoding='utf-8').replace('Mini App 20260812c','Mini App 20260812d').replace('Mini App: 20260812c','Mini App: 20260812d')
+          p.write_text(x,encoding='utf-8')
+          PY
+      - name: Verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'signedTelegramUserId' webapp/static/app-20260812d.js
+          grep -q "signedTelegramUserId || params.get('user_id')" webapp/static/app-20260812d.js
+          grep -q 'Авторизация Telegram' webapp/static/app-20260812d.js
+          grep -q 'v=${encodeURIComponent(MINI_APP_VERSION)}' webapp/static/app-20260812d.js
+          grep -q 'app-20260812d.js?v=83-userctx' webapp/static/index.html
+          grep -q 'MINI_UI_VERSION = "20260812d"' app/keyboards.py
+          node --check webapp/static/app-20260812d.js
+          python -m compileall -q app webapp scripts main.py
+          python -m unittest discover -s tests -p 'test*.py' -v
+          python scripts/security_audit.py
+          python scripts/final_audit.py
+      - name: Commit verified fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/fix-telegram-user-context-step83.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Fix Telegram Web signed user context priority'
+          git push origin HEAD:main
