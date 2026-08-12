@@ -1,0 +1,51 @@
+name: Probe Bothost Step 83 Final
+
+on:
+  push:
+    paths:
+      - '.github/workflows/probe-bothost-step83-final.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe live deployment
+        id: probe
+        shell: bash
+        run: |
+          set +e
+          health=$(curl -sS --max-time 20 -o /tmp/health.json -w '%{http_code}' https://procontrol.bothost.tech/health || echo 000)
+          ready=$(curl -sS --max-time 20 -o /tmp/ready.json -w '%{http_code}' https://procontrol.bothost.tech/ready || echo 000)
+          mini=$(curl -sS -L --max-time 20 -D /tmp/headers.txt -o /tmp/mini.html -w '%{http_code}' https://procontrol.bothost.tech/mini || echo 000)
+          marker=0
+          grep -q 'app-20260812a.js' /tmp/mini.html 2>/dev/null && marker=1
+          echo "health=$health ready=$ready mini=$mini marker=$marker"
+          echo '--- health ---'; cat /tmp/health.json 2>/dev/null; echo
+          echo '--- ready ---'; cat /tmp/ready.json 2>/dev/null; echo
+          echo '--- asset refs ---'; grep -Eo '(src|href)="[^"]+\.(js|css)(\?[^\"]*)?' /tmp/mini.html | head -30 || true
+          echo '--- last-modified ---'; grep -i '^last-modified:' /tmp/headers.txt || true
+          if [ "$health" = "200" ] && [ "$ready" = "200" ] && [ "$mini" = "200" ] && [ "$marker" = "1" ]; then
+            echo 'ok=1' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ok=0' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Remove one-shot probe
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/probe-bothost-step83-final.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m 'CI: remove final Bothost Step 83 probe'
+            git push origin HEAD:main
+          fi
+      - name: Require live Step 83
+        if: steps.probe.outputs.ok != '1'
+        run: exit 1
