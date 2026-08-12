@@ -60,6 +60,7 @@ jobs:
               'accounting.change_operation_quantity(chat_id, chat_id, 777, int(last_prod_id), 12, "QA: исправление количества")',
           )
           s = s.replace('account_backup.suffix == ".zip"', 'account_backup.name.endswith(".zip.enc")')
+          s = s.replace('full_backup.suffix == ".zip"', 'full_backup.name.endswith(".zip.enc")')
           s = s.replace(
               'with zipfile.ZipFile(account_backup) as zf:',
               'with zipfile.ZipFile(io.BytesIO(backups._decrypt_restore_bytes(account_backup.read_bytes(), account_backup.name))) as zf:',
