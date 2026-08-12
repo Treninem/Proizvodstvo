@@ -550,26 +550,8 @@ def grant_account_user_access(account_id: int, user_id: int, job_title_id: int |
     )
 
 
-def user_can_manage_current_context(chat_id: int, user_id: int | None) -> bool:
-    account = get_active_account(chat_id)
-    if account:
-        return user_has_account_access(account.id, user_id, require_manage=True)
-    permissions = worker_permissions(chat_id, user_id or 0)
-    return bool(permissions.get("setup") or permissions.get("workers") or permissions.get("grant") or permissions.get("permissions"))
 
 
-def user_permissions_current_context(chat_id: int, user_id: int | None) -> dict[str, bool]:
-    account = get_active_account(chat_id)
-    if account and user_id:
-        if account.owner_user_id == user_id:
-            return full_permissions()
-        row = db.fetchone(
-            "SELECT job_title_id,can_manage,can_view,can_submit FROM account_user_access WHERE account_id=? AND user_id=?",
-            (account.id, user_id),
-        )
-        if row:
-            return _permissions_from_job_id(int(row["job_title_id"]) if row["job_title_id"] else None)
-    return worker_permissions(chat_id, user_id or 0)
 
 
 def visible_job_name(chat_id: int, user_id: int) -> str | None:
@@ -883,19 +865,6 @@ def remember_lexicon(chat_id: int, phrase: str, target_type: str, target_id: int
     )
 
 
-def create_job_title(chat_id: int, name: str, permissions: dict[str, bool] | None = None) -> tuple[bool, str]:
-    chat_id = resolve_scope_chat_id(chat_id)
-    key = normalize_key(name)
-    if not key:
-        return False, "Название не найдено."
-    try:
-        db.execute(
-            "INSERT INTO job_titles(chat_id,name,normalized,permissions_json) VALUES(?,?,?,?)",
-            (chat_id, name.strip(), key, json.dumps(permissions or {}, ensure_ascii=False)),
-        )
-        return True, f"Должность создана: {name.strip()}"
-    except Exception:
-        return False, "Такая должность уже есть."
 
 
 def list_job_titles(chat_id: int) -> list[dict]:
@@ -1643,20 +1612,6 @@ EXTENDED_PERMISSION_KEYS = {"movement", "fulfillment", "returns"}
 PERMISSION_KEYS.update(EXTENDED_PERMISSION_KEYS)
 
 
-def create_destination(chat_id: int, name: str, destination_type: str = "storage") -> tuple[bool, str]:
-    chat_id = resolve_scope_chat_id(chat_id)
-    key = normalize_key(name)
-    if not key:
-        return False, "Название не найдено."
-    destination_type = (destination_type or "storage").strip() or "storage"
-    try:
-        db.execute(
-            "INSERT INTO operation_destinations(chat_id,name,normalized,destination_type) VALUES(?,?,?,?)",
-            (chat_id, name.strip(), key, destination_type),
-        )
-        return True, f"Место создано: {name.strip()}"
-    except Exception:
-        return False, "Такое место уже есть."
 
 
 def list_destinations(chat_id: int, destination_types: set[str] | None = None) -> list[dict]:
@@ -1791,19 +1746,6 @@ def update_destination(chat_id: int, destination_id: int, name: str, destination
     return True, f"Место обновлено: {name.strip()}"
 
 
-def archive_destination(chat_id: int, destination_id: int) -> bool:
-    scope = resolve_scope_chat_id(chat_id)
-    row = db.fetchone(
-        "SELECT id FROM operation_destinations WHERE chat_id=? AND id=? AND is_archived=0",
-        (scope, int(destination_id)),
-    )
-    if not row:
-        return False
-    db.execute(
-        "UPDATE operation_destinations SET is_archived=1 WHERE chat_id=? AND id=?",
-        (scope, int(destination_id)),
-    )
-    return True
 
 
 def current_user_job_title_id(chat_id: int, user_id: int | None) -> int | None:
@@ -1973,28 +1915,8 @@ def area_access_map_for_user(chat_id: int, user_id: int | None) -> dict[str, dic
     return result
 
 # Учитываем прямой scope учёта при обращении сайта.
-def user_can_manage_current_context(chat_id: int, user_id: int | None) -> bool:
-    scope = resolve_scope_chat_id(chat_id)
-    account = get_active_account(chat_id) or get_account_by_scope(scope)
-    if account:
-        return user_has_account_access(account.id, user_id, require_manage=True)
-    permissions = worker_permissions(scope, user_id or 0)
-    return bool(permissions.get("setup") or permissions.get("workers") or permissions.get("grant") or permissions.get("permissions"))
 
 
-def user_permissions_current_context(chat_id: int, user_id: int | None) -> dict[str, bool]:
-    scope = resolve_scope_chat_id(chat_id)
-    account = get_active_account(chat_id) or get_account_by_scope(scope)
-    if account and user_id:
-        if account.owner_user_id == int(user_id):
-            return full_permissions()
-        row = db.fetchone(
-            "SELECT job_title_id,can_manage,can_view,can_submit FROM account_user_access WHERE account_id=? AND user_id=?",
-            (account.id, int(user_id)),
-        )
-        if row:
-            return _permissions_from_job_id(int(row["job_title_id"]) if row["job_title_id"] else None)
-    return worker_permissions(scope, user_id or 0)
 
 # Удалённое место не блокирует повторное использование его названия.
 def create_destination(chat_id: int, name: str, destination_type: str = "storage") -> tuple[bool, str]:

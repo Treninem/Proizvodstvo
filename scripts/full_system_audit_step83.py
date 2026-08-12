@@ -257,6 +257,37 @@ def audit_sql_join_tenant_hardening() -> None:
     check(not warnings, "Unreviewed tenant JOINs remain: " + "; ".join(warnings[:20]))
 
 
+def audit_shadowed_definitions() -> None:
+    import ast
+    duplicates = []
+    route_duplicates = []
+    for base in (ROOT / "app", ROOT / "webapp"):
+        for path in sorted(base.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            seen = {}
+            routes = {}
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    if node.name in seen:
+                        duplicates.append(f"{path.relative_to(ROOT)}:{node.name}:{seen[node.name]}->{node.lineno}")
+                    else:
+                        seen[node.name] = node.lineno
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for dec in node.decorator_list:
+                        if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute) and dec.args and isinstance(dec.args[0], ast.Constant):
+                            method = dec.func.attr.upper()
+                            route = str(dec.args[0].value)
+                            if method in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+                                key = (method, route)
+                                if key in routes:
+                                    route_duplicates.append(f"{path.relative_to(ROOT)}:{method} {route}:{routes[key]}->{node.lineno}")
+                                else:
+                                    routes[key] = node.lineno
+    check(not duplicates, "Shadowed Python definitions: " + "; ".join(duplicates))
+    check(not route_duplicates, "Duplicate API routes: " + "; ".join(route_duplicates))
+    print("SHADOWED_DEFINITIONS_OK")
+
+
 def audit_repository_hygiene() -> None:
     import subprocess
     forbidden_names = {".env", "production_account.sqlite3"}
@@ -282,6 +313,7 @@ def main() -> None:
         audit_schema_scope_coverage,
         audit_split_scope_and_tenant_isolation,
         audit_sql_join_tenant_hardening,
+        audit_shadowed_definitions,
         audit_repository_hygiene,
     ]
     for fn in audits:

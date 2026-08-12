@@ -489,60 +489,6 @@ def _style_sheet(ws) -> None:
     ws.freeze_panes = "A2"
 
 
-def create_xlsx_report(chat_id: int, request_text: str = "отчёт") -> Path:
-    period = _date_bounds_for_text(request_text)
-    if period.error:
-        raise ValueError(period.error)
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Склад"
-    ws.append(["Тип", "Название", "Участок", "Количество", "Ед."])
-    for row in inventory_rows(chat_id):
-        ws.append([
-            ENTITY_LABELS.get(row.get("entity_type") or "", row.get("entity_type") or ""),
-            row.get("entity_name") or "",
-            row.get("area_name") or "Общий склад",
-            float(row.get("quantity") or 0),
-            row.get("unit") or "",
-        ])
-    _style_sheet(ws)
-
-    ws2 = wb.create_sheet("Итоги за период")
-    ws2.append(["Период", period.title])
-    ws2.append([])
-    ws2.append(["Операция", "Тип", "Название", "Участок", "Количество", "Ед.", "Строк"])
-    for row in operation_rows(chat_id, period):
-        ws2.append([
-            OPERATION_LABELS.get(row.get("operation_type") or "", row.get("operation_type") or ""),
-            ENTITY_LABELS.get(row.get("entity_type") or "", row.get("entity_type") or ""),
-            row.get("entity_name") or "",
-            row.get("area_name") or "",
-            float(row.get("total_quantity") or 0),
-            row.get("unit") or "",
-            int(row.get("count_rows") or 0),
-        ])
-    _style_sheet(ws2)
-
-    ws3 = wb.create_sheet("Журнал")
-    ws3.append(["Дата", "Операция", "Тип", "Название", "Участок", "Количество", "Ед.", "Работник", "Группа"])
-    for row in raw_operation_rows(chat_id, period):
-        ws3.append([
-            row.get("created_at") or "",
-            OPERATION_LABELS.get(row.get("operation_type") or "", row.get("operation_type") or ""),
-            ENTITY_LABELS.get(row.get("entity_type") or "", row.get("entity_type") or ""),
-            row.get("entity_name") or "",
-            row.get("area_name") or "",
-            float(row.get("quantity") or 0),
-            row.get("unit") or "",
-            row.get("user_id") or "",
-            row.get("group_chat_id") or "",
-        ])
-    _style_sheet(ws3)
-
-    filename = f"uchet_{_safe_name(period.title)}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
-    path = reports_dir() / filename
-    wb.save(path)
-    return path
 
 
 
@@ -683,105 +629,10 @@ def pdf_font_status() -> tuple[bool, str]:
         return False, str(exc)
 
 
-def create_pdf_report(chat_id: int, request_text: str = "отчёт") -> Path:
-    period = _date_bounds_for_text(request_text)
-    if period.error:
-        raise ValueError(period.error)
-    font_name = _register_pdf_font()
-    filename = f"uchet_{_safe_name(period.title)}_{datetime.now():%Y%m%d_%H%M%S}.pdf"
-    path = reports_dir() / filename
-    doc = SimpleDocTemplate(str(path), pagesize=landscape(A4), rightMargin=12*mm, leftMargin=12*mm, topMargin=12*mm, bottomMargin=12*mm)
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("TitleRu", parent=styles["Title"], fontName=font_name, fontSize=16, leading=20)
-    normal_style = ParagraphStyle("NormalRu", parent=styles["Normal"], fontName=font_name, fontSize=9, leading=12)
-    story = [Paragraph(f"Производственный отчёт {period.title}", title_style), Spacer(1, 6)]
-
-    inv_data = [["Тип", "Название", "Участок", "Количество", "Ед."]]
-    for row in inventory_rows(chat_id):
-        inv_data.append([
-            ENTITY_LABELS.get(row.get("entity_type") or "", row.get("entity_type") or ""),
-            row.get("entity_name") or "",
-            row.get("area_name") or "Общий склад",
-            _fmt_number(float(row.get('quantity') or 0)),
-            row.get("unit") or "",
-        ])
-    if len(inv_data) == 1:
-        inv_data.append(["", "Склад пока пустой", "", "", ""])
-    story.append(Paragraph("Склад", normal_style))
-    story.append(_pdf_table(inv_data, font_name))
-    story.append(Spacer(1, 8))
-
-    ops_data = [["Операция", "Название", "Участок", "Количество", "Ед.", "Строк"]]
-    for row in operation_rows(chat_id, period):
-        ops_data.append([
-            OPERATION_LABELS.get(row.get("operation_type") or "", row.get("operation_type") or ""),
-            row.get("entity_name") or ENTITY_LABELS.get(row.get("entity_type") or "", ""),
-            row.get("area_name") or "",
-            _fmt_number(float(row.get('total_quantity') or 0)),
-            row.get("unit") or "",
-            str(row.get("count_rows") or 0),
-        ])
-    if len(ops_data) == 1:
-        ops_data.append(["", "Движения за период пока нет", "", "", "", ""])
-    story.append(Paragraph("Итоги за период", normal_style))
-    story.append(_pdf_table(ops_data, font_name))
-    doc.build(story)
-    return path
 
 
-def _pdf_table(data: list[list[str]], font_name: str) -> Table:
-    table = Table(data, repeatRows=1)
-    table.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), font_name),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D9EAF7")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CCCCCC")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("ALIGN", (3, 1), (3, -1), "RIGHT"),
-    ]))
-    return table
 
 
-def build_assembly_capacity_report(chat_id: int, request_text: str) -> str:
-    from .matcher import confident_match
-    from . import repository as repo
-
-    # Убираем служебные слова, чтобы остался запрос по изделию.
-    key_text = request_text
-    for word in ["сколько", "можно", "собрать", "изготовить", "сделать", "готово", "изделий", "изделие"]:
-        key_text = re.sub(rf"\b{word}\b", " ", key_text, flags=re.IGNORECASE)
-    match, _ = confident_match(chat_id, key_text.strip() or request_text, allowed_types={"product"})
-    if not match:
-        return "Не нашёл изделие. Уточните название."
-    components = repo.list_product_components(match.target_id)
-    if not components:
-        return f"У изделия «{match.name}» пока не задан состав."
-    lines = [f"Можно собрать: {match.name}"]
-    possible_values: list[float] = []
-    missing: list[str] = []
-    for comp in components:
-        row = db.fetchone(
-            """
-            SELECT COALESCE(SUM(quantity),0) AS qty
-            FROM inventory
-            WHERE chat_id=? AND entity_type='component' AND entity_id=?
-            """,
-            (chat_id, int(comp["component_id"])),
-        )
-        stock_qty = float(row["qty"] if row else 0)
-        need = float(comp["quantity"] or 0)
-        can_make = stock_qty // need if need > 0 else 0
-        possible_values.append(can_make)
-        lines.append(f"• {comp['name']}: есть {_fmt_number(stock_qty)}, нужно {_fmt_number(need)} на 1")
-        if stock_qty < need:
-            missing.append(f"• {comp['name']} — не хватает {_fmt_number(need - stock_qty)}")
-    possible = max(0, int(min(possible_values))) if possible_values else 0
-    lines.insert(1, f"Итого сейчас: {_fmt_number(possible)} шт.")
-    if missing:
-        lines.append("\nДля одной полной сборки не хватает:")
-        lines.extend(missing)
-    return "\n".join(lines)
 
 # --- Дополнение: общие комплектующие, расчёт сборки по всем изделиям и настраиваемые файлы ---
 
@@ -1085,55 +936,6 @@ def _full_export_selected() -> dict[str, bool]:
     return {"inventory": True, "period_totals": True, "daily_matrix": True, "capacity": True, "journal": True}
 
 
-def create_xlsx_report(chat_id: int, request_text: str = "отчёт", user_id: int | None = None) -> Path:
-    period = _date_bounds_for_text(request_text)
-    if period.error:
-        raise ValueError(period.error)
-    wb = Workbook()
-    sections = report_sections(chat_id, request_text, user_id=user_id, selected=_full_export_selected())
-    if not sections:
-        sections = [("Отчёт", ["Раздел", "Состояние"], [["Отчёт", "Нет данных"]])]
-
-    summary = wb.active
-    summary.title = "Отчёт"
-    max_width = max((len(header) for _, header, _ in sections), default=2)
-    summary.cell(row=1, column=1, value=f"Производственный отчёт {period.title}")
-    if max_width > 1:
-        summary.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_width)
-    header_rows: set[int] = set()
-    section_rows: set[int] = set()
-    current_row = 3
-    for title, header, rows in sections:
-        section_row, header_row, current_row = _append_report_section(summary, title, header, rows, current_row)
-        section_rows.add(section_row)
-        header_rows.add(header_row)
-    _style_used_range(summary, header_rows=header_rows, section_rows=section_rows)
-
-    used_names = {summary.title}
-    for title, header, rows in sections:
-        base = title[:31] or "Раздел"
-        sheet_name = base
-        index = 2
-        while sheet_name in used_names:
-            suffix = f" {index}"
-            sheet_name = (base[:31 - len(suffix)] + suffix)[:31]
-            index += 1
-        used_names.add(sheet_name)
-        ws = wb.create_sheet(sheet_name)
-        ws.append(header)
-        for row in rows or [_empty_row(len(header))]:
-            ws.append(row)
-        for col_index, header_name in enumerate(header, start=1):
-            number_format = _number_format_for_header(str(header_name))
-            for cell in ws.iter_cols(min_col=col_index, max_col=col_index, min_row=2, max_row=ws.max_row):
-                for item in cell:
-                    item.number_format = number_format
-        _style_sheet(ws)
-
-    filename = f"uchet_{_safe_name(period.title)}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
-    path = reports_dir() / filename
-    wb.save(path)
-    return path
 
 def _stringify_table(header: list[str], rows: list[list[object]]) -> list[list[str]]:
     data: list[list[str]] = [[str(cell) for cell in header]]
@@ -1219,38 +1021,6 @@ def _pdf_section_tables(title: str, header: list[str], rows: list[list[object]],
     return tables or [_pdf_table(_stringify_table(header, rows), font_name)]
 
 
-def create_pdf_report(chat_id: int, request_text: str = "отчёт", user_id: int | None = None) -> Path:
-    period = _date_bounds_for_text(request_text)
-    if period.error:
-        raise ValueError(period.error)
-    font_name = _register_pdf_font()
-    filename = f"uchet_{_safe_name(period.title)}_{datetime.now():%Y%m%d_%H%M%S}.pdf"
-    path = reports_dir() / filename
-    doc = SimpleDocTemplate(str(path), pagesize=landscape(A3), rightMargin=8*mm, leftMargin=8*mm, topMargin=8*mm, bottomMargin=8*mm)
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("TitleRuReadable", parent=styles["Title"], fontName=font_name, fontSize=16, leading=20)
-    section_style = ParagraphStyle("SectionRuReadable", parent=styles["Heading2"], fontName=font_name, fontSize=11, leading=14, spaceBefore=6, spaceAfter=4)
-    small_style = ParagraphStyle("SmallRuReadable", parent=styles["Normal"], fontName=font_name, fontSize=8, leading=10)
-    story = [Paragraph(f"Производственный отчёт {period.title}", title_style), Spacer(1, 6)]
-
-    sections = report_sections(chat_id, request_text, user_id=user_id, selected=_full_export_selected())
-    if not sections:
-        sections = [("Отчёт", ["Раздел", "Состояние"], [["Отчёт", "Нет данных"]])]
-    for section_index, (title, header, rows) in enumerate(sections):
-        if section_index and title in {"По датам", "Журнал"}:
-            story.append(PageBreak())
-        story.append(Paragraph(title, section_style))
-        if title == "По датам" and len(header) > 12:
-            story.append(Paragraph("Широкая таблица разделена на удобные части.", small_style))
-            story.append(Spacer(1, 3))
-        tables = _pdf_section_tables(title, header, rows or [_empty_row(len(header))], font_name)
-        for table_index, table in enumerate(tables):
-            if table_index:
-                story.append(Spacer(1, 6))
-            story.append(table)
-        story.append(Spacer(1, 8))
-    doc.build(story)
-    return path
 
 
 
@@ -1682,7 +1452,7 @@ def _daily_matrix_table(chat_id: int, period: PeriodFilter) -> tuple[list[str], 
     return labels, rows
 
 
-def report_sections(
+def _legacy_report_sections_step63(
     chat_id: int,
     request_text: str = "отчёт",
     user_id: int | None = None,
@@ -1875,7 +1645,6 @@ OPERATION_LABELS.update({
     "transfer_to_assembly": "Передача на сборку",
 })
 
-_legacy_report_sections_step63 = report_sections
 
 
 def _report_area_names(chat_id: int, area_ids: set[int] | None) -> str:

@@ -268,25 +268,6 @@ def recent_operations(chat_id: int, limit: int = 12) -> list[dict[str, Any]]:
     ]
 
 
-def dashboard(chat_id: int) -> dict[str, Any]:
-    scope = _scope(chat_id)
-    account = repo.get_account_by_scope(scope)
-    inv = inventory_by_type(scope)
-    materials = material_days(scope)
-    materials_by_area = material_days_by_area(scope)
-    return {
-        "scope_chat_id": scope,
-        "account_name": account.name if account else "Учёт",
-        "inventory": inv,
-        "inventory_by_area": inventory_by_area(scope),
-        "area_summary": area_summary(scope),
-        "month_totals": month_totals(scope),
-        "material_days": materials,
-        "material_days_by_area": materials_by_area,
-        "alerts": [m for m in materials_by_area if m.get("flag")] or [m for m in materials if m.get("flag")],
-        "recent": recent_operations(scope),
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
-    }
 
 # --- Фильтрация панели по доступным площадкам step64 ---
 
