@@ -1,0 +1,60 @@
+name: Audit all tenant scope tables Step83
+
+on:
+  push:
+    paths:
+      - '.github/workflows/audit-all-scope-tables-step83.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    env:
+      BOT_TOKEN: '123456789:TEST_TOKEN_FOR_CI_ONLY'
+      OWNER_TELEGRAM_ID: '2097006037'
+      BOT_DATA_DIR: '/tmp/proizvodstvo-scope-audit'
+      PUBLIC_BASE_URL: 'https://example.invalid'
+      MINIAPP_API_TOKEN: 'ci-only-miniapp-token-not-a-secret'
+      BACKUP_ENCRYPTION_KEY: 'ci-only-backup-key-not-a-secret'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Enumerate every tenant-scoped table
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, tempfile
+          from pathlib import Path
+          from dataclasses import replace
+          from app import db
+          from app.config import settings
+          from app.services import repository as repo
+
+          tmp=Path('/tmp/proizvodstvo-scope-audit')
+          tmp.mkdir(parents=True,exist_ok=True)
+          db.init_db()
+          tables=[r['name'] for r in db.fetchall("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+          scoped=[]
+          for table in tables:
+              cols=[dict(r) for r in db.fetchall(f'PRAGMA table_info({table})')]
+              names={c['name'] for c in cols}
+              if 'chat_id' in names:
+                  scoped.append(table)
+          print('TENANT_SCOPED_TABLES_COUNT',len(scoped))
+          for t in scoped: print('TABLE',t)
+          configured=list(getattr(repo,'_GROUP_SCOPE_DATA_TABLES',()))
+          print('CONFIGURED_COUNT',len(configured))
+          for t in configured: print('CONFIGURED',t)
+          missing=[t for t in scoped if t not in configured]
+          extra=[t for t in configured if t not in scoped]
+          print('MISSING_FROM_SCOPE_REPAIR_COUNT',len(missing))
+          for t in missing: print('MISSING',t)
+          print('EXTRA_CONFIGURED_COUNT',len(extra))
+          for t in extra: print('EXTRA',t)
+          PY
