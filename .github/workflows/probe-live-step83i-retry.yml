@@ -1,0 +1,66 @@
+name: Retry live Step83i verification
+
+on:
+  push:
+    paths:
+      - '.github/workflows/probe-live-step83i-retry.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for and verify current live deployment
+        id: probe
+        shell: bash
+        run: |
+          set +e
+          ok=0
+          for attempt in $(seq 1 12); do
+            rm -f /tmp/h /tmp/r /tmp/m /tmp/a /tmp/u /tmp/hdr
+            health=$(curl -sS --max-time 20 -o /tmp/h -w '%{http_code}' 'https://procontrol.bothost.tech/health' || echo 000)
+            ready=$(curl -sS --max-time 20 -o /tmp/r -w '%{http_code}' 'https://procontrol.bothost.tech/ready' || echo 000)
+            mini=$(curl -sS --max-time 20 -D /tmp/hdr -o /tmp/m -w '%{http_code}' 'https://procontrol.bothost.tech/mini?verify=83i' || echo 000)
+            asset=$(curl -sS --max-time 20 -o /tmp/a -w '%{http_code}' 'https://procontrol.bothost.tech/static/app-20260812g.js?verify=83i' || echo 000)
+            unauth=$(curl -sS --max-time 20 -o /tmp/u -w '%{http_code}' 'https://procontrol.bothost.tech/api/accounts?user_id=1' || echo 000)
+            build_h=$(python - <<'PY'
+          import json
+          try: print(json.load(open('/tmp/h',encoding='utf-8')).get('build',''))
+          except Exception: print('')
+          PY
+            )
+            build_r=$(python - <<'PY'
+          import json
+          try: print(json.load(open('/tmp/r',encoding='utf-8')).get('build',''))
+          except Exception: print('')
+          PY
+            )
+            ref=0; grep -q 'app-20260812g.js' /tmp/m && ref=1
+            redirect=$(awk 'BEGIN{IGNORECASE=1}/^location:/{print}' /tmp/hdr | wc -l | tr -d ' ')
+            echo "attempt=$attempt health=$health ready=$ready mini=$mini asset=$asset unauth=$unauth build_h=$build_h build_r=$build_r redirect=$redirect asset_ref=$ref"
+            if [ "$health" = 200 ] && [ "$ready" = 200 ] && [ "$mini" = 200 ] && [ "$asset" = 200 ] && [ "$unauth" = 403 ] && [ "$build_h" = 83i ] && [ "$build_r" = 83i ] && [ "$redirect" = 0 ] && [ "$ref" = 1 ]; then
+              ok=1
+              break
+            fi
+            sleep 15
+          done
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo 'HEALTH:'; cat /tmp/h; echo
+          echo 'READY:'; cat /tmp/r; echo
+          echo 'MINI HEAD:'; head -c 500 /tmp/m; echo
+      - name: Cleanup successful probe
+        if: steps.probe.outputs.ok == '1'
+        shell: bash
+        run: |
+          rm -f .github/workflows/probe-live-step83i-retry.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'CI: confirm live Step83i deployment'
+          git push origin HEAD:main
+      - name: Require current deployment
+        if: steps.probe.outputs.ok != '1'
+        run: exit 1
