@@ -5,7 +5,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from .config import settings
 
 
-MINI_UI_VERSION = "20260812a"
+MINI_UI_VERSION = "20260812b"
 
 def miniapp_url(user_id: int | None = None) -> str:
     """Return a Mini App URL pinned to the account currently selected in private bot chat."""
