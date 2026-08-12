@@ -1,0 +1,96 @@
+name: Apply Step 83
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-step83.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply-step83:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rebuild and verify Step 83 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .step83/step81_to_step83.patch.xz.b64.part00 \
+              .step83/step81_to_step83.patch.xz.b64.part01 \
+              .step83/step81_to_step83.patch.xz.b64.part02 \
+              .step83/step81_to_step83.patch.xz.b64.part03 \
+              .step83/step81_to_step83.patch.xz.b64.part04 \
+              .step83/step81_to_step83.patch.xz.b64.part05 \
+              .step83/step81_to_step83.patch.xz.b64.part06 \
+              .step83/step81_to_step83.patch.xz.b64.part07 \
+              .step83/step81_to_step83.patch.xz.b64.part08a \
+              .step83/step81_to_step83.patch.xz.b64.part08b > /tmp/step83.patch.xz.b64
+          echo '3020181c67af5c310362093503a75a059924b6fd8cf08d3523a4ad4def4919c8  /tmp/step83.patch.xz.b64' | sha256sum -c -
+          base64 -d /tmp/step83.patch.xz.b64 > /tmp/step83.patch.xz
+          echo 'd2d89798e76497bd5e4afb006c4df8e7dcee84402d0bb56c93e4d5182d5b6dbe  /tmp/step83.patch.xz' | sha256sum -c -
+          xz -dc /tmp/step83.patch.xz > /tmp/step83.patch
+          echo 'fe2fa48215f000efff201c055498e19f8eb0cdf3f0d7d3b6ee8c52bea29969c3  /tmp/step83.patch' | sha256sum -c -
+
+      - name: Build Step 83 from exact Step 81 base
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add /tmp/step83-base 3d9781dc0c1133486378cfc8759244c0a0e0d3ce
+          patch -p1 -d /tmp/step83-base --batch --forward < /tmp/step83.patch
+          python -m compileall -q /tmp/step83-base/app /tmp/step83-base/webapp
+          node --check /tmp/step83-base/webapp/static/app-20260812a.js
+
+      - name: Install test dependencies
+        run: python -m pip install -r /tmp/step83-base/requirements.txt
+
+      - name: Run Step 83 regression tests
+        shell: bash
+        env:
+          BOT_TOKEN: '123456789:TEST_TOKEN_FOR_CI_ONLY'
+          OWNER_TELEGRAM_ID: '2097006037'
+          BOT_DATA_DIR: '/tmp/proizvodstvo-step83-ci'
+          PUBLIC_BASE_URL: 'https://example.invalid'
+          MINIAPP_API_TOKEN: 'ci-only-miniapp-token-not-a-secret'
+          BACKUP_ENCRYPTION_KEY: 'ci-only-backup-key-not-a-secret'
+        run: |
+          set -euo pipefail
+          cd /tmp/step83-base
+          python -m unittest discover -s tests -p 'test_step83_regressions.py' -v
+
+      - name: Copy verified Step 83 files into main
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r rel; do
+            [ -n "$rel" ] || continue
+            if [ -e "/tmp/step83-base/$rel" ]; then
+              mkdir -p "$(dirname "$rel")"
+              cp -a "/tmp/step83-base/$rel" "$rel"
+            else
+              rm -f "$rel"
+            fi
+          done < <(grep '^diff -ruN patch81/' /tmp/step83.patch | sed -E 's#^diff -ruN patch81/([^ ]+) patch83/.*#\1#')
+          rm -rf .step83
+          rm -f .github/workflows/apply-step83.yml
+          python -m compileall -q app webapp
+          node --check webapp/static/app-20260812a.js
+
+      - name: Commit verified Step 83
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'No changes to commit.'
+            exit 0
+          fi
+          git commit -m 'Step 83: complete tenant-safe production update'
+          git push origin HEAD:main
