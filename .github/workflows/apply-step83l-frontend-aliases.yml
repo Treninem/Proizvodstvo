@@ -1,0 +1,107 @@
+name: Apply Step83l frontend aliases
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-step83l-frontend-aliases.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    env:
+      OWNER_TELEGRAM_ID: '2097006037'
+      BOT_DATA_DIR: '/tmp/proizvodstvo-step83l'
+      PUBLIC_BASE_URL: 'https://example.invalid'
+      MINIAPP_API_TOKEN: 'ci-only-miniapp-token-not-a-secret'
+      BACKUP_ENCRYPTION_KEY: 'ci-only-backup-key-not-a-secret'
+      TRUSTED_HOSTS: ''
+      CORS_ALLOWED_ORIGINS: ''
+      PYTHONPATH: '.'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set synthetic CI bot token
+        shell: bash
+        run: echo 'BOT_TOKEN=123456789:'"$(printf 'A%.0s' {1..30})" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install production and audit dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-audit.txt
+      - name: Synchronize generic frontend aliases and manifest
+        shell: python
+        run: |
+          import json, re, shutil
+          from pathlib import Path
+          static=Path('webapp/static')
+          html=(static/'index.html').read_text(encoding='utf-8')
+          jm=re.search(r'app-(20\d{6}[a-z])\.js',html)
+          cm=re.search(r'style-(20\d{6}[a-z])\.css',html)
+          if not jm or not cm:
+              raise SystemExit('active frontend assets not found')
+          active_js=static/f'app-{jm.group(1)}.js'
+          active_css=static/f'style-{cm.group(1)}.css'
+          shutil.copyfile(active_js,static/'app.js')
+          shutil.copyfile(active_css,static/'style.css')
+          manifest_path=static/'manifest.webmanifest'
+          manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
+          manifest['start_url']='/mini'
+          manifest_path.write_text(json.dumps(manifest,ensure_ascii=False,separators=(',',':'))+'\n',encoding='utf-8')
+          print('ALIASES_SYNCED',active_js.name,active_css.name)
+      - name: Make deep audit part of permanent full CI
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('.github/workflows/full-system-audit-step83.yml')
+          text=p.read_text(encoding='utf-8')
+          if "- 'requirements-audit.txt'" not in text:
+              text=text.replace("      - 'requirements.txt'\n", "      - 'requirements.txt'\n      - 'requirements-audit.txt'\n",1)
+          install="""      - name: Install dependencies\n        run: python -m pip install -r requirements.txt\n"""
+          install_new="""      - name: Install dependencies\n        run: |\n          python -m pip install -r requirements.txt\n          python -m pip install -r requirements-audit.txt\n"""
+          if install in text:
+              text=text.replace(install,install_new,1)
+          elif 'python -m pip install -r requirements-audit.txt' not in text:
+              raise SystemExit('full CI install block not recognized')
+          anchor="""      - name: Compile static SQL against current schema\n        run: python scripts/sql_schema_compile_audit.py\n"""
+          extra="""      - name: Ruff correctness scan\n        shell: bash\n        run: |\n          set +e\n          ruff check app webapp --select F --output-format concise | tee /tmp/ruff.txt\n          if grep -E 'F821|F822|F823|F811' /tmp/ruff.txt; then exit 1; fi\n          exit 0\n      - name: Deep runtime API select and frontend alias audit\n        run: python scripts/deep_runtime_audit_step83.py\n"""
+          if 'Deep runtime API select and frontend alias audit' not in text:
+              if anchor not in text: raise SystemExit('full CI SQL anchor missing')
+              text=text.replace(anchor,anchor+extra,1)
+          p.write_text(text,encoding='utf-8')
+      - name: Validate aliases and deep runtime behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q app webapp scripts tests main.py
+          python scripts/sql_schema_compile_audit.py
+          python scripts/full_system_audit_step83.py
+          python scripts/deep_runtime_audit_step83.py
+          node --check webapp/static/app-20260812g.js
+      - name: Full regression and legacy QA
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s tests -p 'test*.py' -v
+          for f in scripts/*_test.py; do python "$f"; done
+          python scripts/security_audit.py
+          python scripts/ui_text_audit.py
+          python scripts/final_audit.py
+          python scripts/flow_test.py
+          python scripts/smoke_test.py
+          python scripts/runtime_guard_test.py
+      - name: Commit verified frontend hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/deep-runtime-audit-step83.yml
+          rm -f .github/workflows/deep-runtime-audit-step83-v2.yml
+          rm -f .github/workflows/apply-step83l-frontend-aliases.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Step83l: prevent stale Mini App assets and deepen permanent CI'
+          git push origin HEAD:main
