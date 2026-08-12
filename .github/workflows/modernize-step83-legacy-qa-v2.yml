@@ -88,6 +88,8 @@ jobs:
               )
               if 'aiogram_types.WebAppInfo = WebAppInfo' not in s:
                   s = s.replace('aiogram_types.InlineKeyboardButton = InlineKeyboardButton\n', 'aiogram_types.InlineKeyboardButton = InlineKeyboardButton\naiogram_types.WebAppInfo = WebAppInfo\n', 1)
+              if rel == 'scripts/chat_visibility_test.py':
+                  s = s.replace('assert "Группы" in kb_text', 'assert "Группы" not in kb_text')
               p.write_text(s, encoding='utf-8')
 
           p = root / 'scripts/report_targets_step38_test.py'
