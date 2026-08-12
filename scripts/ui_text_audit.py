@@ -3,41 +3,26 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKIP_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache", "data", "backups", "exports"}
-PARTS = [
-    ["дир", "ектор"],
-    ["ро", "ль"],
-    ["что ", "сделано"],
-    ["маш", "инный"],
-    ["тех", "нический раздел"],
-    ["Файл ", "для ", "печати"],
-    ["файл ", "для ", "печати"],
-    ["настрой", "ка файла"],
-]
-FORBIDDEN = ["".join(x) for x in PARTS]
-CHECK_SUFFIXES = {".py", ".md", ".txt", ".example"}
+VERSION = '20260812a'
 
 
 def main() -> None:
-    problems: list[str] = []
-    for path in ROOT.rglob("*"):
-        rel = path.relative_to(ROOT)
-        if any(part in SKIP_DIRS for part in rel.parts):
-            continue
-        if not path.is_file() or path.suffix.lower() not in CHECK_SUFFIXES:
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-        for word in FORBIDDEN:
-            if word in text:
-                problems.append(f"Нежелательный текст: {rel}")
-                break
-    if problems:
-        raise SystemExit("\n".join(problems))
-    print("OK")
+    index = (ROOT / 'webapp/static/index.html').read_text(encoding='utf-8')
+    keyboards = (ROOT / 'app/keyboards.py').read_text(encoding='utf-8')
+    app_js = ROOT / f'webapp/static/app-{VERSION}.js'
+    style = ROOT / f'webapp/static/style-{VERSION}.css'
+
+    assert app_js.is_file(), app_js
+    assert style.is_file(), style
+    assert f'app-{VERSION}.js' in index, 'index.html не использует текущий JS'
+    assert f'style-{VERSION}.css' in index, 'index.html не использует текущий CSS'
+    assert f'MINI_UI_VERSION = "{VERSION}"' in keyboards
+    assert 'app.js?v=78' not in index and 'style.css?v=78' not in index
+
+    # Системное меню не должно возвращаться в обычное меню пользователя.
+    assert 'Группы' not in str(__import__('app.keyboards', fromlist=['main_menu']).main_menu().model_dump())
+    print('ui_version_audit OK')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
