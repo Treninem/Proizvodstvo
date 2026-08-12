@@ -11,6 +11,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 from openpyxl import Workbook
 
+from app import db as app_db
 from app.services import excel_bridge
 from app.services import repository as repo
 from app.services import replenishment, quality_control, stock_transfers, production_flow, inventory_adjustment, backups
@@ -228,6 +229,77 @@ class Step83RegressionTests(unittest.TestCase):
              patch.object(production_flow, "_task_row", return_value=None):
             with self.assertRaisesRegex(ValueError, "Задание не найдено"):
                 production_flow.link_lots(-100, 55, 1, 2, 1, task_id=999)
+
+
+def test_all_chat_id_tables_are_scope_classified(self):
+    with tempfile.TemporaryDirectory() as tmp:
+        test_settings = replace(app_db.settings, data_dir=Path(tmp), database_path=Path(tmp) / "scope.sqlite3")
+        with patch.object(app_db, "settings", test_settings), patch.object(repo, "settings", test_settings):
+            app_db.init_db()
+            with app_db.connect() as conn:
+                all_scoped = []
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):
+                    name = str(row[0])
+                    cols = conn.execute(f'PRAGMA table_info("{name}")').fetchall()
+                    if any(str(c[1]) == "chat_id" for c in cols):
+                        all_scoped.append(name)
+                tenant = set(repo._tenant_scope_tables_from_conn(conn))
+            excluded = set(repo._SCOPE_ROUTING_OR_TRANSIENT_TABLES)
+            self.assertEqual(set(all_scoped), tenant | (set(all_scoped) & excluded))
+            for required in (
+                "company_sites", "storage_locations", "stock_transfers",
+                "excel_import_batches", "worker_shifts", "quality_inspections",
+                "maintenance_plans", "stock_alert_rules", "report_schedules",
+            ):
+                self.assertIn(required, tenant)
+
+def test_split_legacy_and_step83_scopes_merge_transactionally(self):
+    with tempfile.TemporaryDirectory() as tmp:
+        test_settings = replace(app_db.settings, data_dir=Path(tmp), database_path=Path(tmp) / "split.sqlite3")
+        with patch.object(app_db, "settings", test_settings), patch.object(repo, "settings", test_settings):
+            app_db.init_db()
+            group = -100777001
+            owner = 777001
+            app_db.execute(
+                "INSERT OR REPLACE INTO chats(chat_id,title,chat_type,is_connected) VALUES(?,?,?,1)",
+                (group, "Завод", "supergroup"),
+            )
+            ok, msg, aid = repo.create_account(owner, group, "Завод")
+            self.assertTrue(ok, msg)
+            account = repo.get_account_by_id(aid)
+            canonical = account.scope_chat_id
+            # New Step83 structure exists in the canonical synthetic scope.
+            app_db.execute(
+                "INSERT INTO company_sites(chat_id,settlement,name,normalized,address,created_by) VALUES(?,?,?,?,?,?)",
+                (canonical, "Киржач", "Цех 1", "киржач цех 1", "", owner),
+            )
+            app_db.execute(
+                "INSERT INTO storage_locations(chat_id,name,normalized,code,created_by) VALUES(?,?,?,?,?)",
+                (canonical, "Стеллаж A", "стеллаж a", "A", owner),
+            )
+            # Legacy stock still exists under the Telegram group id.
+            cur = app_db.execute(
+                "INSERT INTO entities(chat_id,entity_type,name,normalized,default_unit) VALUES(?,?,?,?,?)",
+                (group, "stock_item", "Деталь", "деталь", "шт"),
+            )
+            entity_id = int(cur.lastrowid)
+            app_db.execute(
+                "INSERT INTO inventory(chat_id,area_id,entity_type,entity_id,unit,quantity) VALUES(?,?,?,?,?,?)",
+                (group, None, "stock_item", entity_id, "шт", 42),
+            )
+            # Simulate the previous faulty repair which pointed the account at the group.
+            app_db.execute("UPDATE accounting_accounts SET scope_chat_id=? WHERE id=?", (group, aid))
+            repaired = repo.list_accounts_for_user(owner)[0]
+            self.assertEqual(repaired.scope_chat_id, canonical)
+            self.assertEqual(
+                app_db.fetchone("SELECT quantity FROM inventory WHERE chat_id=? AND entity_id=?", (canonical, entity_id))["quantity"],
+                42,
+            )
+            self.assertIsNone(app_db.fetchone("SELECT 1 FROM inventory WHERE chat_id=?", (group,)))
+            self.assertEqual(app_db.fetchone("SELECT name FROM company_sites WHERE chat_id=?", (canonical,))["name"], "Цех 1")
+            self.assertEqual(app_db.fetchone("SELECT name FROM storage_locations WHERE chat_id=?", (canonical,))["name"], "Стеллаж A")
+            with app_db.connect() as conn:
+                self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(), [])
 
 
 if __name__ == "__main__":

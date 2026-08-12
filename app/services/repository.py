@@ -307,57 +307,115 @@ def _unique_account_name(owner_user_id: int, base_name: str, fallback_id: int) -
     return candidate
 
 
-_GROUP_SCOPE_DATA_TABLES = (
-    "areas", "job_titles", "workers", "entities", "inventory", "operations",
-    "departments", "assembly_plan_targets", "material_stock_settings",
-    "production_tasks", "interdepartment_requests", "production_lots",
-    "equipment", "equipment_downtimes", "maintenance_records",
-    "quality_rules", "quality_inspections", "replenishment_settings",
-    "replenishment_requests", "maintenance_plans", "maintenance_work_orders",
-)
+
+_SCOPE_ROUTING_OR_TRANSIENT_TABLES = frozenset({
+    # These chat_id columns identify Telegram/routing/session context, not
+    # tenant-owned business rows. They must never be mass-moved between scopes.
+    "account_chat_access", "chat_active_account", "chat_area_bindings", "chats",
+    "group_set_items", "setup_sessions", "pending_confirmations",
+})
+
+
+def _tenant_scope_tables_from_conn(conn) -> tuple[str, ...]:
+    """Discover every persistent table whose chat_id is a tenant scope.
+
+    This is schema-driven: future tables with chat_id are included automatically
+    unless they are explicitly routing/transient tables above.
+    """
+    out: list[str] = []
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    ).fetchall()
+    for row in rows:
+        name = str(row[0])
+        if name in _SCOPE_ROUTING_OR_TRANSIENT_TABLES:
+            continue
+        quoted = name.replace('"', '""')
+        columns = conn.execute(f'PRAGMA table_info("{quoted}")').fetchall()
+        if any(str(col[1]) == "chat_id" for col in columns):
+            out.append(name)
+    return tuple(out)
+
+
+def tenant_scope_tables() -> tuple[str, ...]:
+    with db.connect() as conn:
+        return _tenant_scope_tables_from_conn(conn)
 
 
 def _scope_business_row_count(chat_id: int) -> int:
-    """Count real accounting rows, ignoring access/session/audit metadata."""
+    """Count every tenant-owned row, not a hand-maintained subset."""
     total = 0
     with db.connect() as conn:
-        for table in _GROUP_SCOPE_DATA_TABLES:
-            try:
-                row = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE chat_id=?", (int(chat_id),)).fetchone()
-                total += int(row[0] if row else 0)
-            except Exception:
-                # Older databases may not have the newest tables yet.
-                continue
+        for table in _tenant_scope_tables_from_conn(conn):
+            quoted = table.replace('"', '""')
+            row = conn.execute(
+                f'SELECT COUNT(*) FROM "{quoted}" WHERE chat_id=?',
+                (int(chat_id),),
+            ).fetchone()
+            total += int(row[0] if row else 0)
     return total
 
 
-def _repair_empty_account_scope_from_group(account: AccountingAccount, group_chat_id: int) -> AccountingAccount:
-    """Reuse legacy group data when a synthetic account scope is still empty.
+def _canonical_account_scope(account: AccountingAccount) -> int:
+    return -900000000000 - int(account.id)
 
-    Older releases could write directly under the Telegram group chat_id and later
-    create a synthetic account scope. Switching is safe only when the synthetic
-    scope has no business rows and the group scope already has real accounting data.
-    If both contain data, we deliberately do nothing to avoid an automatic merge.
+
+def _merge_group_scope_into_canonical(account: AccountingAccount, group_chat_id: int) -> AccountingAccount:
+    """Unify legacy group rows and newer split-scope rows transactionally.
+
+    Any uniqueness/FK conflict rolls back the whole operation, so partial tenant
+    migration is impossible.
     """
     group_chat_id = int(group_chat_id)
-    if int(account.scope_chat_id) == group_chat_id:
+    canonical = _canonical_account_scope(account)
+    if group_chat_id == canonical:
         return account
-    occupied = get_account_by_scope(group_chat_id)
-    if occupied and int(occupied.id) != int(account.id):
+    if int(account.scope_chat_id) not in {group_chat_id, canonical}:
+        return account
+    occupied = db.fetchone(
+        "SELECT id FROM accounting_accounts WHERE scope_chat_id=? AND id<>? AND is_archived=0",
+        (canonical, int(account.id)),
+    )
+    if occupied:
         return account
     try:
-        group_rows = _scope_business_row_count(group_chat_id)
-        account_rows = _scope_business_row_count(int(account.scope_chat_id))
-    except Exception:
-        return account
-    if group_rows <= 0 or account_rows > 0:
-        return account
-    try:
-        db.execute("UPDATE accounting_accounts SET scope_chat_id=? WHERE id=?", (group_chat_id, int(account.id)))
+        with db.connect() as conn:
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT OR IGNORE INTO chats(chat_id,title,chat_type,is_connected) VALUES(?,?,?,1)",
+                (canonical, f"Учёт: {account.name}", "account"),
+            )
+            for table in _tenant_scope_tables_from_conn(conn):
+                quoted = table.replace('"', '""')
+                conn.execute(
+                    f'UPDATE "{quoted}" SET chat_id=? WHERE chat_id=?',
+                    (canonical, group_chat_id),
+                )
+            conn.execute(
+                "UPDATE accounting_accounts SET scope_chat_id=? WHERE id=?",
+                (canonical, int(account.id)),
+            )
+            fk = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if fk:
+                raise RuntimeError(f"foreign key check failed: {len(fk)}")
+            conn.commit()
         repaired = get_account_by_id(int(account.id))
         return repaired or account
-    except Exception:
+    except Exception as exc:
+        try:
+            db.execute(
+                "INSERT INTO security_events(chat_id,user_id,event_type,details) VALUES(?,?,?,?)",
+                (group_chat_id, int(account.owner_user_id), "scope_merge_blocked", str(exc)[:500]),
+            )
+        except Exception:
+            pass
         return account
+
+
+def _repair_empty_account_scope_from_group(account: AccountingAccount, group_chat_id: int) -> AccountingAccount:
+    """Compatibility wrapper: canonicalize all split legacy/new tenant data."""
+    return _merge_group_scope_into_canonical(account, int(group_chat_id))
 
 
 def ensure_group_account_context(group_chat_id: int, group_title: str, group_type: str, owner_user_id: int, private_chat_id: int | None = None, private_title: str = '') -> AccountingAccount | None:
