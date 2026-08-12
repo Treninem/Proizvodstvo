@@ -1,3 +1,4 @@
+# rerun after adversarial fixture fix
 name: Apply Step83h tenant join hardening
 
 on:
@@ -117,7 +118,6 @@ jobs:
                'FROM stock_observations o JOIN entities e ON e.id=o.entity_id AND e.chat_id=o.chat_id LEFT JOIN areas a ON a.id=o.area_id AND a.chat_id=o.chat_id',1),
           ])
 
-          # The permanent audit must fail on any future unreviewed tenant JOIN.
           p=Path('scripts/full_system_audit_step83.py'); text=p.read_text(encoding='utf-8')
           old='''    print(f"SQL_JOIN_REVIEW candidates={len(warnings)}")\n    for item in warnings[:80]:\n        print("SQL_JOIN_CANDIDATE", item)'''
           new='''    print(f"SQL_JOIN_REVIEW candidates={len(warnings)}")\n    for item in warnings[:80]:\n        print("SQL_JOIN_CANDIDATE", item)\n    check(not warnings, "Unreviewed tenant JOINs remain: " + "; ".join(warnings[:20]))'''
