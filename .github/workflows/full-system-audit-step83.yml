@@ -23,7 +23,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     env:
-      AUDIT_REVISION: '83l-deep-runtime'
+      AUDIT_REVISION: '83m-all-api-methods'
       OWNER_TELEGRAM_ID: '2097006037'
       BOT_DATA_DIR: '/tmp/proizvodstvo-full-audit'
       PUBLIC_BASE_URL: 'https://example.invalid'
@@ -57,6 +57,8 @@ jobs:
           exit 0
       - name: Deep runtime API select and frontend alias audit
         run: python scripts/deep_runtime_audit_step83.py
+      - name: Exhaustive API all-method runtime smoke
+        run: python scripts/api_all_methods_smoke_step83.py
       - name: Check active Mini App JavaScript
         shell: bash
         run: |
