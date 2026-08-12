@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import sys
@@ -196,30 +197,30 @@ def main() -> None:
     before_rows = accounting.list_recent_operations(chat_id, group_chat_id=chat_id, user_id=777, limit=5)
     assert before_rows, before_rows
     last_id = int(before_rows[0]["id"])
-    ok_cancel, cancel_msg = accounting.cancel_operation(chat_id, chat_id, 777, last_id)
+    ok_cancel, cancel_msg = accounting.cancel_operation(chat_id, chat_id, 777, last_id, "QA: отмена ошибочной записи")
     assert ok_cancel, cancel_msg
-    ok_cancel_again, _ = accounting.cancel_operation(chat_id, chat_id, 777, last_id)
+    ok_cancel_again, _ = accounting.cancel_operation(chat_id, chat_id, 777, last_id, "QA: отмена ошибочной записи")
     assert not ok_cancel_again
 
     prod_ops, _ = parse_message(chat_id, chat_id, "Изготовили Деталь 1 30")
     accounting.apply_operations(chat_id, chat_id, 777, [op.to_dict() for op in prod_ops], "Изготовили Деталь 1 30")
     last_prod_id = accounting.last_editable_operation_id(chat_id, chat_id, 777)
     assert last_prod_id is not None
-    ok_change, change_msg = accounting.change_operation_quantity(chat_id, chat_id, 777, int(last_prod_id), 12)
+    ok_change, change_msg = accounting.change_operation_quantity(chat_id, chat_id, 777, int(last_prod_id), 12, "QA: исправление количества")
     assert ok_change, change_msg
     recent_text = accounting.format_recent_operations(accounting.list_recent_operations(chat_id, chat_id, 777, 3))
     assert "Последние записи" in recent_text and "№" in recent_text, recent_text
 
 
     account_backup = backups.create_account_backup(chat_id, user_id=777)
-    assert account_backup.exists() and account_backup.suffix == ".zip", account_backup
-    with zipfile.ZipFile(account_backup) as zf:
+    assert account_backup.exists() and account_backup.name.endswith(".zip.enc"), account_backup
+    with zipfile.ZipFile(io.BytesIO(backups._decrypt_restore_bytes(account_backup.read_bytes(), account_backup.name))) as zf:
         backup_names = set(zf.namelist())
     assert any(name.endswith(".json") for name in backup_names), backup_names
     backup_list_text = backups.format_backup_list()
     assert "коп" in backup_list_text.lower() or "kopiya" in backup_list_text.lower(), backup_list_text
     full_backup = backups.create_full_backup()
-    assert full_backup.exists() and full_backup.suffix == ".zip", full_backup
+    assert full_backup.exists() and full_backup.name.endswith(".zip.enc"), full_backup
 
     stats = repo.owner_global_stats()
     assert stats["total_chats"] >= 1, stats

@@ -130,13 +130,13 @@ def main() -> None:
     recent = accounting.list_recent_operations(group_a, group_a, user_submit, 10)
     assert recent, recent
     edit_id = int(recent[0]["id"])
-    ok, msg = accounting.cancel_operation(group_a, group_a, user_submit, edit_id)
+    ok, msg = accounting.cancel_operation(group_a, group_a, user_submit, edit_id, "QA: отмена ошибочной записи")
     assert ok, msg
 
     backup = backups.create_account_backup(group_a, user_id=user_submit)
-    assert backup.exists() and backup.suffix == ".zip", backup
-    assert repo.user_permissions_current_context(group_a, owner_id).get("setup") is True
-    assert repo.user_permissions_current_context(group_a, owner_id).get("export") is True
+    assert backup.exists() and backup.name.endswith(".zip.enc"), backup
+    assert repo.user_permissions_current_context(group_a, user_full).get("setup") is True
+    assert repo.user_permissions_current_context(group_a, user_full).get("export") is True
 
     shutil.rmtree(os.environ["BOT_DATA_DIR"], ignore_errors=True)
     print("OK")

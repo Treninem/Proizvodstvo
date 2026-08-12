@@ -9,13 +9,21 @@ from pathlib import Path
 aiogram = types.ModuleType("aiogram")
 aiogram_types = types.ModuleType("aiogram.types")
 
-class InlineKeyboardButton:
-    def __init__(self, text: str, callback_data: str | None = None):
-        self.text = text
-        self.callback_data = callback_data
+class WebAppInfo:
+    def __init__(self, url: str):
+        self.url = url
 
     def model_dump(self):
-        return {"text": self.text, "callback_data": self.callback_data}
+        return {"url": self.url}
+
+class InlineKeyboardButton:
+    def __init__(self, text: str, callback_data: str | None = None, web_app=None):
+        self.text = text
+        self.callback_data = callback_data
+        self.web_app = web_app
+
+    def model_dump(self):
+        return {"text": self.text, "callback_data": self.callback_data, "web_app": self.web_app.model_dump() if self.web_app else None}
 
 class InlineKeyboardMarkup:
     def __init__(self, inline_keyboard):
@@ -25,6 +33,7 @@ class InlineKeyboardMarkup:
         return {"inline_keyboard": [[btn.model_dump() for btn in row] for row in self.inline_keyboard]}
 
 aiogram_types.InlineKeyboardButton = InlineKeyboardButton
+aiogram_types.WebAppInfo = WebAppInfo
 aiogram_types.InlineKeyboardMarkup = InlineKeyboardMarkup
 sys.modules.setdefault("aiogram", aiogram)
 sys.modules.setdefault("aiogram.types", aiogram_types)

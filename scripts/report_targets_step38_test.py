@@ -44,7 +44,7 @@ def main() -> None:
     _save(chat_id, user_id, "Сделали Часть А 30000")
     _save(chat_id, user_id, "Сделали Часть Б 16000")
     _save(chat_id, user_id, "Собрали Изделие 1 5000")
-    _save(chat_id, user_id, "Зафасовали Изделие 1 2000")
+    _save(chat_id, user_id, "Отгрузили Изделие 1 2000")
 
     text = reporting.build_assembly_capacity_report(chat_id, "сколько нужно для сборки 50000 Изделие 1")
     assert "Итого сейчас: 10 000 шт." in text, text
