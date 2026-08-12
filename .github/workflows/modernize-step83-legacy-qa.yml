@@ -43,6 +43,8 @@ jobs:
                       return m.group(0)
                   return f'accounting.cancel_operation({args}, "QA: отмена ошибочной записи")'
               s = re.sub(r'accounting\.cancel_operation\(([^()\n]+)\)', repl, s)
+              s = s.replace('backup.suffix == ".zip"', 'backup.name.endswith(".zip.enc")')
+              s = s.replace("backup.suffix == '.zip'", "backup.name.endswith('.zip.enc')")
               p.write_text(s, encoding='utf-8')
 
           for rel in [
