@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import io
 import json
+import tempfile
 import unittest
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -11,7 +13,7 @@ from openpyxl import Workbook
 
 from app.services import excel_bridge
 from app.services import repository as repo
-from app.services import replenishment, quality_control, stock_transfers, production_flow, inventory_adjustment
+from app.services import replenishment, quality_control, stock_transfers, production_flow, inventory_adjustment, backups
 from webapp import server
 
 
@@ -31,6 +33,18 @@ class _DummyConn:
 
 
 class Step83RegressionTests(unittest.TestCase):
+    def test_encrypted_backups_are_visible_in_backup_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plain = root / "plain.zip"
+            encrypted = root / "encrypted.zip.enc"
+            ignored = root / "ignore.txt"
+            for path in (plain, encrypted, ignored):
+                path.write_bytes(b"x")
+            with patch.object(backups, "backups_dir", return_value=root):
+                names = {path.name for path in backups.list_backup_files(10)}
+            self.assertEqual(names, {"plain.zip", "encrypted.zip.enc"})
+
     def test_conversational_inventory_phrase_does_not_change_stock(self):
         self.assertFalse(inventory_adjustment.looks_like_inventory_adjustment(
             "Остаток трубы примерно 5 метров, надо проверить"

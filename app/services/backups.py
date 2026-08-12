@@ -349,8 +349,10 @@ def _encrypt_backup_if_needed(path: Path) -> Path:
 
 
 def list_backup_files(limit: int = 10) -> list[Path]:
-    files = sorted(backups_dir().glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return files[:limit]
+    root = backups_dir()
+    files = [*root.glob("*.zip"), *root.glob("*.zip.enc")]
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[: max(0, int(limit))]
 
 
 def format_backup_list(limit: int = 10) -> str:
