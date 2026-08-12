@@ -27,6 +27,7 @@ class AccountSyncAndProductVisibilityTests(unittest.TestCase):
             owner_id = 2097006037
             with patch.object(db, "settings", test_settings), patch.object(repo, "settings", test_settings):
                 db.init_db()
+                repo.upsert_chat(owner_id, "Владелец", "private", connected=True)
                 ok, message, account_id = repo.create_account(owner_id, owner_id, "ПРОИЗВОДСТВО ПЛАСТМАСС")
                 self.assertTrue(ok, message)
                 account = repo.get_account_by_id(account_id)
@@ -47,7 +48,8 @@ class AccountSyncAndProductVisibilityTests(unittest.TestCase):
 
     def test_new_miniapp_buttons_are_not_pinned_to_scope_chat_id(self):
         from app import keyboards
-        with patch.object(keyboards.settings, "public_base_url", "https://example.invalid"):
+        test_settings = replace(keyboards.settings, public_base_url="https://example.invalid")
+        with patch.object(keyboards, "settings", test_settings):
             url = keyboards.miniapp_url(2097006037)
         self.assertNotIn("chat_id=", url)
 
