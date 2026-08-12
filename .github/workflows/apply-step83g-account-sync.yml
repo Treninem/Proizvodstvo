@@ -1,4 +1,4 @@
-# rerun after compact-report QA modernization
+# rerun after security fixture cleanup
 name: Apply Step83g account sync fix
 
 on:
