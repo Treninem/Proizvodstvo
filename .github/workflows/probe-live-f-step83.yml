@@ -1,0 +1,51 @@
+name: Probe live Step83 F
+
+on:
+  push:
+    paths:
+      - '.github/workflows/probe-live-f-step83.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe live Bothost F
+        id: probe
+        shell: bash
+        run: |
+          set +e
+          curl -sS --max-time 20 -D /tmp/mini.h -o /tmp/mini.html 'https://procontrol.bothost.tech/mini?probe=f'
+          mini_rc=$?
+          asset=$(curl -sS --max-time 20 -o /tmp/app.js -w '%{http_code}' 'https://procontrol.bothost.tech/static/app-20260812f.js?probe=f' || echo 000)
+          health=$(curl -sS --max-time 20 -o /tmp/health.json -w '%{http_code}' 'https://procontrol.bothost.tech/health' || echo 000)
+          ready=$(curl -sS --max-time 20 -o /tmp/ready.json -w '%{http_code}' 'https://procontrol.bothost.tech/ready' || echo 000)
+          accounts=$(curl -sS --max-time 20 -o /tmp/accounts.json -w '%{http_code}' 'https://procontrol.bothost.tech/api/accounts?user_id=1' || echo 000)
+          version=$(awk 'BEGIN{IGNORECASE=1}/^x-mini-app-version:/{gsub("\r","");print $2}' /tmp/mini.h | tail -1)
+          status=$(head -1 /tmp/mini.h | tr -d '\r')
+          ref=0; grep -q 'app-20260812f.js?v=83-canonicalscope' /tmp/mini.html && ref=1
+          echo "mini_rc=$mini_rc status=$status asset=$asset health=$health ready=$ready accounts=$accounts version=$version ref=$ref"
+          echo 'HEALTH:'; cat /tmp/health.json; echo
+          echo 'READY:'; cat /tmp/ready.json; echo
+          echo 'ACCOUNTS_UNAUTH:'; cat /tmp/accounts.json; echo
+          if [ "$mini_rc" = 0 ] && echo "$status" | grep -q ' 200 ' && [ "$asset" = 200 ] && [ "$health" = 200 ] && [ "$ready" = 200 ] && [ "$accounts" = 403 ] && [ "$version" = 20260812f ] && [ "$ref" = 1 ]; then
+            echo 'ok=1' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ok=0' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Cleanup successful probe
+        if: steps.probe.outputs.ok == '1'
+        shell: bash
+        run: |
+          rm -f .github/workflows/probe-live-f-step83.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'CI: confirm live Step83 20260812f'
+          git push origin HEAD:main
+      - name: Require F deployment
+        if: steps.probe.outputs.ok != '1'
+        run: exit 1
