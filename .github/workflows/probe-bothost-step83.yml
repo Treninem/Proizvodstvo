@@ -1,0 +1,59 @@
+name: Probe Bothost Step 83
+
+on:
+  push:
+    paths:
+      - '.github/workflows/probe-bothost-step83.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Probe live Bothost deployment
+        id: probe
+        shell: bash
+        run: |
+          set +e
+          ok=0
+          for attempt in 1 2 3 4 5 6 7 8; do
+            health=$(curl -sS --max-time 15 -o /tmp/health.json -w '%{http_code}' https://procontrol.bothost.tech/health || echo 000)
+            ready=$(curl -sS --max-time 15 -o /tmp/ready.json -w '%{http_code}' https://procontrol.bothost.tech/ready || echo 000)
+            mini=$(curl -sS -L --max-time 15 -o /tmp/mini.html -w '%{http_code}' https://procontrol.bothost.tech/mini || echo 000)
+            marker=0
+            grep -q 'app-20260812a.js' /tmp/mini.html 2>/dev/null && marker=1
+            echo "attempt=$attempt health=$health ready=$ready mini=$mini marker=$marker"
+            echo 'health body:'; head -c 800 /tmp/health.json 2>/dev/null; echo
+            echo 'ready body:'; head -c 800 /tmp/ready.json 2>/dev/null; echo
+            if [ "$health" = "200" ] && [ "$ready" = "200" ] && [ "$mini" = "200" ] && [ "$marker" = "1" ]; then
+              ok=1
+              break
+            fi
+            sleep 10
+          done
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+
+      - name: Remove one-shot probe workflow
+        if: always()
+        shell: bash
+        run: |
+          set -e
+          rm -f .github/workflows/probe-bothost-step83.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m 'CI: remove one-shot Bothost probe'
+            git push origin HEAD:main
+          fi
+
+      - name: Require live Step 83
+        if: steps.probe.outputs.ok != '1'
+        run: |
+          echo 'Bothost is not serving Step 83 yet.'
+          exit 1
