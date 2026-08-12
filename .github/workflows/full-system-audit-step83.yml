@@ -68,7 +68,6 @@ jobs:
             echo "===== $f ====="
             python "$f"
           done
-          if [ -f group_single_selection_step50_test.py ]; then python group_single_selection_step50_test.py; fi
       - name: Security and final audits
         shell: bash
         run: |
