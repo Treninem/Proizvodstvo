@@ -22,6 +22,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     env:
+      AUDIT_REVISION: '83i-current-main'
       OWNER_TELEGRAM_ID: '2097006037'
       BOT_DATA_DIR: '/tmp/proizvodstvo-full-audit'
       PUBLIC_BASE_URL: 'https://example.invalid'
