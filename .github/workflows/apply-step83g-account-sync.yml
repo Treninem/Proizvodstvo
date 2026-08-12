@@ -1,4 +1,4 @@
-# rerun after full-audit hygiene correction
+# rerun after compact-report QA modernization
 name: Apply Step83g account sync fix
 
 on:
