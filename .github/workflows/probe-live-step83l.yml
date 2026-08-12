@@ -1,0 +1,48 @@
+name: Verify live Step83l
+
+on:
+  push:
+    paths:
+      - '.github/workflows/probe-live-step83l.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify live Bothost build and assets
+        shell: bash
+        run: |
+          set +e
+          rm -f /tmp/health /tmp/ready /tmp/mini /tmp/app /tmp/unauth /tmp/hdr
+          health=$(curl -sS --max-time 20 -o /tmp/health -w '%{http_code}' 'https://procontrol.bothost.tech/health' || echo 000)
+          ready=$(curl -sS --max-time 20 -o /tmp/ready -w '%{http_code}' 'https://procontrol.bothost.tech/ready' || echo 000)
+          mini=$(curl -sS --max-time 20 -D /tmp/hdr -o /tmp/mini -w '%{http_code}' 'https://procontrol.bothost.tech/mini?verify=83l' || echo 000)
+          app=$(curl -sS --max-time 20 -o /tmp/app -w '%{http_code}' 'https://procontrol.bothost.tech/static/app-20260812g.js?verify=83l' || echo 000)
+          unauth=$(curl -sS --max-time 20 -o /tmp/unauth -w '%{http_code}' 'https://procontrol.bothost.tech/api/accounts?user_id=1' || echo 000)
+          build_h=$(python - <<'PY'
+          import json
+          try: print(json.load(open('/tmp/health', encoding='utf-8')).get('build',''))
+          except Exception: print('')
+          PY
+          )
+          build_r=$(python - <<'PY'
+          import json
+          try: print(json.load(open('/tmp/ready', encoding='utf-8')).get('build',''))
+          except Exception: print('')
+          PY
+          )
+          redirect=$(awk 'BEGIN{IGNORECASE=1}/^location:/{print}' /tmp/hdr | wc -l | tr -d ' ')
+          ref=0; grep -q 'app-20260812g.js' /tmp/mini && ref=1
+          echo "health=$health ready=$ready mini=$mini app=$app unauth=$unauth build_h=$build_h build_r=$build_r redirect=$redirect asset_ref=$ref"
+          echo 'HEALTH:'; cat /tmp/health; echo
+          echo 'READY:'; cat /tmp/ready; echo
+          echo 'MINI_ASSET_LINES:'; grep -Eo 'app-[0-9a-z]+\.js|style-[0-9a-z]+\.css' /tmp/mini | sort -u; echo
+          if [ "$health" = 200 ] && [ "$ready" = 200 ] && [ "$mini" = 200 ] && [ "$app" = 200 ] && [ "$unauth" = 403 ] && [ "$build_h" = 83i ] && [ "$build_r" = 83i ] && [ "$redirect" = 0 ] && [ "$ref" = 1 ]; then
+            echo LIVE_STEP83L_OK
+            exit 0
+          fi
+          echo LIVE_STEP83L_STALE
+          exit 1
