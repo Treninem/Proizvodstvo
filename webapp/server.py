@@ -1368,7 +1368,7 @@ async def _shutdown() -> None:
 
 
 
-MINI_UI_VERSION = "20260812f"
+MINI_UI_VERSION = "20260812g"
 
 @app.get("/mini")
 def mini(request: Request):

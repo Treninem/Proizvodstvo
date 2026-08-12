@@ -199,10 +199,10 @@ def audit_split_scope_and_tenant_isolation() -> None:
             check(ok and loc_id, msg)
 
             # Legacy data in Telegram group scope.
-            cur = db.execute("INSERT INTO areas(chat_id,name,normalized) VALUES(?,?,?)", (group_a, "Участок A", "участок a"))
-            area_id = int(cur.lastrowid)
-            cur = db.execute("INSERT INTO entities(chat_id,entity_type,name,normalized,default_unit) VALUES(?,?,?,?,?)", (group_a, "stock_item", "Деталь A", "деталь a", "шт"))
-            entity_id = int(cur.lastrowid)
+            db.execute("INSERT INTO areas(chat_id,name,normalized) VALUES(?,?,?)", (group_a, "Участок A", "участок a"))
+            area_id = int(db.fetchone("SELECT id FROM areas WHERE chat_id=? AND normalized=?", (group_a, "участок a"))["id"])
+            db.execute("INSERT INTO entities(chat_id,entity_type,name,normalized,default_unit) VALUES(?,?,?,?,?)", (group_a, "stock_item", "Деталь A", "деталь a", "шт"))
+            entity_id = int(db.fetchone("SELECT id FROM entities WHERE chat_id=? AND entity_type=? AND normalized=?", (group_a, "stock_item", "деталь a"))["id"])
             db.execute("INSERT INTO inventory(chat_id,area_id,entity_type,entity_id,unit,quantity) VALUES(?,?,?,?,?,?)", (group_a, area_id, "stock_item", entity_id, "шт", 123))
             db.execute("INSERT INTO operations(chat_id,group_chat_id,area_id,user_id,operation_type,entity_type,entity_id,quantity,unit,raw_text) VALUES(?,?,?,?,?,?,?,?,?,?)", (group_a, group_a, area_id, owner_a, "production", "stock_item", entity_id, 1, "шт", "audit"))
 
@@ -253,14 +253,15 @@ def audit_sql_join_tenant_hardening() -> None:
 
 
 def audit_repository_hygiene() -> None:
+    import subprocess
     forbidden_names = {".env", "production_account.sqlite3"}
+    tracked = subprocess.check_output(["git", "ls-files"], cwd=ROOT, text=True).splitlines()
     bad = []
-    for p in ROOT.rglob("*"):
-        if not p.is_file() or ".git" in p.parts:
-            continue
+    for rel in tracked:
+        p = Path(rel)
         if p.name in forbidden_names or p.suffix in {".sqlite", ".sqlite3", ".db", ".pyc"} or p.name.endswith(".zip.enc"):
-            bad.append(str(p.relative_to(ROOT)))
-    check(not bad, "Runtime/secrets artifacts tracked in working tree: " + ", ".join(bad[:30]))
+            bad.append(rel)
+    check(not bad, "Runtime/secrets artifacts tracked by Git: " + ", ".join(bad[:30]))
     runtime_defaults = read("runtime.defaults.env")
     for key in ("MINIAPP_API_TOKEN", "BACKUP_ENCRYPTION_KEY"):
         m = re.search(rf"^{key}=(.*)$", runtime_defaults, flags=re.M)

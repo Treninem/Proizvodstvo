@@ -5,23 +5,14 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from .config import settings
 
 
-MINI_UI_VERSION = "20260812f"
+MINI_UI_VERSION = "20260812g"
 
 def miniapp_url(user_id: int | None = None) -> str:
-    """Return a Mini App URL pinned to the account currently selected in private bot chat."""
+    """Open Mini App without pinning a stale accounting scope in the URL."""
     base = settings.public_base_url.rstrip("/")
     if not base:
         return ""
-    params = [f"v={MINI_UI_VERSION}"]
-    if user_id:
-        try:
-            from .services import repository as repo
-            account = repo.get_active_account(int(user_id))
-            if account and repo.user_has_account_access(account.id, int(user_id)):
-                params.append(f"chat_id={int(account.scope_chat_id)}")
-        except Exception:
-            pass
-    return base + "/mini?" + "&".join(params)
+    return base + f"/mini?v={MINI_UI_VERSION}"
 
 
 PERMISSION_LABELS: dict[str, str] = {
