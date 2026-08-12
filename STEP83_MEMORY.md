@@ -4,7 +4,7 @@
 База: шаг 82 TENANT_UX_EXCEL_TRANSFERS.
 Репозиторий: Treninem/Proizvodstvo.
 Live: https://procontrol.bothost.tech
-Mini App: 20260812a.
+Mini App source: 20260812g.
 
 ## Исправлено
 - `delete_department_operation_rule`: `scope` определяется до `is_tenant_admin`.
@@ -28,38 +28,108 @@ Mini App: 20260812a.
 - Владелец конкретной фирмы сохраняет полный рабочий доступ только к своему учёту.
 - Посторонний пользователь не может активировать чужой tenant.
 
-## Проверено локально и в GitHub Actions
+## Проверено до полного Step83
 - `python -m compileall -q app webapp`: OK.
-- `node --check webapp/static/app-20260812a.js`: OK.
-- Step83 regression suite: 11/11 OK.
 - Runtime config check с тестовыми env: OK.
 - Живой SQLite smoke-test ТО после tenant-JOIN hardening: OK.
-- Миграция реальной сохранённой БД step81 -> step83: старые аккаунт/позиция/площадка/операция и остаток 17 шт. сохранены; `PRAGMA integrity_check=ok`.
+- Миграция сохранённой БД step81 -> step83: старые аккаунт/позиция/площадка/операция и остаток 17 шт. сохранены; `PRAGMA integrity_check=ok`.
 - Backup/restore новых таблиц step82/83: площадки, места хранения, передачи, строки передачи, Excel batch и tenant audit восстановлены; integrity `ok`.
 - Secret-scan рабочей сборки: реальных токенов/ключей не найдено; только безопасные placeholders.
-- Полный GitHub Actions QA run `31625440054`, job `94210531222`: SUCCESS.
-- В полном прогоне успешно прошли compile, JS, все 11 Step83 regressions и весь legacy QA-набор шагов 37–57/отчётов/групп/доступов/security/UI/final/smoke.
-- Cleanup commit после полного QA: `004427b4a811a9d0f6bc55ff2e046503977a486b` (`CI: complete full Step 83 QA`).
+
+## Step83g — синхронизация бота и Mini App
+Корневая причина повторяющегося дефекта «бот создал данные, Mini App их не показывает» найдена и устранена.
+
+- Старые Telegram-сообщения с кнопкой Mini App содержали `chat_id` выбранного на тот момент учёта.
+- Frontend ошибочно ставил этот устаревший `chat_id` выше текущего активного учёта бота.
+- Поэтому бот мог создавать изделие/площадку/справочник в текущем учёте, а старая кнопка открывала другой scope.
+- Начиная с `20260812g` текущий `active_scope_chat_id`, полученный от `/api/accounts`, имеет приоритет над URL и localStorage.
+- Новые Mini App-кнопки больше не вшивают `chat_id`, поэтому старый scope не закрепляется в сообщении.
+- Регрессия проверяет изделие `Фонтан для шаров 13`: после создания через тот же repository-путь, что использует бот, изделие присутствует в Mini App feed `entities.product`.
+- Step83g commit: `a8eeb378e2eb84acef67ea0c3c53200ee4471a39`.
+
+## Canonical scope и миграция всех данных фирмы
+Ранее разные поколения данных могли оказаться в Telegram group `chat_id` и synthetic account scope одновременно.
+
+- Схема содержит 69 таблиц с `chat_id`.
+- Tenant business classifier покрывает 62 таблицы; 7 маршрутизирующих/временных таблиц исключены явно.
+- Миграция теперь schema-driven, а не ручной список таблиц.
+- Legacy group scope транзакционно объединяется в канонический `-900000000000-account_id`.
+- При uniqueness/FK конфликте операция откатывается целиком; частичного смешивания данных фирмы быть не должно.
+- Автотест проверяет сценарий: старый склад в Telegram group + новые площадки/места хранения в synthetic scope -> всё оказывается в одном каноническом учёте.
+
+## Step83h — полный tenant JOIN hardening
+Проведён отдельный аудит межфирменных JOIN.
+
+- Все ранее найденные SQL JOIN-кандидаты проверены.
+- Для business-ссылок добавлена привязка дочернего объекта к `parent.chat_id`.
+- Добавлены adversarial-тесты: БД намеренно портится межфирменной ссылкой, после чего чужие названия не должны появляться в операциях, качестве и правилах остатков.
+- Постоянный аудит теперь падает при появлении нового непроверенного tenant JOIN.
+- Результат: `SQL_JOIN_REVIEW candidates=0`.
+- Step83h commit: `89f03294ea38eb138d1f8beaf99b1a41ce5a6d41`.
+
+## Step83i — полный сквозной Mini App E2E
+Добавлен постоянный тест `tests/test_step83_full_bootstrap_visibility.py`.
+
+В одном реальном tenant-сценарии создаются и затем читаются через те же backend-функции Mini App:
+- площадка/участки;
+- отдел;
+- физическая площадка предприятия;
+- место хранения;
+- должность и сотрудник;
+- комплектующая, сырьё, складская позиция, изделие, счётчик;
+- план сборки;
+- складская/производственная операция;
+- оборудование;
+- партия;
+- производственное задание;
+- контроль качества;
+- заявка на пополнение;
+- план ТО;
+- передача между площадками;
+- `company_structure` и полный `bootstrap` Mini App.
+
+Дополнительно создаётся вторая фирма и проверяется, что её данные не появляются ни в `company_structure`, ни в `bootstrap` первой фирмы.
+
+Этот E2E заранее нашёл реальный серверный дефект, которого пользователь ещё не успел указать вручную: `_validate_tenant_operation_context` обращался к несуществующему `storage_locations.is_active`. По схеме таблица использует `is_archived`; запрос исправлен на `is_archived=0`.
+
+- Step83i fix commit: `3300dec077c6397eb88ff825d6943d929587baeb`.
+- После исправления полный E2E проходит.
+
+## Постоянный полный CI
+Файл: `.github/workflows/full-system-audit-step83.yml`.
+
+Проверяет при каждом изменении приложения/тестов:
+- compile Python;
+- активный immutable Mini App JS;
+- UI wiring: 99 actions, 141 selects, 286 DOM refs;
+- API auth/routing: 123 API routes, 86 frontend literal API paths;
+- tenant schema: 69 chat_id tables / 62 tenant / 7 routing-transient;
+- split-scope migration и двухфирменную изоляцию;
+- tenant JOIN hardening: 0 candidates;
+- repository hygiene и отсутствие runtime/secrets файлов;
+- все unit regressions;
+- весь legacy QA;
+- security/UI/final/flow/smoke/runtime guard.
+
+Дополнительно `scripts/sql_schema_compile_audit.py` компилирует статические SQL-запросы против свежей реальной SQLite-схемы. Последний прогон: `SQL_SCHEMA_COMPILE_OK checked=805`. Это должно заранее ловить повтор класса ошибки «код обращается к несуществующей колонке/таблице».
+
+Последний полный постоянный CI после очистки старого дубликата QA: run `31641345069` — SUCCESS.
 
 ## GitHub
 - Security commit `8def5e18a1b6005ec2e950e8d2008f49bef458f1`: удалены опубликованные секреты из `runtime.defaults.env`.
 - Commit `fd2527866c37148e5a9da8c06c335f3782e19bda`: `.gitignore` для секретов/runtime-данных.
 - Commit `8f992e521cbd83995f82d7a34d2cd9a08f2c7fe8`: безопасный `.env.example`.
-- Step83 complete source commit `68388afec4f1df720883039f424415fb58ab341e`: полный tenant-safe production update.
-- Inventory conversational guard commit `63368a7ef4793ca621574c4fb726963a4158ba62`.
-- Encrypted backup listing fix был проверен отдельным CI, после чего Step83 regressions стали 11/11.
-- Полный QA завершён и одноразовые workflow удалены после успеха.
+- Step83 complete source commit `68388afec4f1df720883039f424415fb58ab341e`.
+- Step83g active-account sync: `a8eeb378e2eb84acef67ea0c3c53200ee4471a39`.
+- Step83h tenant JOIN hardening: `89f03294ea38eb138d1f8beaf99b1a41ce5a6d41`.
+- Step83i storage-location/E2E fix: `3300dec077c6397eb88ff825d6943d929587baeb`.
+- SQL schema compile audit added and permanent CI updated.
+- Старый дубликат `group_single_selection_step50_test.py` из корня удалён; актуальная версия остаётся в `scripts/`.
 
-## Bothost live — подтверждено
-Final live probe: run `31625597428`, job `94211056429`: SUCCESS.
-- `/health` -> HTTP 200; bot_enabled=true, miniapp_enabled=true.
-- `/ready` -> HTTP 200; database=true, database_latency_ms=0.3, mini_app=true.
-- `/mini` -> HTTP 200.
-- Live HTML реально использует `/static/app-20260812a.js?v=82-ux` и `/static/style-20260812a.css?v=82-ux`.
-- `Last-Modified` live Mini App: Wed, 12 Aug 2026 17:39:10 GMT.
-- Одноразовый live probe удалён cleanup-коммитом `559b68c084d27fc397a5473be881086a5f3e8a00`.
+## Bothost live — ранее подтверждено
+Предыдущие live probes подтверждали `/health=200`, `/ready=200`, `/mini=200` и рабочую БД. После финальных g/h/i изменений необходимо проверить, что Bothost подхватил текущий `main`, прежде чем считать live-версию окончательной.
 
-## Единственный оставшийся security-шаг
+## Оставшийся security-шаг
 Ранее опубликованные в публичной истории GitHub значения `MINIAPP_API_TOKEN` и `BACKUP_ENCRYPTION_KEY` считаются скомпрометированными. В текущем `main` они удалены и пусты в `runtime.defaults.env`, но их необходимо ротировать в переменных окружения Bothost.
 
-Приложение не содержит Bothost Agent/API или другого механизма записи переменных окружения: `app/config.py` только читает env при запуске, а README указывает задавать переменные в панели Bothost. Прямого Bothost-коннектора в этой сессии нет, поэтому ротация этих двух env — единственное действие, которое нельзя безопасно выполнить из текущих инструментов.
+Приложение не содержит безопасного API записи env Bothost; переменные задаются в панели хостинга. Прямого Bothost-коннектора в этой сессии нет, поэтому ротация этих двух env остаётся внешним действием.
