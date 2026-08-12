@@ -1,4 +1,4 @@
-# rerun after adversarial fixture fix
+# rerun after operation_corrections schema review
 name: Apply Step83h tenant join hardening
 
 on:
@@ -46,7 +46,6 @@ jobs:
               p.write_text(text,encoding='utf-8')
 
           patch('app/services/accounting.py', [
-              ('LEFT JOIN operation_corrections oc ON oc.original_operation_id=o.id','LEFT JOIN operation_corrections oc ON oc.original_operation_id=o.id AND oc.chat_id=o.chat_id',1),
               ('LEFT JOIN entities e ON e.id=o.entity_id','LEFT JOIN entities e ON e.id=o.entity_id AND e.chat_id=o.chat_id',1),
               ('LEFT JOIN areas a ON a.id=o.area_id','LEFT JOIN areas a ON a.id=o.area_id AND a.chat_id=o.chat_id',1),
           ])
@@ -85,7 +84,6 @@ jobs:
 
           patch('app/services/repository.py', [
               ('JOIN entities e ON e.id=ec.entity_id AND e.is_archived=0','JOIN entities e ON e.id=ec.entity_id AND e.chat_id=ec.chat_id AND e.is_archived=0',2),
-              ('LEFT JOIN operation_corrections oc ON oc.original_operation_id=o.id','LEFT JOIN operation_corrections oc ON oc.original_operation_id=o.id AND oc.chat_id=o.chat_id',2),
               ('LEFT JOIN entities e ON e.id=o.entity_id','LEFT JOIN entities e ON e.id=o.entity_id AND e.chat_id=o.chat_id',3),
               ('LEFT JOIN areas a ON a.id=o.area_id','LEFT JOIN areas a ON a.id=o.area_id AND a.chat_id=o.chat_id',3),
               ('LEFT JOIN areas af ON af.id=o.from_area_id','LEFT JOIN areas af ON af.id=o.from_area_id AND af.chat_id=o.chat_id',1),
@@ -119,6 +117,12 @@ jobs:
           ])
 
           p=Path('scripts/full_system_audit_step83.py'); text=p.read_text(encoding='utf-8')
+          safe='''            if "operation_corrections" in neighborhood:\n                # Child table has no chat_id by schema; original_operation_id points to\n                # globally unique operations.id, while the parent operation itself is scoped.\n                continue\n'''
+          marker='''            if "chat_id" not in neighborhood and any(t in neighborhood for t in ("areas", "entities", "departments", "equipment", "production_lots", "company_sites", "storage_locations")):\n                warnings.append(f"{path.relative_to(ROOT)}:{lineno}: {line.strip()[:180]}")'''
+          replacement=safe+marker
+          if marker not in text:
+              raise SystemExit('SQL audit heuristic marker not found')
+          text=text.replace(marker,replacement,1)
           old='''    print(f"SQL_JOIN_REVIEW candidates={len(warnings)}")\n    for item in warnings[:80]:\n        print("SQL_JOIN_CANDIDATE", item)'''
           new='''    print(f"SQL_JOIN_REVIEW candidates={len(warnings)}")\n    for item in warnings[:80]:\n        print("SQL_JOIN_CANDIDATE", item)\n    check(not warnings, "Unreviewed tenant JOINs remain: " + "; ".join(warnings[:20]))'''
           if old not in text:
