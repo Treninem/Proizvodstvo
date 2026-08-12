@@ -1,0 +1,30 @@
+# Secrets / local environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Runtime data
+/data/
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Backups / exports
+/backups/
+/exports/
+*.bak
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
