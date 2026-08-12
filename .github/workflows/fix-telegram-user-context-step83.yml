@@ -48,8 +48,9 @@ jobs:
 
           p=Path('webapp/static/index.html')
           x=p.read_text(encoding='utf-8')
-          if '/static/app-20260812c.js?v=83-webtg-headers' not in x: raise SystemExit('20260812c index ref not found')
-          p.write_text(x.replace('/static/app-20260812c.js?v=83-webtg-headers','/static/app-20260812d.js?v=83-userctx',1),encoding='utf-8')
+          old_ref='/static/app-20260812c.js?v=83-webtg-headerfix'
+          if old_ref not in x: raise SystemExit('20260812c index ref not found')
+          p.write_text(x.replace(old_ref,'/static/app-20260812d.js?v=83-userctx',1),encoding='utf-8')
 
           p=Path('app/keyboards.py')
           x=p.read_text(encoding='utf-8')
