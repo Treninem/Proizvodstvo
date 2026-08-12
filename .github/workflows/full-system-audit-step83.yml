@@ -30,6 +30,7 @@ jobs:
       BACKUP_ENCRYPTION_KEY: 'ci-only-backup-key-not-a-secret'
       TRUSTED_HOSTS: ''
       CORS_ALLOWED_ORIGINS: ''
+      PYTHONPATH: '.'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
