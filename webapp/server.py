@@ -1368,16 +1368,19 @@ async def _shutdown() -> None:
 
 
 
-MINI_UI_VERSION = "20260812a"
+MINI_UI_VERSION = "20260812d"
 
 @app.get("/mini")
 def mini(request: Request):
-    if request.query_params.get("v") != MINI_UI_VERSION:
-        return RedirectResponse(url=f"/mini?v={MINI_UI_VERSION}", status_code=307)
+    # Never redirect the Telegram Mini App launch URL. Telegram Web keeps its
+    # signed tgWebAppData in the URL fragment; an HTTP redirect cannot preserve
+    # that fragment because it is never sent to the server. The versioned JS
+    # filename in index.html is the cache-buster, so serving HTML directly is safe.
     response = FileResponse(STATIC / "index.html")
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
+    response.headers["X-Mini-App-Version"] = MINI_UI_VERSION
     return response
 
 
