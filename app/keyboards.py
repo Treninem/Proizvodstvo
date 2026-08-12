@@ -282,6 +282,13 @@ def product_components_action_keyboard() -> InlineKeyboardMarkup:
 
 
 
+def _format_keyboard_amount(value: float) -> str:
+    number = float(value)
+    if number.is_integer():
+        return f"{int(number):,}".replace(",", " ")
+    return f"{number:,.3f}".rstrip("0").rstrip(".").replace(",", " ").replace(".", ",")
+
+
 def component_choice_keyboard(components: list[dict], mode: str) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for comp in components[:80]:
@@ -289,7 +296,7 @@ def component_choice_keyboard(components: list[dict], mode: str) -> InlineKeyboa
         name = str(comp["name"])
         qty = float(comp.get("quantity") or 0)
         unit = str(comp.get("default_unit") or "шт")
-        rows.append([InlineKeyboardButton(text=f"{name} — {format_amount(qty)} {unit}", callback_data=f"components:{mode}:{component_id}")])
+        rows.append([InlineKeyboardButton(text=f"{name} — {_format_keyboard_amount(qty)} {unit}", callback_data=f"components:{mode}:{component_id}")])
     rows.append([InlineKeyboardButton(text="Назад", callback_data="components:back_actions")])
     rows.append([InlineKeyboardButton(text="Отмена", callback_data="wizard:cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

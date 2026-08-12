@@ -390,7 +390,7 @@ def _validate_event_scope(scope: int, area_id: int | None, department_id: int | 
 
 
 def _event_accessible_to_user(event: dict[str, Any], chat_id: int, user_id: int, *, manage: bool = False) -> bool:
-    if repo.is_tenant_admin(scope, user_id):
+    if repo.is_tenant_admin(chat_id, user_id):
         return True
     memberships, department_ids, head_ids, _ = _membership_context(chat_id, user_id)
     if not memberships:
