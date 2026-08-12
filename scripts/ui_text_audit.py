@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 VERSION = '20260812a'
 
 
@@ -20,7 +22,8 @@ def main() -> None:
     assert 'app.js?v=78' not in index and 'style.css?v=78' not in index
 
     # Системное меню не должно возвращаться в обычное меню пользователя.
-    assert 'Группы' not in str(__import__('app.keyboards', fromlist=['main_menu']).main_menu().model_dump())
+    from app.keyboards import main_menu
+    assert 'Группы' not in str(main_menu().model_dump())
     print('ui_version_audit OK')
 
 
