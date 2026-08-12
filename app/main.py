@@ -10,7 +10,7 @@ from .config import settings
 from .db import init_db
 from .services import report_scheduler
 from .services import control_center
-from .handlers import start, intake, setup, groups, owner, accounts, corrections, reports, backups, inventory, onboarding, chats, risks, workflow
+from .handlers import start, intake, setup, groups, owner, accounts, corrections, reports, backups, inventory, onboarding, chats, risks, workflow, excel_import, transfers
 from .handlers.groups import try_handle_group_command
 from .handlers.accounts import try_handle_account_command
 from .handlers.setup import try_handle_wizard_message, try_handle_setup_command
@@ -22,6 +22,7 @@ from .handlers.inventory import try_handle_inventory_adjustment
 from .handlers.risks import try_handle_risk_command
 from .handlers.workflow import try_handle_workflow_command
 from .handlers.onboarding import try_handle_onboarding
+from .handlers.transfers import try_handle_transfer_command
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("production_account_bot")
@@ -43,6 +44,7 @@ async def all_text(message: Message) -> None:
         try_handle_correction_command,
         try_handle_inventory_adjustment,
         try_handle_workflow_command,
+        try_handle_transfer_command,
         try_handle_risk_command,
         try_handle_report,
         try_handle_backup,
@@ -72,6 +74,7 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(onboarding.router)
     dp.include_router(risks.router)
     dp.include_router(workflow.router)
+    dp.include_router(excel_import.router)
     dp.include_router(router)
     return dp
 
