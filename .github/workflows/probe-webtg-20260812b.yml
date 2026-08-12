@@ -1,0 +1,50 @@
+name: Probe Telegram Web Mini App 20260812b
+
+on:
+  push:
+    paths:
+      - '.github/workflows/probe-webtg-20260812b.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for Bothost deployment
+        id: probe
+        shell: bash
+        run: |
+          set +e
+          ok=0
+          for i in $(seq 1 18); do
+            health=$(curl -sS --max-time 20 -o /tmp/health.json -w '%{http_code}' https://procontrol.bothost.tech/health || echo 000)
+            ready=$(curl -sS --max-time 20 -o /tmp/ready.json -w '%{http_code}' https://procontrol.bothost.tech/ready || echo 000)
+            mini=$(curl -sS -L --max-time 20 -o /tmp/mini.html -w '%{http_code}' "https://procontrol.bothost.tech/mini?v=20260812b&probe=$i" || echo 000)
+            asset=$(curl -sS --max-time 20 -o /tmp/app.js -w '%{http_code}' "https://procontrol.bothost.tech/static/app-20260812b.js?probe=$i" || echo 000)
+            marker=0
+            grep -q 'app-20260812b.js?v=83-webtg' /tmp/mini.html 2>/dev/null && grep -q 'tgWebAppData' /tmp/app.js 2>/dev/null && marker=1
+            echo "attempt=$i health=$health ready=$ready mini=$mini asset=$asset marker=$marker"
+            if [ "$health" = 200 ] && [ "$ready" = 200 ] && [ "$mini" = 200 ] && [ "$asset" = 200 ] && [ "$marker" = 1 ]; then ok=1; break; fi
+            sleep 10
+          done
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo '--- health ---'; cat /tmp/health.json 2>/dev/null; echo
+          echo '--- ready ---'; cat /tmp/ready.json 2>/dev/null; echo
+          echo '--- refs ---'; grep -Eo '(src|href)="[^"]+\.(js|css)(\?[^\"]*)?' /tmp/mini.html | head -30 || true
+      - name: Remove successful one-shot probe
+        if: steps.probe.outputs.ok == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/probe-webtg-20260812b.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'CI: confirm live Telegram Web Mini App 20260812b'
+          git push origin HEAD:main
+      - name: Require deployment
+        if: steps.probe.outputs.ok != '1'
+        run: exit 1
