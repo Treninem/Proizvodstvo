@@ -1,0 +1,141 @@
+name: Fix Telegram Web Mini App InitData Step83
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-telegram-web-initdata-step83.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    env:
+      BOT_TOKEN: '123456789:TEST_TOKEN_FOR_CI_ONLY'
+      OWNER_TELEGRAM_ID: '2097006037'
+      BOT_DATA_DIR: '/tmp/proizvodstvo-step83-webtg'
+      PUBLIC_BASE_URL: 'https://example.invalid'
+      MINIAPP_API_TOKEN: 'ci-only-miniapp-token-not-a-secret'
+      BACKUP_ENCRYPTION_KEY: 'ci-only-backup-key-not-a-secret'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Build Telegram Web compatible asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp webapp/static/app-20260812a.js webapp/static/app-20260812b.js
+          python - <<'PY'
+          from pathlib import Path
+
+          js = Path('webapp/static/app-20260812b.js')
+          s = js.read_text(encoding='utf-8')
+          old = '''const MINI_APP_VERSION="20260812a";
+          const params = new URLSearchParams(location.search);
+          const tg = window.Telegram?.WebApp || null;
+          try { tg?.ready?.(); tg?.expand?.(); } catch(e) {}
+          // chat_id from the fresh Telegram button is only a hint. The server-side active
+          // account remains the source of truth, so an old localStorage value can never
+          // pin Mini App to another/empty accounting context.
+          const requestedChatId = params.get('chat_id') || '';
+          const storedChatId = localStorage.getItem('prodMiniChatId') || '';
+          let chatId = requestedChatId || storedChatId || '';
+          let userId = params.get('user_id') || params.get('uid') || localStorage.getItem('prodMiniUserId') || String(tg?.initDataUnsafe?.user?.id || '');
+          const token = params.get('token') || '';
+          const initData = tg?.initData || '';
+          '''
+          new = '''const MINI_APP_VERSION="20260812b";
+          const params = new URLSearchParams(location.search);
+          const tg = window.Telegram?.WebApp || null;
+          try { tg?.ready?.(); tg?.expand?.(); } catch(e) {}
+
+          // Telegram Web may expose the signed launch payload in the webview URL before
+          // Telegram.WebApp.initData becomes available. Read the same tgWebAppData payload
+          // directly as a compatibility fallback. It is NEVER trusted client-side: every
+          // API request still sends it to the server where the Telegram signature and
+          // auth_date are validated with BOT_TOKEN.
+          function resolveTelegramInitData(){
+            const sdkData=String(tg?.initData||'').trim();
+            if(sdkData){try{sessionStorage.setItem('prodMiniTelegramInitData',sdkData);}catch(e){}return sdkData;}
+            let hashData='';
+            try{
+              const hashParams=new URLSearchParams(String(location.hash||'').replace(/^#/,''));
+              hashData=String(hashParams.get('tgWebAppData')||params.get('tgWebAppData')||'').trim();
+            }catch(e){}
+            if(hashData){try{sessionStorage.setItem('prodMiniTelegramInitData',hashData);}catch(e){}return hashData;}
+            try{return String(sessionStorage.getItem('prodMiniTelegramInitData')||'').trim();}catch(e){return '';}
+          }
+          function telegramUserIdFromInitData(raw){
+            try{
+              const userRaw=new URLSearchParams(String(raw||'')).get('user');
+              if(!userRaw)return '';
+              const user=JSON.parse(userRaw);
+              return String(user?.id||'');
+            }catch(e){return '';}
+          }
+          const initData=resolveTelegramInitData();
+
+          // chat_id from the fresh Telegram button is only a hint. The server-side active
+          // account remains the source of truth, so an old localStorage value can never
+          // pin Mini App to another/empty accounting context.
+          const requestedChatId = params.get('chat_id') || '';
+          const storedChatId = localStorage.getItem('prodMiniChatId') || '';
+          let chatId = requestedChatId || storedChatId || '';
+          let userId = params.get('user_id') || params.get('uid') || localStorage.getItem('prodMiniUserId') || String(tg?.initDataUnsafe?.user?.id || '') || telegramUserIdFromInitData(initData);
+          const token = params.get('token') || '';
+          '''
+          # Dedent only the source literals above; repository source itself starts at column 0.
+          import textwrap
+          old=textwrap.dedent(old)
+          new=textwrap.dedent(new)
+          if old not in s:
+              raise SystemExit('expected Mini App bootstrap block not found')
+          s=s.replace(old,new,1)
+          js.write_text(s,encoding='utf-8')
+
+          p=Path('webapp/static/index.html')
+          x=p.read_text(encoding='utf-8')
+          old_ref='/static/app-20260812a.js?v=82-ux'
+          if old_ref not in x:
+              raise SystemExit('old JS reference not found')
+          p.write_text(x.replace(old_ref,'/static/app-20260812b.js?v=83-webtg',1),encoding='utf-8')
+
+          p=Path('app/keyboards.py')
+          x=p.read_text(encoding='utf-8')
+          if 'MINI_UI_VERSION = "20260812a"' not in x:
+              raise SystemExit('old MINI_UI_VERSION not found')
+          p.write_text(x.replace('MINI_UI_VERSION = "20260812a"','MINI_UI_VERSION = "20260812b"',1),encoding='utf-8')
+
+          p=Path('app/handlers/owner.py')
+          x=p.read_text(encoding='utf-8')
+          x=x.replace('Версия бота: 82 · Mini App 20260812a','Версия бота: 83 · Mini App 20260812b')
+          x=x.replace('Версия бота: 82\\nMini App: 20260812a\\nАрхитектура: tenant-isolation v2','Версия бота: 83\\nMini App: 20260812b\\nАрхитектура: tenant-isolation v2')
+          p.write_text(x,encoding='utf-8')
+          PY
+      - name: Verify fix and full regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "tgWebAppData" webapp/static/app-20260812b.js
+          grep -q "prodMiniTelegramInitData" webapp/static/app-20260812b.js
+          grep -q "app-20260812b.js?v=83-webtg" webapp/static/index.html
+          grep -q 'MINI_UI_VERSION = "20260812b"' app/keyboards.py
+          node --check webapp/static/app-20260812b.js
+          python -m compileall -q app webapp scripts main.py
+          python -m unittest discover -s tests -p 'test*.py' -v
+          python scripts/security_audit.py
+          python scripts/final_audit.py
+      - name: Commit verified Telegram Web fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/fix-telegram-web-initdata-step83.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Fix Telegram Web Mini App authorization fallback'
+          git push origin HEAD:main
