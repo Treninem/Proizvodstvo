@@ -1,4 +1,4 @@
-# rerun after regression fixture correction
+# rerun after full-audit hygiene correction
 name: Apply Step83g account sync fix
 
 on:
@@ -75,6 +75,11 @@ jobs:
               'cur = db.execute("INSERT INTO entities(chat_id,entity_type,name,normalized,default_unit) VALUES(?,?,?,?,?)", (group_a, "stock_item", "Деталь A", "деталь a", "шт"))\n            entity_id = int(cur.lastrowid)',
               'db.execute("INSERT INTO entities(chat_id,entity_type,name,normalized,default_unit) VALUES(?,?,?,?,?)", (group_a, "stock_item", "Деталь A", "деталь a", "шт"))\n            entity_id = int(db.fetchone("SELECT id FROM entities WHERE chat_id=? AND entity_type=? AND normalized=?", (group_a, "stock_item", "деталь a"))["id"])'
           )
+          old_hygiene='''def audit_repository_hygiene() -> None:\n    forbidden_names = {".env", "production_account.sqlite3"}\n    bad = []\n    for p in ROOT.rglob("*"):\n        if not p.is_file() or ".git" in p.parts:\n            continue\n        if p.name in forbidden_names or p.suffix in {".sqlite", ".sqlite3", ".db", ".pyc"} or p.name.endswith(".zip.enc"):\n            bad.append(str(p.relative_to(ROOT)))\n    check(not bad, "Runtime/secrets artifacts tracked in working tree: " + ", ".join(bad[:30]))'''
+          new_hygiene='''def audit_repository_hygiene() -> None:\n    import subprocess\n    forbidden_names = {".env", "production_account.sqlite3"}\n    tracked = subprocess.check_output(["git", "ls-files"], cwd=ROOT, text=True).splitlines()\n    bad = []\n    for rel in tracked:\n        p = Path(rel)\n        if p.name in forbidden_names or p.suffix in {".sqlite", ".sqlite3", ".db", ".pyc"} or p.name.endswith(".zip.enc"):\n            bad.append(rel)\n    check(not bad, "Runtime/secrets artifacts tracked by Git: " + ", ".join(bad[:30]))'''
+          if old_hygiene not in t:
+              raise SystemExit('hygiene audit block not found')
+          t=t.replace(old_hygiene,new_hygiene,1)
           audit.write_text(t,encoding='utf-8')
 
       - name: Compile and JS syntax
