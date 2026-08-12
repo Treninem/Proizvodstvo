@@ -1112,7 +1112,7 @@ def _validate_tenant_operation_context(scope: int, user_id: int, payload: Operat
         if location_id is None:
             continue
         row = db.fetchone(
-            "SELECT area_id,department_id FROM storage_locations WHERE id=? AND chat_id=? AND is_active=1",
+            "SELECT area_id,department_id FROM storage_locations WHERE id=? AND chat_id=? AND is_archived=0",
             (int(location_id), int(scope)),
         )
         if not row:
