@@ -37,30 +37,17 @@ jobs:
           old='20260812f'; new='20260812g'
           root=Path('.')
 
-          # New immutable asset; never rewrite the cached old file in place.
           src=root/f'webapp/static/app-{old}.js'
           dst=root/f'webapp/static/app-{new}.js'
           js=src.read_text(encoding='utf-8').replace(f'const MINI_APP_VERSION="{old}";', f'const MINI_APP_VERSION="{new}";', 1)
-          old_block="""  let chosen='';
-          if(requestedChatId && allowed.has(String(requestedChatId))) chosen=String(requestedChatId);
-          // The account selected in the bot wins over stale localStorage. This is the
-          // key synchronization rule between the work group/private bot and Mini App.
-          else if(active && allowed.has(active)) chosen=active;
-          else if(storedChatId && allowed.has(String(storedChatId))) chosen=String(storedChatId);"""
-          new_block="""  let chosen='';
-          // The account selected in the private bot chat is the source of truth.
-          // URL chat_id may come from an old Telegram message and must never pin
-          // Mini App to a stale accounting scope.
-          if(active && allowed.has(active)) chosen=active;
-          else if(requestedChatId && allowed.has(String(requestedChatId))) chosen=String(requestedChatId);
-          else if(storedChatId && allowed.has(String(storedChatId))) chosen=String(storedChatId);"""
-          if old_block not in js:
-              raise SystemExit('account selection block not found')
-          js=js.replace(old_block,new_block,1)
+          stale="if(requestedChatId && allowed.has(String(requestedChatId))) chosen=String(requestedChatId);"
+          active="else if(active && allowed.has(active)) chosen=active;"
+          if stale not in js or active not in js:
+              raise SystemExit('account selection statements not found')
+          js=js.replace(stale,"if(active && allowed.has(active)) chosen=active;",1)
+          js=js.replace(active,"else if(requestedChatId && allowed.has(String(requestedChatId))) chosen=String(requestedChatId);",1)
           dst.write_text(js,encoding='utf-8')
 
-          # New buttons are intentionally unpinned. /api/accounts returns the current
-          # account selected in the bot, so an old message cannot choose another scope.
           kp=root/'app/keyboards.py'
           text=kp.read_text(encoding='utf-8').replace(f'MINI_UI_VERSION = "{old}"',f'MINI_UI_VERSION = "{new}"',1)
           pattern=r'def miniapp_url\(user_id: int \| None = None\) -> str:\n.*?\n\nPERMISSION_LABELS:'
@@ -70,7 +57,6 @@ jobs:
               raise SystemExit(f'miniapp_url replacement count={n}')
           kp.write_text(text2,encoding='utf-8')
 
-          # Bump references/version diagnostics together.
           for name in ['webapp/static/index.html','webapp/server.py','app/handlers/owner.py']:
               p=root/name
               t=p.read_text(encoding='utf-8')
@@ -78,7 +64,6 @@ jobs:
                   raise SystemExit(f'{old} not found in {name}')
               p.write_text(t.replace(old,new),encoding='utf-8')
 
-          # Fix the permanent auditor itself: app.db.execute intentionally returns None.
           audit=root/'scripts/full_system_audit_step83.py'
           t=audit.read_text(encoding='utf-8')
           t=t.replace(
