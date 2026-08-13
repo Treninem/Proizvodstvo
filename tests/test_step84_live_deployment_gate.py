@@ -41,6 +41,12 @@ class Step84LiveDeploymentGateTests(unittest.TestCase):
         self.assertNotIn('/static/app-20260812g.js', html)
         self.assertTrue((ROOT / "webapp" / "static" / "app-20260813a.js").is_file())
 
+    def test_telegram_button_uses_current_mini_app_version(self):
+        keyboards = (ROOT / "app" / "keyboards.py").read_text(encoding="utf-8")
+        self.assertIn('MINI_UI_VERSION = "20260813a"', keyboards)
+        self.assertNotIn('MINI_UI_VERSION = "20260812g"', keyboards)
+        self.assertIn('return base + f"/mini?v={MINI_UI_VERSION}"', keyboards)
+
     def test_owner_version_identifies_exact_runtime(self):
         owner = (ROOT / "app" / "handlers" / "owner.py").read_text(encoding="utf-8")
         self.assertIn("Версия бота: 84", owner)
