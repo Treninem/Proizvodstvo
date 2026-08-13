@@ -7,7 +7,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "webapp" / "static"
 HTML = STATIC / "index.html"
-APP = STATIC / "app-20260812g.js"
 
 # Some data-* attributes are intentionally handled by generic code rather than
 # an action==='...' branch. Keep those explicit so the audit remains strict.
@@ -16,6 +15,16 @@ SPECIAL_TABS = {"more"}
 
 def _values(pattern: str, text: str) -> set[str]:
     return {m.group(1) for m in re.finditer(pattern, text, flags=re.I)}
+
+
+def active_app_path(html: str) -> Path:
+    match = re.search(r'<script[^>]+src=["\']/static/(app-[^"\'?]+\.js)(?:\?[^"\']*)?["\']', html, flags=re.I)
+    if not match:
+        raise RuntimeError("index.html does not reference a versioned Mini App JavaScript asset")
+    path = STATIC / match.group(1)
+    if not path.is_file():
+        raise RuntimeError(f"active Mini App JavaScript is missing: {path.name}")
+    return path
 
 
 def audit_ui_wiring(html: str, js: str) -> list[str]:
@@ -79,14 +88,16 @@ def main() -> int:
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
-    problems = audit_ui_wiring(HTML.read_text(encoding="utf-8"), APP.read_text(encoding="utf-8"))
+    html = HTML.read_text(encoding="utf-8")
+    app = active_app_path(html)
+    problems = audit_ui_wiring(html, app.read_text(encoding="utf-8"))
     if problems:
-        print(f"STEP84 UI_WIRING_FAILED count={len(problems)}")
+        print(f"STEP84 UI_WIRING_FAILED count={len(problems)} asset={app.name}")
         for problem in problems:
             print(f" - {problem}")
         return 1
     if not args.quiet:
-        print("STEP84 UI_WIRING_OK")
+        print(f"STEP84 UI_WIRING_OK asset={app.name}")
     return 0
 
 
