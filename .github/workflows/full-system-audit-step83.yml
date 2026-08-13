@@ -23,7 +23,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     env:
-      AUDIT_REVISION: '83m-all-api-methods'
+      AUDIT_REVISION: '84-ui-wiring-live-gate'
       OWNER_TELEGRAM_ID: '2097006037'
       BOT_DATA_DIR: '/tmp/proizvodstvo-full-audit'
       PUBLIC_BASE_URL: 'https://example.invalid'
@@ -71,6 +71,8 @@ jobs:
           PY
           )
           node --check "webapp/static/$asset"
+      - name: Audit Mini App UI wiring
+        run: python scripts/ui_wiring_audit_step84.py
       - name: Comprehensive architecture and tenant audit
         run: python scripts/full_system_audit_step83.py
       - name: Unit regressions
