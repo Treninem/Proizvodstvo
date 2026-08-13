@@ -12,6 +12,7 @@
 - Mini App: `20260813a`
 - Активный JavaScript: `webapp/static/app-20260813a.js`
 - Активный CSS: `webapp/static/style-20260812a.css`
+- Docker image label: `84a-mini-20260813a`
 - Tenant architecture: `tenant-isolation v2`
 - Production DB: `/app/data/production_account.sqlite3`
 - Public runtime domain: `https://procontrol.bothost.tech`
@@ -60,7 +61,8 @@ Telegram-кнопка Mini App использует `MINI_UI_VERSION = "20260813
 - `webapp/static/app-20260813a.js` → `MINI_APP_VERSION=20260813a`;
 - `webapp/static/app.js` → byte-identical alias активного JS;
 - `app/keyboards.py` → Telegram Mini App URL с `20260813a`;
-- `app/handlers/owner.py` → OWNER-only версия Bot 84 / Backend 84a / Mini App 20260813a.
+- `app/handlers/owner.py` → OWNER-only версия Bot 84 / Backend 84a / Mini App 20260813a;
+- `Dockerfile` → image label `84a-mini-20260813a`.
 
 ### 5. Очистка репозитория
 
@@ -80,7 +82,7 @@ Telegram-кнопка Mini App использует `MINI_UI_VERSION = "20260813
 
 После функционального аудита удалены только реально неиспользуемые imports/locals (`F401/F841`). Одноразовый cleanup-workflow после выполнения удалён.
 
-Постоянный CI теперь требует полный:
+Постоянный CI требует:
 
 ```text
 ruff check app webapp --select F
@@ -88,31 +90,49 @@ ruff check app webapp --select F
 
 без исключений и без скрытого игнорирования unused/undefined/redefined проблем.
 
-## Финальный source audit
+### 7. Проверяется реальный production Docker image
 
-Финальный полный GitHub Actions run на Ruff-clean текущем коде:
+Добавлен `scripts/docker_contract_audit_step84.py`. Он выводит release identity из `webapp/server.py`/`index.html` и проверяет Dockerfile:
 
-- Run: `31684997440`
-- Head: `fb474a313a1cfa2119eb95e72173f4cbfa6881a7`
+- image label соответствует `84a / 20260813a`;
+- `COPY . ./` копирует весь source и активный Mini App asset;
+- открыт порт 3000;
+- перед runtime выполняется `scripts/live_start_check.py`;
+- контейнер запускает `exec python -m app.runtime`.
+
+Главный CI теперь дополнительно выполняет настоящий:
+
+```text
+docker build --tag proizvodstvo-step84-ci .
+```
+
+на Dockerfile с `python:3.11-slim`, после чего запускает `live_start_check.py` уже **внутри собранного production image** с синтетическими CI-секретами. Build и preflight прошли SUCCESS.
+
+## Финальный source + Docker audit
+
+Финальный полный GitHub Actions run:
+
+- Run: `31685682982`
+- Head: `a995b71a2902dcd6851a6827a4ecb59aebf7f7ff`
 - Conclusion: `SUCCESS`
 
 Все рабочие этапы прошли:
 
-1. Python compile
-2. 798 static SQL queries against current SQLite schema
-3. Полный Ruff `F` correctness gate
-4. Deep runtime API/select/frontend alias audit
-5. Exhaustive all-method API smoke
-6. Active Mini App JS syntax
-7. UI wiring audit
-8. Architecture + tenant audit
-9. Unit regressions
-10. Legacy QA scripts
-11. Security audit
-12. UI text audit
-13. Final audit
-14. Flow test
-15. Smoke test
+1. Dependency install + `pip check`
+2. Python compile
+3. 798 static SQL queries against current SQLite schema
+4. Полный Ruff `F` correctness gate
+5. Docker release contract audit
+6. **Production Docker image build on Python 3.11**
+7. **Startup preflight inside built Docker image**
+8. Deep runtime API/select/frontend alias audit
+9. Exhaustive all-method API smoke
+10. Active Mini App JS syntax
+11. UI wiring audit
+12. Architecture + tenant audit
+13. Unit regressions
+14. Legacy QA scripts
+15. Security/UI text/final/flow/smoke audits
 16. Runtime configuration guard
 17. Workflow completion checks
 
@@ -120,7 +140,7 @@ Exhaustive API smoke проверяет все 123 API operations на запо�
 
 ## Постоянный live deployment gate
 
-Добавлены:
+Файлы:
 
 - `scripts/live_deployment_gate_step84.py`
 - `.github/workflows/live-deployment-gate-step84.yml`
@@ -151,7 +171,7 @@ Live gate run `31683164892`, 30 попыток, завершился `FAILURE`.
 - `/static/app-20260813a.js` = HTTP 404;
 - live `app.js`, `style.css`, `manifest.webmanifest` имеют другие SHA-256.
 
-Следовательно, код `84a / 20260813a` полностью проверен в GitHub, но Bothost всё ещё запущен со старой сборкой `20260812f`. Это не browser cache: сам сервер реально не содержит нового versioned asset.
+Это не browser cache и не проблема сборки source: текущий production Docker image `84a/20260813a` реально собирается и проходит preflight в GitHub Actions, а live-сервер Bothost физически не содержит нового versioned asset.
 
 ## Единственный обязательный следующий live-шаг
 
