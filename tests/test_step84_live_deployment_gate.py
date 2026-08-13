@@ -35,6 +35,18 @@ class Step84LiveDeploymentGateTests(unittest.TestCase):
         self.assertIn("aria-expanded", source)
         self.assertLess(source.index("if(tab==='more')"), source.index("if(tab){showTab(tab);", source.index("if(tab==='more')")))
 
+    def test_index_uses_new_filename_not_mutated_immutable_asset(self):
+        html = (ROOT / "webapp" / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('/static/app-20260813a.js', html)
+        self.assertNotIn('/static/app-20260812g.js', html)
+        self.assertTrue((ROOT / "webapp" / "static" / "app-20260813a.js").is_file())
+
+    def test_owner_version_identifies_exact_runtime(self):
+        owner = (ROOT / "app" / "handlers" / "owner.py").read_text(encoding="utf-8")
+        self.assertIn("Версия бота: 84", owner)
+        self.assertIn("Backend: 84a", owner)
+        self.assertIn("Mini App: 20260813a", owner)
+
     def test_manifest_opens_canonical_mini_route(self):
         import json
 
