@@ -43,6 +43,8 @@ def promote(*, check: bool = False) -> list[str]:
     source = SOURCE_APP.read_text(encoding="utf-8")
     if "if(tab==='more')" not in source or "mobile-open" not in source:
         raise RuntimeError("Refusing release promotion: source Mini App does not contain the Step84 More-menu fix")
+    release_marker = f"// Mini App release: {NEW_MINI}\n"
+    released_source = source if source.startswith(release_marker) else release_marker + source
 
     expected_files: dict[Path, str] = {}
 
@@ -104,8 +106,8 @@ def promote(*, check: bool = False) -> list[str]:
     live_test = live_test.replace(f'self.assertEqual(expected.app_asset, "app-{OLD_MINI}.js")', f'self.assertEqual(expected.app_asset, "app-{NEW_MINI}.js")')
     expected_files[LIVE_TEST] = live_test
 
-    expected_files[NEW_APP] = source
-    expected_files[ALIAS_APP] = source
+    expected_files[NEW_APP] = released_source
+    expected_files[ALIAS_APP] = released_source
 
     for path, expected_content in expected_files.items():
         current = path.read_text(encoding="utf-8") if path.exists() else None
