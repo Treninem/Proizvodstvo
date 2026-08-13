@@ -27,6 +27,14 @@ class Step84LiveDeploymentGateTests(unittest.TestCase):
             hashlib.sha256((static / "style.css").read_bytes()).hexdigest(),
         )
 
+    def test_generated_active_app_handles_more_as_drawer(self):
+        expected = expected_deployment()
+        source = (ROOT / "webapp" / "static" / expected.app_asset).read_text(encoding="utf-8")
+        self.assertIn("if(tab==='more')", source)
+        self.assertIn("classList.toggle('mobile-open',opening)", source)
+        self.assertIn("aria-expanded", source)
+        self.assertLess(source.index("if(tab==='more')"), source.index("if(tab){showTab(tab);", source.index("if(tab==='more')")))
+
     def test_manifest_opens_canonical_mini_route(self):
         import json
 
