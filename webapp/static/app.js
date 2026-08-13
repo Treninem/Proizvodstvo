@@ -1,5 +1,5 @@
 // Mini App release: 20260813a
-const MINI_APP_VERSION="20260812g";
+const MINI_APP_VERSION="20260813a";
 const params = new URLSearchParams(location.search);
 const tg = window.Telegram?.WebApp || null;
 try { tg?.ready?.(); tg?.expand?.(); } catch(e) {}
