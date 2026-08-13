@@ -1,0 +1,48 @@
+name: Promote Step84 release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/promote_step84_release.py'
+      - '.github/workflows/promote-step84-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: proizvodstvo-step84-release-promotion
+  cancel-in-progress: true
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Promote backend and Mini App versions
+        run: python scripts/promote_step84_release.py
+      - name: Validate promoted JavaScript and markers
+        run: |
+          node --check webapp/static/app-20260813a.js
+          node --check webapp/static/app.js
+          python scripts/promote_step84_release.py --check
+          grep -q 'MINI_UI_VERSION = "20260813a"' webapp/server.py
+          test "$(grep -o '"'"'"build"'"'": "'"'"84a"'"'"' webapp/server.py | wc -l)" -ge 2
+      - name: Commit promoted release
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo 'Release is already promoted.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/handlers/owner.py webapp/server.py webapp/static/index.html webapp/static/app-20260813a.js webapp/static/app.js tests/test_step84_live_deployment_gate.py
+          git commit -m 'Step84: promote backend 84a and Mini App 20260813a'
+          git push origin HEAD:main
