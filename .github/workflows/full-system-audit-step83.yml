@@ -24,7 +24,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     env:
-      AUDIT_REVISION: '84-ruff-clean-ui-live-docker-gate'
+      AUDIT_REVISION: '84-real-docker-preflight'
       OWNER_TELEGRAM_ID: '2097006037'
       BOT_DATA_DIR: '/tmp/proizvodstvo-full-audit'
       PUBLIC_BASE_URL: 'https://example.invalid'
@@ -45,6 +45,7 @@ jobs:
         run: |
           python -m pip install -r requirements.txt
           python -m pip install -r requirements-audit.txt
+          python -m pip check
       - name: Compile Python
         run: python -m compileall -q app webapp scripts tests main.py
       - name: Compile static SQL against current schema
@@ -53,6 +54,19 @@ jobs:
         run: ruff check app webapp --select F --output-format concise
       - name: Audit Docker deployment contract
         run: python scripts/docker_contract_audit_step84.py
+      - name: Build production Docker image
+        run: docker build --tag proizvodstvo-step84-ci .
+      - name: Run production-image startup preflight
+        shell: bash
+        run: |
+          docker run --rm \
+            -e BOT_TOKEN="$BOT_TOKEN" \
+            -e OWNER_TELEGRAM_ID="$OWNER_TELEGRAM_ID" \
+            -e BOT_DATA_DIR=/tmp/proizvodstvo-docker-preflight \
+            -e MINIAPP_API_TOKEN="$MINIAPP_API_TOKEN" \
+            -e PORT=3000 \
+            proizvodstvo-step84-ci \
+            python scripts/live_start_check.py
       - name: Deep runtime API select and frontend alias audit
         run: python scripts/deep_runtime_audit_step83.py
       - name: Exhaustive API all-method runtime smoke
