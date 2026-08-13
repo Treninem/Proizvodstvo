@@ -23,7 +23,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     env:
-      AUDIT_REVISION: '84-ui-wiring-live-gate'
+      AUDIT_REVISION: '84-ruff-clean-ui-live-gate'
       OWNER_TELEGRAM_ID: '2097006037'
       BOT_DATA_DIR: '/tmp/proizvodstvo-full-audit'
       PUBLIC_BASE_URL: 'https://example.invalid'
@@ -48,13 +48,8 @@ jobs:
         run: python -m compileall -q app webapp scripts tests main.py
       - name: Compile static SQL against current schema
         run: python scripts/sql_schema_compile_audit.py
-      - name: Ruff correctness scan
-        shell: bash
-        run: |
-          set +e
-          ruff check app webapp --select F --output-format concise | tee /tmp/ruff.txt
-          if grep -E 'F821|F822|F823|F811' /tmp/ruff.txt; then exit 1; fi
-          exit 0
+      - name: Ruff F correctness scan
+        run: ruff check app webapp --select F --output-format concise
       - name: Deep runtime API select and frontend alias audit
         run: python scripts/deep_runtime_audit_step83.py
       - name: Exhaustive API all-method runtime smoke
