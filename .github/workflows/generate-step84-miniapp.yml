@@ -1,0 +1,50 @@
+name: Generate Step84 Mini App fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'webapp/static/app-core-20260812g.js'
+      - 'scripts/apply_step84_more_nav_fix.py'
+      - 'tests/test_step84_more_navigation.py'
+      - '.github/workflows/generate-step84-miniapp.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: proizvodstvo-step84-miniapp-generator
+  cancel-in-progress: true
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test patch generator
+        run: python -m unittest tests.test_step84_more_navigation -v
+      - name: Generate active Mini App and alias
+        run: python scripts/apply_step84_more_nav_fix.py
+      - name: Validate generated JavaScript
+        run: |
+          node --check webapp/static/app-20260812g.js
+          node --check webapp/static/app.js
+          python scripts/apply_step84_more_nav_fix.py --check
+      - name: Commit generated runtime if changed
+        shell: bash
+        run: |
+          if git diff --quiet -- webapp/static/app-20260812g.js webapp/static/app.js; then
+            echo 'Generated Mini App is already current.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add webapp/static/app-20260812g.js webapp/static/app.js
+          git commit -m 'Step84: fix mobile More navigation'
+          git push origin HEAD:main
