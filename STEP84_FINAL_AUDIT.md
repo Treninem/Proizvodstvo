@@ -29,7 +29,7 @@ Telegram-кнопка Mini App использует `MINI_UI_VERSION = "20260813
 
 ### 1. Кнопка «Ещё» в мобильном Mini App
 
-Найден реальный UX-дефект: нижняя кнопка `Ещё` имела `data-tab="more"`, но страницы `page-more` не существовало. Общий обработчик делал `showTab("more")`, в результате текущая страница скрывалась и пользователь получал пустой экран.
+Найден реальный UX-дефект: нижняя кнопка `Ещё` имела `data-tab="more"`, но страницы `page-more` не существовало. Общий обработчик делал `showTab("more")`, текущая страница скрывалась и пользователь получал пустой экран.
 
 Исправлено: `more` обрабатывается до общего `showTab`, раскрывает дополнительную панель `.tabs.mobile-open`, синхронизирует active state и `aria-expanded`.
 
@@ -49,7 +49,7 @@ Telegram-кнопка Mini App использует `MINI_UI_VERSION = "20260813
 
 Предыдущий versioned asset `app-20260812g.js` нельзя было безопасно изменять на месте, потому что versioned static отдаётся с длительным immutable cache.
 
-Исправлено правильно: создан новый asset `app-20260813a.js`, а `index.html` переключён на новое имя. Таким образом старый клиентский cache не может удержать исправленную сборку под старым URL.
+Исправлено правильно: создан новый asset `app-20260813a.js`, а `index.html` переключён на новое имя. Старый клиентский cache не может удержать исправленную сборку под старым URL.
 
 ### 4. Согласованная версия во всех точках
 
@@ -64,7 +64,7 @@ Telegram-кнопка Mini App использует `MINI_UI_VERSION = "20260813
 
 ### 5. Очистка репозитория
 
-Удалены одноразовые patch/release-файлы и старые исполняемые frontend runtime-сборки. В `webapp/static` после очистки остаются только актуальные runtime-файлы и aliases:
+Удалены одноразовые patch/release-файлы, временные workflows и старые исполняемые frontend runtime-сборки. В `webapp/static` после очистки остаются только актуальные runtime-файлы и aliases:
 
 - `app-20260813a.js`
 - `app.js`
@@ -76,19 +76,31 @@ Telegram-кнопка Mini App использует `MINI_UI_VERSION = "20260813
 
 `app.js` byte-identical `app-20260813a.js`, `style.css` byte-identical `style-20260812a.css`.
 
+### 6. Python Ruff F полностью очищен
+
+После функционального аудита удалены только реально неиспользуемые imports/locals (`F401/F841`). Одноразовый cleanup-workflow после выполнения удалён.
+
+Постоянный CI теперь требует полный:
+
+```text
+ruff check app webapp --select F
+```
+
+без исключений и без скрытого игнорирования unused/undefined/redefined проблем.
+
 ## Финальный source audit
 
-Финальный полный GitHub Actions run после очистки:
+Финальный полный GitHub Actions run на Ruff-clean текущем коде:
 
-- Run: `31683328288`
-- Head: `51102a7b907e4e5e6e060838801c818f86279b25`
+- Run: `31684997440`
+- Head: `fb474a313a1cfa2119eb95e72173f4cbfa6881a7`
 - Conclusion: `SUCCESS`
 
-Все 17 рабочих этапов прошли:
+Все рабочие этапы прошли:
 
 1. Python compile
 2. 798 static SQL queries against current SQLite schema
-3. Ruff correctness gate
+3. Полный Ruff `F` correctness gate
 4. Deep runtime API/select/frontend alias audit
 5. Exhaustive all-method API smoke
 6. Active Mini App JS syntax
@@ -102,7 +114,7 @@ Telegram-кнопка Mini App использует `MINI_UI_VERSION = "20260813
 14. Flow test
 15. Smoke test
 16. Runtime configuration guard
-17. Остальные workflow checks/post steps
+17. Workflow completion checks
 
 Exhaustive API smoke проверяет все 123 API operations на заполненной изолированной test DB; необработанных HTTP 500 нет.
 
@@ -124,7 +136,7 @@ Gate проверяет реальный Bothost не только по HTTP 200
 - manifest совпадает по SHA-256;
 - `/api/accounts?user_id=1` без авторизации = 403.
 
-Workflow запускается по push и по расписанию, поэтому stale deployment теперь обнаруживается автоматически.
+Workflow запускается по push и по расписанию, поэтому stale deployment обнаруживается автоматически.
 
 ## Реальный Bothost — текущий внешний блокер
 
@@ -139,11 +151,11 @@ Live gate run `31683164892`, 30 попыток, завершился `FAILURE`.
 - `/static/app-20260813a.js` = HTTP 404;
 - live `app.js`, `style.css`, `manifest.webmanifest` имеют другие SHA-256.
 
-Следовательно, код `84a / 20260813a` полностью проверен в GitHub, но Bothost всё ещё запущен со старой сборкой `20260812f`. Это не ошибка текущего source runtime и не browser cache: сам сервер реально не содержит нового versioned asset.
+Следовательно, код `84a / 20260813a` полностью проверен в GitHub, но Bothost всё ещё запущен со старой сборкой `20260812f`. Это не browser cache: сам сервер реально не содержит нового versioned asset.
 
 ## Единственный обязательный следующий live-шаг
 
-В панели Bothost для производственного бота нужно выполнить полноценный **Deploy / пересборку из текущей ветки `main`**, а не просто Restart старого контейнера. Одновременно проверить, что подключён именно репозиторий `Treninem/Proizvodstvo` и ветка `main`.
+В панели Bothost для производственного бота нужно выполнить полноценный **Deploy / пересборку из текущей ветки `main`**, а не только Restart старого контейнера. Одновременно проверить, что подключён именно репозиторий `Treninem/Proizvodstvo` и ветка `main`.
 
 После deploy релиз считается live только при одновременном выполнении:
 
