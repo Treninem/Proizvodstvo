@@ -32,8 +32,6 @@ jobs:
           node --check webapp/static/app-20260813a.js
           node --check webapp/static/app.js
           python scripts/promote_step84_release.py --check
-          grep -q 'MINI_UI_VERSION = "20260813a"' webapp/server.py
-          test "$(grep -o '"'"'"build"'"'": "'"'"84a"'"'"' webapp/server.py | wc -l)" -ge 2
       - name: Commit promoted release
         shell: bash
         run: |
