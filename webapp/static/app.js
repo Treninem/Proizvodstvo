@@ -984,7 +984,22 @@ document.addEventListener('click', e=>{
   const workShortcut=e.target.closest('[data-work-op]')?.dataset.workOp;if(workShortcut){if([...(byId('workOperation')?.options||[])].some(x=>x.value===workShortcut)){byId('workOperation').value=workShortcut;updateWorkEntry();showTab('work');}else showNotice('Это действие вам не назначено.',true);return;}
   const acceptT=e.target.closest('[data-accept-transfer]')?.dataset.acceptTransfer;if(acceptT){acceptTransfer(acceptT);return;}
   const exportLedger=e.target.closest('[data-export-ledger]')?.dataset.exportLedger;if(exportLedger){downloadLocationLedger(exportLedger);return;}
-  const tabNode=e.target.closest('[data-tab]');const tab=tabNode?.dataset.tab;if(tab){showTab(tab);const focus=tabNode?.dataset.focus;if(focus)setTimeout(()=>byId(focus)?.scrollIntoView({behavior:'smooth',block:'start'}),80);return;}
+  const tabNode=e.target.closest('[data-tab]');const tab=tabNode?.dataset.tab;
+  if(tab==='more'){
+    const drawer=document.querySelector('.tabs');
+    const opening=!drawer?.classList.contains('mobile-open');
+    drawer?.classList.toggle('mobile-open',opening);
+    tabNode.classList.toggle('active',opening);
+    tabNode.setAttribute('aria-expanded',opening?'true':'false');
+    if(opening){
+      document.querySelectorAll('.mobile-nav [data-tab]').forEach(node=>{if(node!==tabNode)node.classList.remove('active');});
+    }else{
+      const activePage=document.querySelector('.tab-page.active')?.id?.replace(/^page-/,'')||'';
+      document.querySelectorAll('.mobile-nav [data-tab]').forEach(node=>node.classList.toggle('active',node.dataset.tab===activePage));
+    }
+    return;
+  }
+  if(tab){showTab(tab);const focus=tabNode?.dataset.focus;if(focus)setTimeout(()=>byId(focus)?.scrollIntoView({behavior:'smooth',block:'start'}),80);return;}
   const action=e.target.closest('[data-action]')?.dataset.action; if(!action)return;
   if(action==='refresh-location-stock') { refreshLocationStock(false); return; }
   if(action==='refresh-transfers') { refreshTransfers(false); return; }
