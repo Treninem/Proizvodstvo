@@ -31,6 +31,8 @@ class Step84LiveDeploymentGateTests(unittest.TestCase):
         expected = expected_deployment()
         source = (ROOT / "webapp" / "static" / expected.app_asset).read_text(encoding="utf-8")
         self.assertIn("Mini App release: 20260813a", source)
+        self.assertIn('const MINI_APP_VERSION="20260813a";', source)
+        self.assertNotIn('const MINI_APP_VERSION="20260812g";', source)
         self.assertIn("if(tab==='more')", source)
         self.assertIn("classList.toggle('mobile-open',opening)", source)
         self.assertIn("aria-expanded", source)
