@@ -30,6 +30,7 @@ class Step84LiveDeploymentGateTests(unittest.TestCase):
     def test_generated_active_app_handles_more_as_drawer(self):
         expected = expected_deployment()
         source = (ROOT / "webapp" / "static" / expected.app_asset).read_text(encoding="utf-8")
+        self.assertIn("Mini App release: 20260813a", source)
         self.assertIn("if(tab==='more')", source)
         self.assertIn("classList.toggle('mobile-open',opening)", source)
         self.assertIn("aria-expanded", source)
