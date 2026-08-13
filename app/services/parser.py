@@ -8,7 +8,6 @@ from .matcher import confident_match
 from .normalize import normalize_key
 from .repository import get_area, get_bound_area, list_areas, list_meter_area_ids, list_meters_for_area, list_stock_item_area_ids
 from .vocabulary import (
-    ALL_OPERATION_WORDS,
     ASSEMBLY_WORDS,
     ENERGY_WORDS,
     MATERIAL_IN_WORDS,

@@ -11,7 +11,7 @@ from ..access import can_submit_operations
 from ..services import accounting, reporting
 from ..services import parser
 from ..services import repository as repo
-from ..services.normalize import format_amount, normalize_key
+from ..services.normalize import format_amount
 
 router = Router()
 

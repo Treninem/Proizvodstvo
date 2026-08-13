@@ -115,13 +115,11 @@ def analyze_bytes(chat_id:int,user_id:int,data:bytes,file_name:str)->dict:
         rows=[];warnings=[]
         default_unit='кг' if et=='material' else 'шт'
         if et=='material':warnings.append('Единица измерения в таблице не найдена: для новых позиций сырья предполагается «кг». Для уже существующих позиций используется их единица из справочника.')
-        last_name=''
         for r in range(header+1,min(ws.max_row,5000)+1):
             raw_name=ws.cell(r,item_col).value
             name=str(raw_name or '').strip()
             if not name:continue
             if _num(name) is not None:continue
-            last_name=name
             d=_date_text(ws.cell(r,date_col).value) if date_col else ''
             week=str(ws.cell(r,week_col).value or '').strip() if week_col else ''
             for mc in metric_cols:

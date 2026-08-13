@@ -15,7 +15,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A3, A4, landscape
+from reportlab.lib.pagesizes import A3, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics

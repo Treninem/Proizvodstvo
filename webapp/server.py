@@ -14,7 +14,7 @@ from threading import RLock
 from typing import Annotated, Any
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, UploadFile, File, Form
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -2840,7 +2840,7 @@ def audit(
         raise HTTPException(status_code=403, detail="access denied")
     _check_user(chat_id, user_id)
     scope = repo.resolve_scope_chat_id(chat_id)
-    permissions = repo.user_permissions_current_context(scope, user_id)
+    repo.user_permissions_current_context(scope, user_id)
     if not repo.is_tenant_admin(scope, user_id):
         raise HTTPException(status_code=403, detail="access denied")
     repo.log_site_action(scope, user_id, "audit")

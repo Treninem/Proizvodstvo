@@ -10,7 +10,7 @@ from .config import settings
 from .db import init_db
 from .services import report_scheduler
 from .services import control_center
-from .handlers import start, intake, setup, groups, owner, accounts, corrections, reports, backups, inventory, onboarding, chats, risks, workflow, excel_import, transfers
+from .handlers import start, intake, setup, groups, owner, accounts, corrections, reports, backups, onboarding, chats, risks, workflow, excel_import
 from .handlers.groups import try_handle_group_command
 from .handlers.accounts import try_handle_account_command
 from .handlers.setup import try_handle_wizard_message, try_handle_setup_command

@@ -4,7 +4,6 @@ import base64
 import hashlib
 import json
 import io
-import shutil
 import sqlite3
 import zipfile
 from datetime import datetime
@@ -13,7 +12,6 @@ from typing import Iterable
 
 from .. import db
 from ..config import settings
-from .normalize import normalize_key
 from . import repository as repo
 
 

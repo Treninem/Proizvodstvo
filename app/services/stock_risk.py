@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from .. import db
-from ..config import settings
 from . import repository as repo
 from .normalize import format_amount
 
