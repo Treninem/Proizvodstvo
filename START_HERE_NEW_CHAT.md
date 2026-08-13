@@ -39,24 +39,25 @@
 - `app.js` byte-identical активному JS;
 - `style.css` byte-identical активному CSS;
 - старые исполняемые JS/CSS runtime-файлы удалены;
-- одноразовые Step84 patch/release generators удалены после выпуска релиза.
+- одноразовые Step84 patch/release/cleanup workflows удалены после выполнения;
+- Python `app/` и `webapp/` полностью чисты по Ruff `--select F`.
 
 ## Постоянные автоматические проверки
 
 Главный workflow: `.github/workflows/full-system-audit-step83.yml`.
 
-Последний полный source audit после очистки:
+Последний полный source audit на Ruff-clean текущем коде:
 
-- run `31683328288`
-- head `51102a7b907e4e5e6e060838801c818f86279b25`
+- run `31684997440`
+- head `fb474a313a1cfa2119eb95e72173f4cbfa6881a7`
 - SUCCESS
-- все 17 рабочих этапов зелёные.
+- все рабочие этапы зелёные.
 
 Проверяется в том числе:
 
 - Python compile;
 - 798 SQL queries против актуальной SQLite-схемы;
-- Ruff correctness;
+- полный `ruff check app webapp --select F`;
 - 123 API operations runtime smoke;
 - active Mini App `node --check`;
 - UI wiring: tabs/actions/DOM ids/primary mobile nav;
