@@ -43,6 +43,13 @@ def promote(*, check: bool = False) -> list[str]:
     source = SOURCE_APP.read_text(encoding="utf-8")
     if "if(tab==='more')" not in source or "mobile-open" not in source:
         raise RuntimeError("Refusing release promotion: source Mini App does not contain the Step84 More-menu fix")
+    source = _replace_exact(
+        source,
+        f'const MINI_APP_VERSION="{OLD_MINI}";',
+        f'const MINI_APP_VERSION="{NEW_MINI}";',
+        expected=1,
+        label="JavaScript MINI_APP_VERSION",
+    )
     release_marker = f"// Mini App release: {NEW_MINI}\n"
     released_source = source if source.startswith(release_marker) else release_marker + source
 
