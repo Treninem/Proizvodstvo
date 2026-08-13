@@ -10,9 +10,9 @@ from scripts.live_deployment_gate_step84 import ROOT, expected_deployment
 class Step84LiveDeploymentGateTests(unittest.TestCase):
     def test_expected_deployment_matches_current_runtime(self):
         expected = expected_deployment()
-        self.assertEqual(expected.build, "83i")
-        self.assertEqual(expected.mini_ui_version, "20260812g")
-        self.assertEqual(expected.app_asset, "app-20260812g.js")
+        self.assertEqual(expected.build, "84a")
+        self.assertEqual(expected.mini_ui_version, "20260813a")
+        self.assertEqual(expected.app_asset, "app-20260813a.js")
         self.assertEqual(expected.style_asset, "style-20260812a.css")
 
     def test_frontend_aliases_are_byte_identical_to_active_assets(self):
