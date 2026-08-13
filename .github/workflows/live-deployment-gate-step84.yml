@@ -1,0 +1,44 @@
+name: Live Step84 deployment gate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'webapp/**'
+      - 'scripts/live_deployment_gate_step84.py'
+      - 'tests/test_step84_live_deployment_gate.py'
+      - 'main.py'
+      - 'Dockerfile'
+      - 'requirements.txt'
+      - 'runtime.defaults.env'
+      - '.github/workflows/live-deployment-gate-step84.yml'
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: proizvodstvo-live-step84
+  cancel-in-progress: true
+
+jobs:
+  live-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate gate expectations locally
+        run: python -m unittest tests.test_step84_live_deployment_gate -v
+      - name: Wait for Bothost and verify exact deployed runtime
+        run: >-
+          python scripts/live_deployment_gate_step84.py
+          --base-url https://procontrol.bothost.tech
+          --attempts 30
+          --delay 20
+          --timeout 15
