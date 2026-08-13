@@ -16,6 +16,7 @@ NEW_BOT = "84"
 SERVER = ROOT / "webapp" / "server.py"
 INDEX = STATIC / "index.html"
 OWNER = ROOT / "app" / "handlers" / "owner.py"
+KEYBOARDS = ROOT / "app" / "keyboards.py"
 SOURCE_APP = STATIC / f"app-{OLD_MINI}.js"
 NEW_APP = STATIC / f"app-{NEW_MINI}.js"
 ALIAS_APP = STATIC / "app.js"
@@ -76,6 +77,16 @@ def promote(*, check: bool = False) -> list[str]:
     # Query string is only a secondary cache buster; the filename is authoritative.
     index = index.replace("?v=83", "?v=84")
     expected_files[INDEX] = index
+
+    keyboards = KEYBOARDS.read_text(encoding="utf-8")
+    keyboards = _replace_exact(
+        keyboards,
+        f'MINI_UI_VERSION = "{OLD_MINI}"',
+        f'MINI_UI_VERSION = "{NEW_MINI}"',
+        expected=1,
+        label="Telegram Mini App button version",
+    )
+    expected_files[KEYBOARDS] = keyboards
 
     owner = OWNER.read_text(encoding="utf-8")
     owner = owner.replace(f"Версия бота: {OLD_BOT} · Mini App {OLD_MINI}", f"Версия бота: {NEW_BOT} · Backend {NEW_BUILD} · Mini App {NEW_MINI}")
