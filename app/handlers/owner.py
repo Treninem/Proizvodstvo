@@ -119,7 +119,7 @@ def _format_panel(user_id: int | None = None) -> str:
     role = "Владелец платформы"
     return (
         f"Системное меню · {role}\n"
-        f"Версия бота: 84 · Backend 84b · Mini App 20260813b\n\n"
+        f"Версия бота: 84 · Backend 84a · Mini App 20260813a\n\n"
         f"Подключённых групп: {stats['connected_chats']}\n"
         f"Всего чатов в базе: {stats['total_chats']}\n"
         f"Записей учёта: {stats['operations']}\n"
@@ -204,7 +204,7 @@ async def owner_version_command(message: Message) -> None:
         return
     if message.chat.type != "private":
         return
-    await message.answer("Версия бота: 84\nBackend: 84b\nMini App: 20260813b\nАрхитектура: tenant-isolation v2")
+    await message.answer("Версия бота: 84\nBackend: 84a\nMini App: 20260813a\nАрхитектура: tenant-isolation v2")
 
 
 @router.message(Command("owner"))
@@ -351,7 +351,7 @@ async def owner_callbacks(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "version":
-        await safe_edit_text(callback.message, "Версия бота: 84\nBackend: 84b\nMini App: 20260813b\nАрхитектура: tenant-isolation v2", reply_markup=_owner_menu(user_id))
+        await safe_edit_text(callback.message, "Версия бота: 84\nBackend: 84a\nMini App: 20260813a\nАрхитектура: tenant-isolation v2", reply_markup=_owner_menu(user_id))
         await callback.answer()
         return
 
@@ -370,148 +370,52 @@ async def owner_callbacks(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
     if action == "accounts":
-        accounts = repo.owner_list_a…247257 tokens truncated…аны</div>
-        </article>
-      </div>
-    </section>
+        accounts = repo.owner_list_accounts(limit=50)
+        if not accounts:
+            await safe_edit_text(callback.message, "Учётов пока нет.", reply_markup=_owner_menu(user_id))
+        else:
+            await safe_edit_text(callback.message, "Все учёты\n\nВыберите учёт для просмотра.", reply_markup=_accounts_keyboard())
+        await callback.answer()
+        return
+    if action.startswith("account:"):
+        raw_account_id = action.split(":", 1)[1]
+        try:
+            account_id = int(raw_account_id)
+        except ValueError:
+            await callback.answer("Учёт не найден.", show_alert=True)
+            return
+        report = repo.owner_company_report(account_id)
+        await safe_edit_text(callback.message, report, reply_markup=_owner_account_keyboard(account_id))
+        await callback.answer()
+        return
+    if action == "stats":
+        await safe_edit_text(callback.message, _format_stats(), reply_markup=_owner_menu(user_id))
+        await callback.answer()
+        return
+    if action == "risks":
+        await safe_edit_text(callback.message, _format_risk_status(callback.message.chat.id), reply_markup=_owner_menu(user_id))
+        await callback.answer()
+        return
 
-    <section class="tab-page" id="page-transfers">
-      <section class="hub-head"><div><p class="eyebrow">склад</p><h2>Передачи между подразделениями</h2><p>Отправитель создаёт передачу. Получатель пересчитывает и подтверждает. До приёмки количество отмечено как «в пути».</p></div></section>
-      <div class="grid">
-        <article class="form-panel wide"><div>
-          <h2>Новая передача</h2>
-          <div class="two-col"><label>Откуда<select id="transferFromArea"></select></label><label>Куда<select id="transferToArea"></select></label></div>
-          <div class="two-col"><label>Отдел отправителя<select id="transferFromDepartment"></select></label><label>Отдел получателя<select id="transferToDepartment"></select></label></div>
-          <div class="two-col"><label>Место выдачи<select id="transferFromLocation"></select></label><label>Место приёмки<select id="transferToLocation"></select></label></div>
-          <div class="two-col"><label>Позиция<select id="transferEntity"></select></label><label>Количество<input id="transferQuantity" inputmode="decimal" /></label></div>
-          <label>Комментарий<input id="transferNote" maxlength="1000" placeholder="Необязательно" /></label>
-          <button class="primary" data-action="create-transfer">Передать на подтверждение</button>
-        </div></article>
-        <article class="panel wide"><div class="section-title-row"><div><h2>Входящие и исходящие</h2><p>При расхождении приёмщик указывает фактическое количество и причину.</p></div><button data-action="refresh-transfers">Обновить</button></div><div id="transferList" class="manager-list empty">Передач пока нет</div></article>
-      </div>
-    </section>
-
-    <section class="tab-page" id="page-organization" data-admin-only="1">
-      <section class="hub-head"><div><p class="eyebrow">структура</p><h2>Где работает организация</h2><p>Создайте населённые пункты/площадки, привяжите участки и обозначьте конкретные места хранения.</p></div></section>
-      <div class="grid">
-        <article class="form-panel"><div><h2>Населённый пункт / площадка</h2><label>Населённый пункт<input id="siteSettlement" placeholder="Город, посёлок" /></label><label>Название площадки<input id="siteName" placeholder="Производство, склад…" /></label><label>Адрес<input id="siteAddress" /></label><button class="primary" data-action="create-site">Создать</button><div id="siteList" class="manager-list compact"></div></div></article>
-        <article class="form-panel"><div><h2>Привязать участок</h2><label>Участок<select id="bindAreaSelect"></select></label><label>Площадка<select id="bindSiteSelect"></select></label><button data-action="bind-area-site">Сохранить</button></div></article>
-        <article class="form-panel wide"><div><h2>Место хранения</h2><div class="two-col"><label>Название<input id="storageLocationName" placeholder="Стеллаж, зона, склад…" /></label><label>Код<input id="storageLocationCode" placeholder="необязательно" /></label></div><div class="three-col"><label>Площадка<select id="storageLocationSite"></select></label><label>Участок<select id="storageLocationArea"></select></label><label>Отдел<select id="storageLocationDepartment"></select></label></div><button data-action="create-storage-location">Создать место</button><div id="storageLocationList" class="manager-list compact"></div></div></article>
-      </div>
-    </section>
-
-    <section class="tab-page" id="page-more">
-      <section class="hub-head"><div><p class="eyebrow">ещё</p><h2>Управление и дополнительные разделы</h2><p>Каждая функция находится в своей группе. Вы увидите только то, к чему у вас есть доступ.</p></div></section>
-      <div class="more-groups">
-        <section><h3>Люди и доступ</h3><div class="more-grid"><button data-tab="team" data-section="workers"><span>👥</span><b>Сотрудники</b><small>Люди и должности</small></button><button data-tab="departments" data-department-manage="1"><span>🏢</span><b>Отделы</b><small>Руководители и рабочие действия</small></button><button data-tab="area-access" data-section="permissions"><span>🔐</span><b>Права</b><small>Что кому разрешено</small></button></div></section>
-        <section><h3>Работа</h3><div class="more-grid"><button data-tab="workflow"><span>🧾</span><b>Задания</b><small>Задачи, заявки и план/факт</small></button><button data-tab="shifts"><span>🕐</span><b>Смены</b><small>График и передача смены</small></button><button data-tab="inbox"><span>🔔</span><b>Входящие</b><small>Что требует вашего внимания</small></button><button data-tab="control" data-control-only="1"><span>🎛️</span><b>Контроль смены</b><small>Сводка руководителя</small></button></div></section>
-        <section><h3>Качество и техника</h3><div class="more-grid"><button data-tab="quality"><span>✅</span><b>Качество</b><small>Проверки, карантин, снабжение</small></button><button data-tab="workflow" data-focus="workflowEquipmentBlock" data-requires-equipment="1"><span>⚙️</span><b>Оборудование</b><small>Простои и обслуживание</small></button></div></section>
-        <section data-admin-only="1"><h3>Настройка организации</h3><div class="more-grid"><button data-tab="organization"><span>📍</span><b>Площадки и места</b><small>Населённые пункты, участки, хранение</small></button><button data-tab="places"><span>🏷️</span><b>Справочники</b><small>Позиции, составы и назначения</small></button></div></section>
-        <section data-admin-only="1"><h3>Безопасность и сервис</h3><div class="more-grid"><button data-tab="security"><span>🛡️</span><b>Безопасность</b><small>Резерв, устройства и аудит</small></button><button data-tab="control" data-focus="controlDiagnosticsBlock"><span>🩺</span><b>Диагностика</b><small>Бот, база, очереди и сервер</small></button></div></section>
-      </div>
-    </section>
-
-    <section class="tab-page" id="page-security" data-section="site">
-      <div class="grid">
-        <article class="panel illustrated">
-          <div>
-            <h2>Mini App и синхронизация</h2>
-            <div id="syncList" class="list empty">Нет данных</div>
-          </div>
-          <img src="/static/img/security.svg" alt="" />
-        </article>
-        <article class="panel illustrated">
-          <div>
-            <h2>Действия в Mini App</h2>
-            <div id="miniAppLog" class="list empty">Нет данных</div>
-          </div>
-          <img src="/static/img/team.svg" alt="" />
-        </article>
-        <article class="panel illustrated">
-          <div>
-            <h2>Защита</h2>
-            <div id="securityStatus" class="list empty">Нет данных</div>
-          </div>
-          <img src="/static/img/shield.svg" alt="" />
-        </article>
-        <article class="panel wide">
-          <div class="section-title-row"><div><h2>Устройства Mini App и синхронизация</h2><p>Видно последнюю активность, наличие локального черновика и неотправленных записей. Здесь же можно отозвать потерянное устройство.</p></div></div>
-          <div id="miniappDeviceList" class="manager-list empty">Устройства ещё не зарегистрированы</div>
-        </article>
-        <article class="form-panel wide" data-admin-only>
-          <img src="/static/img/security.svg" alt="" class="side-img" />
-          <div>
-            <h2>Контроль незавершённых смен</h2>
-            <p>Система сама напоминает о пакетах, которые не разобраны, и о передаче смены, которую не приняли.</p>
-            <div class="filter-grid">
-              <label>Первое напоминание о пакете, мин<input id="continuityPackageFirst" type="number" min="5" max="10080" value="60" /></label>
-              <label>Повтор по пакету, мин<input id="continuityPackageRepeat" type="number" min="5" max="10080" value="120" /></label>
-              <label>Первое по передаче, мин<input id="continuityHandoverFirst" type="number" min="5" max="10080" value="30" /></label>
-              <label>Повтор по передаче, мин<input id="continuityHandoverRepeat" type="number" min="5" max="10080" value="60" /></label>
-              <label>Максимум напоминаний<input id="continuityMaxReminders" type="number" min="0" max="10" value="3" /></label>
-            </div>
-            <button data-action="save-continuity-settings">Сохранить напоминания</button>
-          </div>
-        </article>
-        <article class="form-panel wide" data-admin-only>
-          <img src="/static/img/team.svg" alt="" class="side-img" />
-          <div>
-            <h2>Чек-лист передачи смены</h2>
-            <p>Один пункт на строку. Поставьте <b>?</b> в начале строки, если пункт необязательный. Все остальные пункты нужно отметить перед передачей.</p>
-            <label>Пункты<textarea id="handoverChecklistEditor" rows="6" placeholder="Проверить незавершённые операции&#10;Передать замечания&#10;? Указать дополнительную информацию"></textarea></label>
-            <div class="actions"><button data-action="save-handover-checklist">Сохранить чек-лист</button><button data-action="download-continuity-audit">Скачать журнал аудита XLSX</button></div>
-          </div>
-        </article>
-        <article class="panel wide">
-          <h2>Резерв</h2>
-          <p>Копия создаётся для выбранного учёта и скачивается через Mini App.</p>
-          <div class="actions"><button class="primary" data-action="backup-account">Скачать копию учёта</button></div>
-        </article>
-        <article class="form-panel wide">
-          <img src="/static/img/security.svg" alt="" class="side-img" />
-          <div>
-            <h2>Восстановление учёта</h2>
-            <p>Доступно только владельцу. Перед восстановлением система автоматически создаёт страховочную копию. Подходит копия, созданная для этого же учёта.</p>
-            <label>Файл копии<input id="restoreBackupFile" type="file" accept=".zip,.enc" /></label>
-            <label>Подтверждение<input id="restoreConfirmation" placeholder="Введите ВОССТАНОВИТЬ" /></label>
-            <button class="danger" data-action="restore-account">Восстановить из копии</button>
-          </div>
-        </article>
-      </div>
-    </section>
-  </main>
-
-  <dialog id="scannerDialog" class="confirm-dialog scanner-dialog">
-    <form method="dialog">
-      <h2>Сканирование кода</h2>
-      <p>Наведите камеру на QR-код или штрихкод позиции.</p>
-      <video id="scannerVideo" autoplay playsinline muted></video>
-      <div id="scannerStatus" class="stock-hint">Запуск камеры…</div>
-      <div class="actions"><button value="cancel">Закрыть</button></div>
-    </form>
-  </dialog>
-
-  <dialog id="operationConfirmDialog" class="confirm-dialog">
-    <form method="dialog">
-      <h2>Проверьте запись</h2>
-      <p id="confirmSummary" class="confirm-summary"></p>
-      <div id="confirmBalances" class="list compact"></div>
-      <div id="confirmComponents" class="list compact"></div>
-      <div id="confirmWarnings" class="confirm-warnings hidden"></div>
-      <div class="actions">
-        <button value="cancel">Вернуться</button>
-        <button id="confirmOperationButton" value="default" type="button" class="primary">Сохранить</button>
-      </div>
-    </form>
-  </dialog>
-
-  <nav class="mobile-nav primary-nav" aria-label="Основные разделы">
-    <button data-tab="work" data-primary-nav="production"><span>🏭</span>Производство</button>
-    <button data-tab="overview" data-primary-nav="stock"><span>📦</span>Склад</button>
-    <button data-tab="plan" data-primary-nav="plan" data-section="assembly"><span>📋</span>План</button>
-    <button data-tab="reports" data-primary-nav="reports" data-section="reports"><span>📊</span>Отчёты</button>
-    <button data-tab="more" data-primary-nav="more"><span>☰</span>Ещё</button>
-  </nav>
-  <script src="/static/app-20260813b.js?v=84b-entity-code-hotfix"></script>
-</body>
-</html>
+    if action == "db":
+        await safe_edit_text(callback.message, _format_db_status(), reply_markup=_owner_menu(user_id))
+        await callback.answer()
+        return
+    if action.startswith("chat:"):
+        raw_chat_id = action.split(":", 1)[1]
+        try:
+            chat_id = int(raw_chat_id)
+        except ValueError:
+            await callback.answer("Чат не найден.", show_alert=True)
+            return
+        report = repo.owner_chat_report(chat_id)
+        await safe_edit_text(
+            callback.message,
+            report,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="owner:chats")]]
+            ),
+        )
+        await callback.answer()
+        return
+    await callback.answer()
