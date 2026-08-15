@@ -1368,7 +1368,7 @@ async def _shutdown() -> None:
 
 
 
-MINI_UI_VERSION = "20260813a"
+MINI_UI_VERSION = "20260816a"
 
 @app.get("/mini")
 def mini(request: Request):
@@ -1389,7 +1389,7 @@ def health() -> dict[str, object]:
     # Liveness must stay instant and must not wait for SQLite locks. Reverse proxies use this endpoint.
     return {
         "status": "ok",
-        "build": "84a",
+        "build": "85",
         "bot_enabled": settings.bot_enabled,
         "miniapp_enabled": settings.miniapp_enabled,
         "uptime_seconds": int(max(0, time.time() - _PROCESS_STARTED_AT)),
@@ -1402,7 +1402,7 @@ def ready() -> JSONResponse:
     probe = db.database_probe(1200)
     payload = {
         "status": "ready" if probe.get("ok") else "degraded",
-        "build": "84a",
+        "build": "85",
         "database": bool(probe.get("ok")),
         "database_latency_ms": probe.get("latency_ms"),
         "database_error": probe.get("error") or "",

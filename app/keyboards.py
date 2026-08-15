@@ -5,7 +5,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from .config import settings
 
 
-MINI_UI_VERSION = "20260813a"
+MINI_UI_VERSION = "20260816a"
 
 def miniapp_url(user_id: int | None = None) -> str:
     """Open Mini App without pinning a stale accounting scope in the URL."""
