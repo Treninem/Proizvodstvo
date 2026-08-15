@@ -9,6 +9,7 @@ from .config import settings
 from .db import init_db
 from . import db
 from .services import control_center
+from .services.frontend_runtime import ensure_frontend_runtime_ready
 from .main import run_bot
 
 log = logging.getLogger("production_account_runtime")
@@ -53,6 +54,9 @@ async def _watchdog_loop() -> None:
 
 async def main() -> None:
     settings.require_ready()
+    frontend = ensure_frontend_runtime_ready()
+    if frontend.changed:
+        log.warning("Mini App runtime repaired before startup: %s", frontend.active_asset)
     init_db()
     tasks: list[asyncio.Task] = [asyncio.create_task(_watchdog_loop(), name="watchdog")]
     if settings.miniapp_enabled:
