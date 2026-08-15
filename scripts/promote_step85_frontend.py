@@ -127,6 +127,7 @@ def main() -> int:
 
     live_test = LIVE_TEST.read_text(encoding="utf-8")
     live_test = live_test.replace('"84a"', f'"{NEW_BUILD}"')
+    live_test = live_test.replace("Backend: 84a", f"Backend: {NEW_BUILD}")
     live_test = live_test.replace("20260813a", NEW_MINI)
     live_test = live_test.replace("app-20260813a.js", NEW_ASSET)
     write(LIVE_TEST, live_test)
