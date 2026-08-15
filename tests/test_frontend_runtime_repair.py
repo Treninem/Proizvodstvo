@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,29 +7,34 @@ from pathlib import Path
 from app.services.frontend_runtime import ensure_frontend_runtime_ready
 
 
-ROOT = Path(__file__).resolve().parents[1]
-
-
 class FrontendRuntimeRepairTests(unittest.TestCase):
-    def test_active_entity_code_initializer_is_repaired_idempotently(self) -> None:
+    def test_entity_code_initializer_is_repaired_idempotently(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             static = root / "webapp" / "static"
             static.mkdir(parents=True)
-
-            for name in ("index.html", "app-20260813a.js", "app.js"):
-                shutil.copy2(ROOT / "webapp" / "static" / name, static / name)
-
-            active = static / "app-20260813a.js"
-            before = active.read_text(encoding="utf-8")
-            self.assertIn("updateEntityCodeEntities", before)
-            self.assertNotIn("function updateEntityCodeEntities(){", before)
+            (static / "index.html").write_text(
+                '<script src="/static/app-test.js?v=fixture"></script>',
+                encoding="utf-8",
+            )
+            broken = "\n".join(
+                [
+                    "const byId=(id)=>document.getElementById(id);",
+                    "function val(id){return byId(id)?.value||'';}",
+                    "function entity(type){return [];}",
+                    "function fillSelect(){}",
+                    "function updateDepartmentEntityChoices(){}",
+                    "byId('entityCodeType')?.addEventListener('change',updateEntityCodeEntities);",
+                ]
+            )
+            (static / "app-test.js").write_text(broken, encoding="utf-8")
+            (static / "app.js").write_text(broken, encoding="utf-8")
 
             first = ensure_frontend_runtime_ready(root)
             self.assertTrue(first.changed)
-            self.assertEqual(first.active_asset, "app-20260813a.js")
+            self.assertEqual(first.active_asset, "app-test.js")
 
-            repaired = active.read_text(encoding="utf-8")
+            repaired = (static / "app-test.js").read_text(encoding="utf-8")
             alias = (static / "app.js").read_text(encoding="utf-8")
             self.assertEqual(repaired.count("function updateEntityCodeEntities(){"), 1)
             self.assertEqual(repaired, alias)
@@ -39,7 +43,7 @@ class FrontendRuntimeRepairTests(unittest.TestCase):
             self.assertFalse(second.changed)
             self.assertEqual(
                 repaired,
-                active.read_text(encoding="utf-8"),
+                (static / "app-test.js").read_text(encoding="utf-8"),
             )
 
 
