@@ -57,6 +57,19 @@ from .handlers.onboarding import try_handle_onboarding  # noqa: E402
 from .handlers.transfers import try_handle_transfer_command  # noqa: E402
 from .user_directory_middleware import UserDirectoryMiddleware  # noqa: E402
 
+# Legacy owner.py still contains historical version labels. Keep the owner-only
+# system panel, but replace its banner at runtime so a fresh deploy is obvious.
+_STEP92_OLD_RELEASE = "Версия бота: 84 · Backend 85 · Mini App 20260816a"
+_STEP92_RELEASE = "Версия бота: 92 · Backend 92 · Mini App 20260821a"
+_owner_format_panel_legacy = owner._format_panel
+
+
+def _owner_format_panel_step92(user_id: int | None = None) -> str:
+    return _owner_format_panel_legacy(user_id).replace(_STEP92_OLD_RELEASE, _STEP92_RELEASE)
+
+
+owner._format_panel = _owner_format_panel_step92
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("production_account_bot")
 
