@@ -8,12 +8,19 @@ from aiogram.types import BotCommand, BotCommandScopeAllGroupChats, BotCommandSc
 
 from .config import settings
 from .db import init_db
-from .services import report_scheduler
-from .services import control_center
-from .handlers import (
+from .services import control_center, report_scheduler
+
+# Install the compact menu before importing legacy handlers. Many old screens use
+# ``from app.keyboards import main_menu``; importing them only after this patch
+# makes every Back/Menu button return to the same cleaned-up menu.
+from . import keyboards
+from .handlers import bot_menu_v2
+
+keyboards.main_menu = bot_menu_v2.bot_main_menu
+
+from .handlers import (  # noqa: E402
     accounts,
     backups,
-    bot_menu_v2,
     chats,
     component_picker,
     corrections,
@@ -32,23 +39,23 @@ from .handlers import (
     workplace_intake,
     workflow,
 )
-from .handlers.groups import try_handle_group_command
-from .handlers.accounts import try_handle_account_command
-from .handlers.management import try_handle_management_message
-from .handlers.component_picker import try_handle_component_picker_message
-from .handlers.job_assignment_v2 import try_handle_reply_job_assignment_v2
-from .handlers.setup import try_handle_wizard_message, try_handle_setup_command
-from .handlers.intake import try_handle_confirmation_text, try_handle_intake
-from .handlers.workplace_intake import try_handle_workplace_intake
-from .handlers.reports import try_handle_report
-from .handlers.corrections import try_handle_correction_command
-from .handlers.backups import try_handle_backup
-from .handlers.inventory import try_handle_inventory_adjustment
-from .handlers.risks import try_handle_risk_command
-from .handlers.workflow import try_handle_workflow_command
-from .handlers.onboarding import try_handle_onboarding
-from .handlers.transfers import try_handle_transfer_command
-from .user_directory_middleware import UserDirectoryMiddleware
+from .handlers.groups import try_handle_group_command  # noqa: E402
+from .handlers.accounts import try_handle_account_command  # noqa: E402
+from .handlers.management import try_handle_management_message  # noqa: E402
+from .handlers.component_picker import try_handle_component_picker_message  # noqa: E402
+from .handlers.job_assignment_v2 import try_handle_reply_job_assignment_v2  # noqa: E402
+from .handlers.setup import try_handle_wizard_message, try_handle_setup_command  # noqa: E402
+from .handlers.intake import try_handle_confirmation_text, try_handle_intake  # noqa: E402
+from .handlers.workplace_intake import try_handle_workplace_intake  # noqa: E402
+from .handlers.reports import try_handle_report  # noqa: E402
+from .handlers.corrections import try_handle_correction_command  # noqa: E402
+from .handlers.backups import try_handle_backup  # noqa: E402
+from .handlers.inventory import try_handle_inventory_adjustment  # noqa: E402
+from .handlers.risks import try_handle_risk_command  # noqa: E402
+from .handlers.workflow import try_handle_workflow_command  # noqa: E402
+from .handlers.onboarding import try_handle_onboarding  # noqa: E402
+from .handlers.transfers import try_handle_transfer_command  # noqa: E402
+from .user_directory_middleware import UserDirectoryMiddleware  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("production_account_bot")
@@ -93,8 +100,8 @@ def build_dispatcher() -> Dispatcher:
     dp = Dispatcher()
     dp.message.outer_middleware(UserDirectoryMiddleware())
     dp.callback_query.outer_middleware(UserDirectoryMiddleware())
-    # These routers intentionally go first. They replace the old overloaded bot
-    # menu and the old role-assignment flow while keeping legacy callbacks alive.
+    # The new routers intentionally go first. They replace the old overloaded
+    # menu and old role-assignment flow while legacy business callbacks remain.
     dp.include_router(job_assignment_v2.router)
     dp.include_router(bot_menu_v2.router)
     dp.include_router(help_guide.router)
@@ -120,7 +127,7 @@ def build_dispatcher() -> Dispatcher:
 
 
 async def _configure_bot_commands(bot: Bot) -> None:
-    """Expose a privacy-mode-safe reply command in group chats."""
+    """Expose privacy-mode-safe reply commands in group chats."""
     try:
         await bot.set_my_commands(
             [
