@@ -12,6 +12,20 @@ on:
       - 'webapp/static/app-extensions.js'
       - 'tests/test_frontend_runtime_repair.py'
       - 'tests/test_step86_storage_management.py'
+      - 'STEP86_VALIDATION_TRIGGER.txt'
+      - '.github/workflows/storage-management-step86.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app/handlers/management.py'
+      - 'app/main.py'
+      - 'app/runtime.py'
+      - 'app/services/frontend_runtime.py'
+      - 'webapp/extensions.py'
+      - 'webapp/static/app-extensions.js'
+      - 'tests/test_frontend_runtime_repair.py'
+      - 'tests/test_step86_storage_management.py'
+      - 'STEP86_VALIDATION_TRIGGER.txt'
       - '.github/workflows/storage-management-step86.yml'
   workflow_dispatch:
 
