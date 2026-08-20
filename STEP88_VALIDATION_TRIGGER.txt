@@ -1,1 +1,0 @@
-Temporary validation trigger for Step88 component picker.
