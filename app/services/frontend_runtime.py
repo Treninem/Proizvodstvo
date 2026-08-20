@@ -28,10 +28,14 @@ _MENU_ASSET = "menu-navigation.js"
 _MENU_TAG = '<script src="/static/menu-navigation.js?v=20260820a"></script>'
 _UX_STYLE_ASSET = "miniapp-ux.css"
 _UX_STYLE_TAG = '<link rel="stylesheet" href="/static/miniapp-ux.css?v=20260820a" />'
+_TREE_HELP_ASSET = "tree-help.js"
+_TREE_HELP_TAG = '<script src="/static/tree-help.js?v=20260820b"></script>'
 _TREE_ASSET = "tree-shell.js"
 _TREE_TAG = '<script src="/static/tree-shell.js?v=20260820b"></script>'
 _TREE_STYLE_ASSET = "tree-shell.css"
 _TREE_STYLE_TAG = '<link rel="stylesheet" href="/static/tree-shell.css?v=20260820b" />'
+_TREE_HISTORY_OLD = "if (item.kind === 'menu') renderMenu(item.key, true);\n    else openLeaf(item);"
+_TREE_HISTORY_NEW = "if (item.kind === 'menu') renderMenu(item.key, true);\n    else { tree.history.push(tree.currentMenu); openLeaf(item); }"
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,20 @@ def _attach_optional_style(index: str, static_dir: Path, asset: str, tag: str) -
     return tag + "\n" + index, True
 
 
+def _repair_tree_shell(static_dir: Path) -> bool:
+    path = static_dir / _TREE_ASSET
+    if not path.is_file():
+        return False
+    source = path.read_text(encoding="utf-8")
+    if _TREE_HISTORY_NEW in source:
+        return False
+    if _TREE_HISTORY_OLD not in source:
+        raise RuntimeError("Tree Mini App navigation marker is missing")
+    source = source.replace(_TREE_HISTORY_OLD, _TREE_HISTORY_NEW, 1)
+    _write_text(path, source)
+    return True
+
+
 def ensure_frontend_runtime_ready(root: Path | None = None) -> FrontendRuntimeResult:
     """Repair the active Mini App asset and attach optional interface additions."""
 
@@ -82,7 +100,7 @@ def ensure_frontend_runtime_ready(root: Path | None = None) -> FrontendRuntimeRe
     if _ENTITY_CODE_LISTENER not in source:
         raise RuntimeError("Mini App entity-code change listener is missing")
 
-    changed = False
+    changed = _repair_tree_shell(static_dir)
     if _ENTITY_CODE_FUNCTION_MARKER not in source:
         if _ENTITY_CODE_ANCHOR not in source:
             raise RuntimeError("Cannot safely insert Mini App entity-code initializer")
@@ -109,6 +127,7 @@ def ensure_frontend_runtime_ready(root: Path | None = None) -> FrontendRuntimeRe
     index, help_added = _attach_optional_script(index, static_dir, _HELP_ASSET, _HELP_TAG)
     index, management_added = _attach_optional_script(index, static_dir, _MANAGEMENT_ASSET, _MANAGEMENT_TAG)
     index, menu_added = _attach_optional_script(index, static_dir, _MENU_ASSET, _MENU_TAG)
+    index, tree_help_added = _attach_optional_script(index, static_dir, _TREE_HELP_ASSET, _TREE_HELP_TAG)
     index, tree_added = _attach_optional_script(index, static_dir, _TREE_ASSET, _TREE_TAG)
     if (
         style_added
@@ -117,6 +136,7 @@ def ensure_frontend_runtime_ready(root: Path | None = None) -> FrontendRuntimeRe
         or help_added
         or management_added
         or menu_added
+        or tree_help_added
         or tree_added
     ):
         _write_text(index_path, index)
