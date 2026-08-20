@@ -10,6 +10,7 @@ def step92_health() -> dict[str, object]:
     return {
         "ok": True,
         "release": "step92",
+        "build": "20260821a",
         "reply_role": True,
         "privacy_safe_role_command": True,
         "worker_workplaces": True,
