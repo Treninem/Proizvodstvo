@@ -18,6 +18,8 @@ _ENTITY_CODE_FUNCTION = """function updateEntityCodeEntities(){
   if(previous&&[...select.options].some(x=>x.value===String(previous)))select.value=String(previous);
 }
 """
+_EXTENSION_ASSET = "app-extensions.js"
+_EXTENSION_TAG = '<script src="/static/app-extensions.js?v=20260820a"></script>'
 
 
 @dataclass(frozen=True)
@@ -32,16 +34,12 @@ def _write_text(path: Path, text: str) -> None:
 
 
 def ensure_frontend_runtime_ready(root: Path | None = None) -> FrontendRuntimeResult:
-    """Repair known cache-safe Mini App runtime defects before Uvicorn starts.
+    """Repair known Mini App runtime defects and attach additive UI fixes.
 
-    The Step84 source contains a listener for ``updateEntityCodeEntities`` but the
-    function itself was accidentally omitted.  A browser then raises ReferenceError
-    while wiring events and stops the rest of the Mini App bootstrap.  We repair the
-    active versioned asset deterministically at process start and keep ``app.js`` as
-    a byte-identical alias.
-
-    The operation is idempotent and deliberately refuses to guess when the active
-    asset or the expected wiring anchor cannot be found.
+    The active versioned JavaScript remains the primary application asset. Small
+    compatibility/management additions live in ``app-extensions.js`` and are
+    injected only when that file exists. The process is idempotent, so repeated
+    restarts never duplicate script tags or runtime functions.
     """
 
     project_root = Path(root) if root is not None else ROOT
@@ -82,5 +80,14 @@ def ensure_frontend_runtime_ready(root: Path | None = None) -> FrontendRuntimeRe
 
     if source.count(_ENTITY_CODE_FUNCTION_MARKER) != 1:
         raise RuntimeError("Mini App entity-code initializer must exist exactly once")
+
+    extension_path = static_dir / _EXTENSION_ASSET
+    if extension_path.is_file() and _EXTENSION_TAG not in index:
+        if "</body>" in index:
+            index = index.replace("</body>", f"  {_EXTENSION_TAG}\n</body>", 1)
+        else:
+            index = index.rstrip() + "\n" + _EXTENSION_TAG + "\n"
+        _write_text(index_path, index)
+        changed = True
 
     return FrontendRuntimeResult(active_asset=active_asset, changed=changed)
