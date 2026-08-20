@@ -36,7 +36,8 @@ class ComponentPickerTests(unittest.TestCase):
     def test_picker_is_wired_before_old_setup_handler(self):
         source = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
         self.assertLess(source.index("dp.include_router(component_picker.router)"), source.index("dp.include_router(setup.router)"))
-        self.assertLess(source.index("try_handle_component_picker_message,"), source.index("try_handle_wizard_message,"))
+        handler_block = source.split("for handler in (", 1)[1].split("):", 1)[0]
+        self.assertLess(handler_block.index("try_handle_component_picker_message,"), handler_block.index("try_handle_wizard_message,"))
 
     def test_picker_never_requires_component_names_to_be_typed(self):
         source = (ROOT / "app" / "handlers" / "component_picker.py").read_text(encoding="utf-8")
