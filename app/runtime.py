@@ -22,11 +22,13 @@ async def _run_miniapp() -> None:
     from webapp.extensions import install_extensions
     from webapp.tree_extensions import install_tree_extensions
     from webapp.tree_compat import install_tree_compat
+    from webapp.worker_places_extensions import install_worker_places_extensions
     from webapp.step92_probe import install_step92_probe
 
     install_extensions()
     install_tree_extensions()
     install_tree_compat()
+    install_worker_places_extensions()
     install_step92_probe()
     config = uvicorn.Config(
         "webapp.server:app",
