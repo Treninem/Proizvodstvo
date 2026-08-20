@@ -17,13 +17,15 @@ log = logging.getLogger("production_account_runtime")
 
 async def _run_miniapp() -> None:
     # Register additive Mini App routes before Uvicorn starts serving requests.
-    # The legacy extension module keeps compatibility endpoints; tree_extensions
-    # provides the new hierarchical interface data/actions.
+    # The legacy extension module keeps compatibility endpoints; tree extensions
+    # provide the hierarchical interface and its dedicated actions.
     from webapp.extensions import install_extensions
     from webapp.tree_extensions import install_tree_extensions
+    from webapp.tree_compat import install_tree_compat
 
     install_extensions()
     install_tree_extensions()
+    install_tree_compat()
     config = uvicorn.Config(
         "webapp.server:app",
         host=settings.host,
