@@ -1,0 +1,2 @@
+Storage management Step86 validation trigger.
+This branch intentionally contains no product-code changes beyond main.
