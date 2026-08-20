@@ -20,6 +20,8 @@ _ENTITY_CODE_FUNCTION = """function updateEntityCodeEntities(){
 """
 _EXTENSION_ASSET = "app-extensions.js"
 _EXTENSION_TAG = '<script src="/static/app-extensions.js?v=20260820a"></script>'
+_HELP_ASSET = "help-guide.js"
+_HELP_TAG = '<script src="/static/help-guide.js?v=20260820b"></script>'
 
 
 @dataclass(frozen=True)
@@ -33,14 +35,16 @@ def _write_text(path: Path, text: str) -> None:
         handle.write(text)
 
 
-def ensure_frontend_runtime_ready(root: Path | None = None) -> FrontendRuntimeResult:
-    """Repair known Mini App runtime defects and attach additive UI fixes.
+def _attach_optional_script(index: str, static_dir: Path, asset: str, tag: str) -> tuple[str, bool]:
+    if not (static_dir / asset).is_file() or tag in index:
+        return index, False
+    if "</body>" in index:
+        return index.replace("</body>", f"  {tag}\n</body>", 1), True
+    return index.rstrip() + "\n" + tag + "\n", True
 
-    The active versioned JavaScript remains the primary application asset. Small
-    compatibility/management additions live in ``app-extensions.js`` and are
-    injected only when that file exists. The process is idempotent, so repeated
-    restarts never duplicate script tags or runtime functions.
-    """
+
+def ensure_frontend_runtime_ready(root: Path | None = None) -> FrontendRuntimeResult:
+    """Repair the active Mini App asset and attach optional interface additions."""
 
     project_root = Path(root) if root is not None else ROOT
     static_dir = project_root / "webapp" / "static"
@@ -81,12 +85,9 @@ def ensure_frontend_runtime_ready(root: Path | None = None) -> FrontendRuntimeRe
     if source.count(_ENTITY_CODE_FUNCTION_MARKER) != 1:
         raise RuntimeError("Mini App entity-code initializer must exist exactly once")
 
-    extension_path = static_dir / _EXTENSION_ASSET
-    if extension_path.is_file() and _EXTENSION_TAG not in index:
-        if "</body>" in index:
-            index = index.replace("</body>", f"  {_EXTENSION_TAG}\n</body>", 1)
-        else:
-            index = index.rstrip() + "\n" + _EXTENSION_TAG + "\n"
+    index, extension_added = _attach_optional_script(index, static_dir, _EXTENSION_ASSET, _EXTENSION_TAG)
+    index, help_added = _attach_optional_script(index, static_dir, _HELP_ASSET, _HELP_TAG)
+    if extension_added or help_added:
         _write_text(index_path, index)
         changed = True
 
