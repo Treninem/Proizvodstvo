@@ -15,12 +15,13 @@ class HelpGuideTests(unittest.TestCase):
         source = (ROOT / "app" / "handlers" / "help_guide.py").read_text(encoding="utf-8")
         for phrase in (
             "Места хранения",
-            "Название должности можно изменить",
+            "Назначение должности в рабочем чате",
+            "отметьте нужные комплектующие галочками",
             "Mini App",
             "Задания, заявки и смены",
             "Критические остатки",
             "Качество, оборудование и критические остатки",
-            "Отчёты, исправления и названия",
+            "Отчёты, исправления и переименование",
         ):
             self.assertIn(phrase, source)
         visible_help = source.split("GUIDE_PAGES", 1)[1].split("GUIDE_LABELS", 1)[0].lower()
@@ -31,6 +32,10 @@ class HelpGuideTests(unittest.TestCase):
         source = (ROOT / "webapp" / "static" / "help-guide.js").read_text(encoding="utf-8")
         for phrase in (
             "Как пользоваться",
+            "Состав изделия",
+            "Выбрать все",
+            "Как назначить должность сотруднику",
+            "ответьте именно на его сообщение",
             "Работа через бота",
             "Рабочий ввод в Mini App",
             "Склад и инвентаризация",
@@ -69,12 +74,12 @@ class HelpGuideTests(unittest.TestCase):
             first = ensure_frontend_runtime_ready(root)
             self.assertTrue(first.changed)
             html = (static / "index.html").read_text(encoding="utf-8")
-            self.assertEqual(html.count('/static/help-guide.js?v=20260820b'), 1)
+            self.assertEqual(html.count('/static/help-guide.js?v=20260820c'), 1)
 
             second = ensure_frontend_runtime_ready(root)
             self.assertFalse(second.changed)
             html2 = (static / "index.html").read_text(encoding="utf-8")
-            self.assertEqual(html2.count('/static/help-guide.js?v=20260820b'), 1)
+            self.assertEqual(html2.count('/static/help-guide.js?v=20260820c'), 1)
 
 
 if __name__ == "__main__":
