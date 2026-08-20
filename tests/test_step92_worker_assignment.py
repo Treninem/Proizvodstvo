@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from app import db as app_db
 from app.handlers.job_assignment_v2 import normalized_assignment_command
+from app.services import accounting
 from app.services import repository as repo
 from app.services import worker_places
 
@@ -49,7 +50,7 @@ class Step92WorkerAssignmentTests(unittest.TestCase):
             main_source.index("from .handlers import (  # noqa: E402"),
         )
 
-    def test_worker_can_have_multiple_physical_workplaces_and_operation_is_stamped(self) -> None:
+    def test_worker_can_have_multiple_physical_workplaces_and_saved_production_reaches_exact_storage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             test_settings = replace(
                 app_db.settings,
@@ -87,6 +88,11 @@ class Step92WorkerAssignmentTests(unittest.TestCase):
                 job = repo.list_job_titles(chat_id)[0]
                 repo.set_worker_job(chat_id, user_id, "Оператор 1", int(job["id"]))
 
+                ok, message = repo.create_entity(chat_id, "component", "Деталь А", "шт")
+                self.assertTrue(ok, message)
+                component = repo.get_entity_by_name(chat_id, "component", "Деталь А")
+                self.assertIsNotNone(component)
+
                 available = worker_places.list_available_workplaces(chat_id)
                 self.assertEqual(len(available), 2)
                 self.assertTrue(all("Муром" in str(item["label"]) for item in available))
@@ -105,9 +111,11 @@ class Step92WorkerAssignmentTests(unittest.TestCase):
                         {
                             "operation_type": "production",
                             "entity_type": "component",
-                            "entity_id": 10,
+                            "entity_id": int(component.id),
+                            "entity_name": component.name,
                             "quantity": 5,
                             "unit": "шт",
+                            "needs_attention": False,
                         }
                     ],
                     assigned[0],
@@ -116,6 +124,32 @@ class Step92WorkerAssignmentTests(unittest.TestCase):
                 self.assertIsNotNone(stamped["storage_location_id"])
                 self.assertIn("Муром", stamped["worker_workplace_label"])
                 self.assertEqual(stamped["area_name"], stamped["worker_workplace_label"])
+
+                saved = accounting.apply_operations(
+                    chat_id,
+                    chat_id,
+                    user_id,
+                    [stamped],
+                    raw_text="Сделано Деталь А 5",
+                )
+                self.assertEqual(saved, 1)
+                aggregate = app_db.fetchone(
+                    "SELECT quantity FROM inventory WHERE chat_id=? AND area_id=? AND entity_type='component' AND entity_id=? AND unit='шт'",
+                    (chat_id, int(area.id), int(component.id)),
+                )
+                self.assertIsNotNone(aggregate)
+                self.assertEqual(float(aggregate["quantity"]), 5.0)
+                allocation = app_db.fetchone(
+                    "SELECT quantity FROM inventory_allocations WHERE chat_id=? AND area_id=? AND location_id=? AND entity_type='component' AND entity_id=? AND unit='шт'",
+                    (
+                        chat_id,
+                        int(area.id),
+                        int(stamped["storage_location_id"]),
+                        int(component.id),
+                    ),
+                )
+                self.assertIsNotNone(allocation)
+                self.assertEqual(float(allocation["quantity"]), 5.0)
 
     def test_multiple_workplaces_are_chosen_before_normal_accounting_confirmation(self) -> None:
         source = (ROOT / "app" / "handlers" / "workplace_intake.py").read_text(encoding="utf-8")
@@ -152,6 +186,8 @@ class Step92WorkerAssignmentTests(unittest.TestCase):
         self.assertIn("/api/tree/worker/assign", frontend)
         self.assertIn("/api/step92/worker/assign", frontend)
         self.assertIn("workplace_keys", frontend)
+        self.assertIn("changedContext", frontend)
+        self.assertIn("step92Signature", frontend)
 
         self.assertIn("worker-places-step92.js?v=20260821a", runtime)
         self.assertIn("install_worker_places_extensions", app_runtime)
