@@ -1,0 +1,102 @@
+name: Worker assignment Step92
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/main.py'
+      - 'app/runtime.py'
+      - 'app/handlers/job_assignment_v2.py'
+      - 'app/handlers/workplace_intake.py'
+      - 'app/handlers/bot_menu_v2.py'
+      - 'app/services/worker_places.py'
+      - 'app/services/workplace_pending.py'
+      - 'webapp/step92_probe.py'
+      - 'tests/test_step92_worker_assignment.py'
+      - '.github/workflows/worker-assignment-step92.yml'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OWNER_TELEGRAM_ID: '2097006037'
+      BOT_DATA_DIR: '/tmp/proizvodstvo-step92'
+      PUBLIC_BASE_URL: 'https://procontrol.bothost.tech'
+      MINIAPP_API_TOKEN: 'ci-only-miniapp-token-not-a-secret'
+      BACKUP_ENCRYPTION_KEY: 'ci-only-backup-key-not-a-secret'
+      TRUSTED_HOSTS: ''
+      CORS_ALLOWED_ORIGINS: ''
+      PYTHONPATH: '.'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Set synthetic bot token
+        shell: bash
+        run: echo 'BOT_TOKEN=123456789:'"$(printf 'A%.0s' {1..30})" >> "$GITHUB_ENV"
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-audit.txt
+          python -m pip check
+      - name: Compile Python
+        run: python -m compileall -q app webapp tests scripts
+      - name: Check Python correctness
+        run: ruff check app webapp tests/test_step92_worker_assignment.py --select F --output-format concise
+      - name: Run worker assignment tests
+        run: python -m unittest tests.test_step92_worker_assignment -v
+      - name: Run all regressions
+        run: python -m unittest discover -s tests -p 'test*.py' -v
+      - name: Audit system wiring and security
+        run: |
+          python scripts/ui_wiring_audit_step84.py
+          python scripts/full_system_audit_step83.py
+          python scripts/security_audit.py
+          python scripts/final_audit.py
+          python scripts/flow_test.py
+          python scripts/smoke_test.py
+      - name: Verify dispatcher and Step92 probe
+        run: |
+          python - <<'PY'
+          from app.main import build_dispatcher
+          from webapp.step92_probe import install_step92_probe
+          from webapp.server import app
+          dp=build_dispatcher()
+          if not dp: raise SystemExit('dispatcher was not created')
+          install_step92_probe()
+          paths={getattr(route,'path','') for route in app.routes}
+          if '/api/step92/health' not in paths:
+              raise SystemExit('Step92 probe route is missing')
+          print('STEP92_WIRING_OK')
+          PY
+      - name: Check live Step92 deployment if available
+        continue-on-error: true
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, time, urllib.request
+          url='https://procontrol.bothost.tech/api/step92/health'
+          last=''
+          for attempt in range(12):
+              try:
+                  req=urllib.request.Request(url,headers={'Cache-Control':'no-cache','User-Agent':'Step92-deploy-check'})
+                  with urllib.request.urlopen(req,timeout=12) as response:
+                      data=json.loads(response.read().decode('utf-8'))
+                  if data.get('release')=='step92' and data.get('reply_role') and data.get('worker_workplaces') and data.get('compact_bot_menu'):
+                      print('LIVE_STEP92_OK')
+                      raise SystemExit(0)
+                  last=str(data)
+              except Exception as exc:
+                  last=str(exc)
+              if attempt < 11:
+                  time.sleep(10)
+          raise SystemExit('LIVE_STEP92_NOT_DEPLOYED: '+last)
+          PY
