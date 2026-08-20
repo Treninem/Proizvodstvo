@@ -98,14 +98,20 @@ def create_unit(chat_id: int, name: str, symbol: str, created_by: int | None = N
     if existing:
         return False, "Такая единица измерения уже есть.", int(existing["id"])
     try:
-        cur = db.execute(
+        db.execute(
             """
             INSERT INTO measurement_units(chat_id,name,symbol,normalized,is_default,created_by)
             VALUES(?,?,?,?,0,?)
             """,
             (int(chat_id), clean_name, clean_symbol, key, int(created_by) if created_by else None),
         )
-        return True, f"Единица измерения добавлена: {clean_name} ({clean_symbol})", int(cur.lastrowid)
+        created = db.fetchone(
+            "SELECT id FROM measurement_units WHERE chat_id=? AND normalized=? AND is_archived=0",
+            (int(chat_id), key),
+        )
+        if not created:
+            return False, "Не удалось найти добавленную единицу измерения.", None
+        return True, f"Единица измерения добавлена: {clean_name} ({clean_symbol})", int(created["id"])
     except Exception:
         return False, "Не удалось добавить единицу измерения.", None
 
