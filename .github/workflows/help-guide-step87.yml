@@ -58,20 +58,20 @@ jobs:
           import urllib.request
 
           base='https://procontrol.bothost.tech'
-          expected_tag='/static/help-guide.js?v=20260820b'
+          expected_tag='/static/help-guide.js?v=20260820c'
           last=''
           for attempt in range(20):
               try:
                   req=urllib.request.Request(base+'/mini',headers={'Cache-Control':'no-cache','User-Agent':'Step87-help-check'})
                   with urllib.request.urlopen(req,timeout=15) as response:
                       html=response.read().decode('utf-8')
-                  req=urllib.request.Request(base+'/static/help-guide.js?v=20260820b',headers={'Cache-Control':'no-cache','User-Agent':'Step87-help-check'})
+                  req=urllib.request.Request(base+'/static/help-guide.js?v=20260820c',headers={'Cache-Control':'no-cache','User-Agent':'Step87-help-check'})
                   with urllib.request.urlopen(req,timeout=15) as response:
                       guide=response.read().decode('utf-8')
-                  if expected_tag in html and 'Рабочий ввод в Mini App' in guide and 'Как пользоваться' in guide:
+                  if expected_tag in html and 'Как назначить должность сотруднику' in guide and 'Состав изделия' in guide:
                       print('LIVE_HELP_GUIDE_OK')
                       raise SystemExit(0)
-                  last=f'tag={expected_tag in html}, guide={"Рабочий ввод в Mini App" in guide}'
+                  last=f'tag={expected_tag in html}, assignment={"Как назначить должность сотруднику" in guide}'
               except Exception as exc:
                   last=str(exc)
               if attempt < 19:
