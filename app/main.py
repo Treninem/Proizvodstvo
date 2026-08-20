@@ -15,6 +15,7 @@ from .handlers.groups import try_handle_group_command
 from .handlers.accounts import try_handle_account_command
 from .handlers.management import try_handle_management_message
 from .handlers.component_picker import try_handle_component_picker_message
+from .handlers.reply_job_assignment import try_handle_reply_job_assignment
 from .handlers.setup import try_handle_wizard_message, try_handle_setup_command
 from .handlers.intake import try_handle_confirmation_text, try_handle_intake
 from .handlers.reports import try_handle_report
@@ -41,6 +42,7 @@ async def all_text(message: Message) -> None:
         try_handle_onboarding,
         try_handle_account_command,
         try_handle_group_command,
+        try_handle_reply_job_assignment,
         try_handle_management_message,
         try_handle_component_picker_message,
         try_handle_wizard_message,
