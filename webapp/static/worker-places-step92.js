@@ -45,6 +45,12 @@
       .replaceAll("'",'&#039;');
   }
 
+  function setWrapHtml(wrap, signature, html) {
+    if (wrap.dataset.step92Signature === signature) return;
+    wrap.dataset.step92Signature = signature;
+    wrap.innerHTML = html;
+  }
+
   function renderPlaces() {
     const job = document.getElementById('treeWorkerJob');
     if (!job) return;
@@ -58,15 +64,20 @@
       else job.parentNode?.insertAdjacentElement('afterend', wrap);
     }
     if (loadingPlaces) {
-      wrap.innerHTML = '<div class="tree-form-note">Загружаем рабочие места…</div>';
+      setWrapHtml(wrap, 'loading', '<div class="tree-form-note">Загружаем рабочие места…</div>');
       return;
     }
     if (!workplaces.length) {
-      wrap.innerHTML = '<div class="tree-form-note">Сначала создайте участок и место хранения. Без рабочего места сотрудник не назначается.</div>';
+      setWrapHtml(
+        wrap,
+        'empty',
+        '<div class="tree-form-note">Сначала создайте участок и место хранения. Без рабочего места сотрудник не назначается.</div>',
+      );
       return;
     }
     const previous = new Set(selectedKeys());
-    wrap.innerHTML = `
+    const signature = `ready:${workplaces.map(place => String(place.key || '')).join('|')}:${[...previous].sort().join('|')}`;
+    const html = `
       <div class="tree-form-note"><b>Рабочие места</b><br>Выберите одно или несколько. Если выбрано несколько, в групповом чате сотрудник будет выбирать место для каждой записи.</div>
       <div class="tree-worker-place-list">
         ${workplaces.map(place => {
@@ -79,6 +90,7 @@
         <button type="button" data-step92-select-all>Выбрать все</button>
         <button type="button" data-step92-clear-all>Снять все</button>
       </div>`;
+    setWrapHtml(wrap, signature, html);
   }
 
   async function loadPlaces() {
@@ -97,7 +109,10 @@
     } catch (error) {
       workplaces = [];
       const wrap = document.getElementById('treeWorkerPlacesStep92');
-      if (wrap) wrap.innerHTML = `<div class="tree-form-note">${escapeHtml(error.message || 'Не удалось загрузить рабочие места.')}</div>`;
+      if (wrap) {
+        const message = escapeHtml(error.message || 'Не удалось загрузить рабочие места.');
+        setWrapHtml(wrap, `error:${message}`, `<div class="tree-form-note">${message}</div>`);
+      }
     } finally {
       loadingPlaces = false;
       renderPlaces();
@@ -116,7 +131,12 @@
     const url = requestUrl(input);
     const body = jsonBody(init);
     if (body && Number(body.chat_id) && Number(body.user_id)) {
-      lastContext = {chat_id:Number(body.chat_id), user_id:Number(body.user_id)};
+      const nextContext = {chat_id:Number(body.chat_id), user_id:Number(body.user_id)};
+      const changedContext = !lastContext
+        || Number(lastContext.chat_id) !== nextContext.chat_id
+        || Number(lastContext.user_id) !== nextContext.user_id;
+      if (changedContext) workplaces = [];
+      lastContext = nextContext;
       lastHeaders = headersObject(init.headers);
     }
 
@@ -141,9 +161,7 @@
 
     const response = await originalFetch(nextInput, nextInit);
     if (url.includes('/api/tree/snapshot')) scheduleEnhance();
-    if (url.includes('/api/tree/worker/assign')) {
-      // The tree form is rendered again after success. Reload choices for the
-      // currently selected accounting context so repeated assignments stay valid.
+    if (url.includes('/api/tree/worker/assign') && response.ok) {
       workplaces = [];
       setTimeout(scheduleEnhance, 0);
     }
@@ -164,7 +182,16 @@
     }
   });
 
-  const observer = new MutationObserver(() => scheduleEnhance());
+  const observer = new MutationObserver(mutations => {
+    // Ignore mutations made inside our own rendered list. That prevents the
+    // observer from scheduling itself forever while still detecting a new tree
+    // assignment screen created by the main Mini App shell.
+    const external = mutations.some(mutation => {
+      const target = mutation.target;
+      return !(target instanceof Element && target.closest('#treeWorkerPlacesStep92'));
+    });
+    if (external) scheduleEnhance();
+  });
   observer.observe(document.documentElement, {subtree:true, childList:true});
   scheduleEnhance();
 })();
