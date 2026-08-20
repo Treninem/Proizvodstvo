@@ -25,7 +25,9 @@ class TreeMenuStep91Tests(unittest.TestCase):
         self.assertIn("key:'people'", source)
         self.assertIn("type:'panel'", source)
         self.assertIn("restoreMounted()", source)
-        self.assertIn("previous page", (ROOT / "webapp" / "static" / "tree-help.js").read_text(encoding="utf-8").lower() if False else "previous page")
+        css = (ROOT / "webapp" / "static" / "tree-shell.css").read_text(encoding="utf-8")
+        self.assertIn("body>main.app-shell>.tab-page", css)
+        self.assertIn("display:none!important", css)
 
     def test_material_editor_uses_created_units_and_multiple_rows(self) -> None:
         source = (ROOT / "webapp" / "static" / "tree-shell.js").read_text(encoding="utf-8")
@@ -39,12 +41,33 @@ class TreeMenuStep91Tests(unittest.TestCase):
         self.assertIn("Сохранить всё", source)
         self.assertIn("/api/tree/entities/batch", source)
 
+    def test_remaining_complex_pages_are_split_into_submenus(self) -> None:
+        source = (ROOT / "webapp" / "static" / "tree-refinement.js").read_text(encoding="utf-8")
+        for key in (
+            "inventory",
+            "risks",
+            "reports-main",
+            "transfers",
+            "destinations",
+            "departments",
+            "area-access",
+            "inbox",
+            "control",
+            "owner-security",
+        ):
+            self.assertIn(f"{key}: {{" if "-" not in key else f"'{key}': {{", source)
+        self.assertIn("data-tree-refine-item", source)
+        self.assertIn("ctx.mountNode", source)
+        self.assertIn("local.mode='leaf'", source)
+
     def test_owner_branch_is_hidden_by_primary_owner_flag(self) -> None:
         shell = (ROOT / "webapp" / "static" / "tree-shell.js").read_text(encoding="utf-8")
         backend = (ROOT / "webapp" / "tree_extensions.py").read_text(encoding="utf-8")
+        refinement = (ROOT / "webapp" / "static" / "tree-refinement.js").read_text(encoding="utf-8")
         self.assertIn("owner:true", shell)
         self.assertIn("if (item.owner && !tree.access.is_primary_owner) return false", shell)
         self.assertIn('"is_primary_owner": bool(repo.is_primary_owner_id(user_id))', backend)
+        self.assertIn("gate==='owner'&&!ctx.tree.access.is_primary_owner", refinement)
         self.assertNotIn("item.owner && !tree.access.is_system_admin", shell)
 
     def test_tree_backend_mutations_require_management_access(self) -> None:
@@ -81,7 +104,7 @@ class TreeMenuStep91Tests(unittest.TestCase):
                 self.assertTrue(ok, message)
                 self.assertNotIn("пал", {row["symbol"] for row in measurement_units.list_units(-9001, 55)})
 
-    def test_runtime_injects_tree_assets_and_repairs_leaf_back_navigation(self) -> None:
+    def test_runtime_injects_tree_assets_and_repairs_leaf_navigation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             static = root / "webapp" / "static"
@@ -98,8 +121,14 @@ class TreeMenuStep91Tests(unittest.TestCase):
             (static / "app.js").write_text(app, encoding="utf-8")
             (static / "tree-shell.css").write_text("/* tree */\n", encoding="utf-8")
             (static / "tree-help.js").write_text("// help\n", encoding="utf-8")
+            (static / "tree-refinement.js").write_text("window.__treeOpenOverride=()=>false;\n", encoding="utf-8")
             (static / "tree-shell.js").write_text(
-                "if (item.kind === 'menu') renderMenu(item.key, true);\n    else openLeaf(item);\n",
+                "async function openLeaf(item) {\n"
+                "    if (!itemAllowed(item)) return;\n"
+                "    const leaf = item.leaf || {};\n"
+                "}\n"
+                "if (item.kind === 'menu') renderMenu(item.key, true);\n"
+                "    else openLeaf(item);\n",
                 encoding="utf-8",
             )
 
@@ -108,9 +137,11 @@ class TreeMenuStep91Tests(unittest.TestCase):
             html = (static / "index.html").read_text(encoding="utf-8")
             self.assertEqual(html.count('/static/tree-shell.css?v=20260820b'), 1)
             self.assertEqual(html.count('/static/tree-help.js?v=20260820b'), 1)
-            self.assertEqual(html.count('/static/tree-shell.js?v=20260820b'), 1)
+            self.assertEqual(html.count('/static/tree-refinement.js?v=20260820c'), 1)
+            self.assertEqual(html.count('/static/tree-shell.js?v=20260820c'), 1)
             tree_source = (static / "tree-shell.js").read_text(encoding="utf-8")
             self.assertIn("tree.history.push(tree.currentMenu)", tree_source)
+            self.assertIn("window.__treeOpenOverride", tree_source)
 
             second = ensure_frontend_runtime_ready(root)
             self.assertFalse(second.changed)
