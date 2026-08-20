@@ -12,6 +12,7 @@ on:
       - 'webapp/static/tree-shell.js'
       - 'webapp/static/tree-shell.css'
       - 'webapp/static/tree-help.js'
+      - 'webapp/static/tree-refinement.js'
       - 'tests/test_step91_tree_menu.py'
       - '.github/workflows/tree-menu-step91.yml'
   pull_request:
@@ -55,6 +56,7 @@ jobs:
         run: |
           node --check webapp/static/tree-shell.js
           node --check webapp/static/tree-help.js
+          node --check webapp/static/tree-refinement.js
       - name: Run all unit regressions
         run: python -m unittest discover -s tests -p 'test*.py' -v
       - name: Audit Mini App and system wiring
@@ -96,10 +98,15 @@ jobs:
                   req=urllib.request.Request(base+'/mini',headers={'Cache-Control':'no-cache','User-Agent':'Step91-tree-check'})
                   with urllib.request.urlopen(req,timeout=12) as response:
                       html=response.read().decode('utf-8')
-                  if data.get('tree_menu') and '/static/tree-shell.js?v=20260820b' in html:
+                  ready=(
+                      data.get('tree_menu')
+                      and '/static/tree-shell.js?v=20260820c' in html
+                      and '/static/tree-refinement.js?v=20260820c' in html
+                  )
+                  if ready:
                       print('LIVE_TREE_STEP91_OK')
                       raise SystemExit(0)
-                  last=f'health={data}, tree_asset={"/static/tree-shell.js?v=20260820b" in html}'
+                  last=f'health={data}, shell={"/static/tree-shell.js?v=20260820c" in html}, refinement={"/static/tree-refinement.js?v=20260820c" in html}'
               except Exception as exc:
                   last=str(exc)
               if attempt < 11: time.sleep(10)
