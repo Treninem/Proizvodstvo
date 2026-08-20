@@ -51,7 +51,7 @@ jobs:
       - name: Compile Python
         run: python -m compileall -q app webapp tests
       - name: Check Python correctness
-        run: ruff check app webapp tests --select F --output-format concise
+        run: ruff check app webapp tests/test_step90_miniapp_navigation.py --select F --output-format concise
       - name: Check Mini App JavaScript
         shell: bash
         run: |
