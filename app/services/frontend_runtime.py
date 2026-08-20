@@ -22,6 +22,12 @@ _EXTENSION_ASSET = "app-extensions.js"
 _EXTENSION_TAG = '<script src="/static/app-extensions.js?v=20260820a"></script>'
 _HELP_ASSET = "help-guide.js"
 _HELP_TAG = '<script src="/static/help-guide.js?v=20260820c"></script>'
+_MANAGEMENT_ASSET = "management-panel.js"
+_MANAGEMENT_TAG = '<script src="/static/management-panel.js?v=20260820a"></script>'
+_MENU_ASSET = "menu-navigation.js"
+_MENU_TAG = '<script src="/static/menu-navigation.js?v=20260820a"></script>'
+_UX_STYLE_ASSET = "miniapp-ux.css"
+_UX_STYLE_TAG = '<link rel="stylesheet" href="/static/miniapp-ux.css?v=20260820a" />'
 
 
 @dataclass(frozen=True)
@@ -41,6 +47,14 @@ def _attach_optional_script(index: str, static_dir: Path, asset: str, tag: str) 
     if "</body>" in index:
         return index.replace("</body>", f"  {tag}\n</body>", 1), True
     return index.rstrip() + "\n" + tag + "\n", True
+
+
+def _attach_optional_style(index: str, static_dir: Path, asset: str, tag: str) -> tuple[str, bool]:
+    if not (static_dir / asset).is_file() or tag in index:
+        return index, False
+    if "</head>" in index:
+        return index.replace("</head>", f"  {tag}\n</head>", 1), True
+    return tag + "\n" + index, True
 
 
 def ensure_frontend_runtime_ready(root: Path | None = None) -> FrontendRuntimeResult:
@@ -85,9 +99,12 @@ def ensure_frontend_runtime_ready(root: Path | None = None) -> FrontendRuntimeRe
     if source.count(_ENTITY_CODE_FUNCTION_MARKER) != 1:
         raise RuntimeError("Mini App entity-code initializer must exist exactly once")
 
+    index, style_added = _attach_optional_style(index, static_dir, _UX_STYLE_ASSET, _UX_STYLE_TAG)
     index, extension_added = _attach_optional_script(index, static_dir, _EXTENSION_ASSET, _EXTENSION_TAG)
     index, help_added = _attach_optional_script(index, static_dir, _HELP_ASSET, _HELP_TAG)
-    if extension_added or help_added:
+    index, management_added = _attach_optional_script(index, static_dir, _MANAGEMENT_ASSET, _MANAGEMENT_TAG)
+    index, menu_added = _attach_optional_script(index, static_dir, _MENU_ASSET, _MENU_TAG)
+    if style_added or extension_added or help_added or management_added or menu_added:
         _write_text(index_path, index)
         changed = True
 
