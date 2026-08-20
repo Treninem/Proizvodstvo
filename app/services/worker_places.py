@@ -253,7 +253,6 @@ def apply_workplace_to_operations(operations: list[dict[str, Any]], workplace: d
     location_id = int(workplace.get("location_id") or 0) or None
     department_id = int(workplace.get("department_id") or 0) or None
     label = str(workplace.get("label") or "Рабочее место")
-    area_name = str(workplace.get("area_name") or label)
     location_name = str(workplace.get("location_name") or "")
 
     for source in operations:
@@ -271,7 +270,9 @@ def apply_workplace_to_operations(operations: list[dict[str, Any]], workplace: d
                 op["from_department_id"] = department_id
         else:
             op["area_id"] = area_id
-            op["area_name"] = area_name if area_id else label
+            # The human confirmation must show the whole physical path, not just
+            # a possibly duplicated area name such as "Экструзия".
+            op["area_name"] = label
             op["storage_location_id"] = location_id
             op["storage_place"] = location_name or label
             if department_id:
