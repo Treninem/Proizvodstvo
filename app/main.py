@@ -10,7 +10,7 @@ from .config import settings
 from .db import init_db
 from .services import report_scheduler
 from .services import control_center
-from .handlers import start, intake, setup, management, groups, owner, accounts, corrections, reports, backups, onboarding, chats, risks, workflow, excel_import
+from .handlers import help_guide, start, intake, setup, management, groups, owner, accounts, corrections, reports, backups, onboarding, chats, risks, workflow, excel_import
 from .handlers.groups import try_handle_group_command
 from .handlers.accounts import try_handle_account_command
 from .handlers.management import try_handle_management_message
@@ -63,6 +63,7 @@ async def all_text(message: Message) -> None:
 
 def build_dispatcher() -> Dispatcher:
     dp = Dispatcher()
+    dp.include_router(help_guide.router)
     dp.include_router(start.router)
     dp.include_router(management.router)
     dp.include_router(setup.router)
