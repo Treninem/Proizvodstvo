@@ -30,12 +30,21 @@ _UX_STYLE_ASSET = "miniapp-ux.css"
 _UX_STYLE_TAG = '<link rel="stylesheet" href="/static/miniapp-ux.css?v=20260820a" />'
 _TREE_HELP_ASSET = "tree-help.js"
 _TREE_HELP_TAG = '<script src="/static/tree-help.js?v=20260820b"></script>'
+_TREE_REFINEMENT_ASSET = "tree-refinement.js"
+_TREE_REFINEMENT_TAG = '<script src="/static/tree-refinement.js?v=20260820c"></script>'
 _TREE_ASSET = "tree-shell.js"
-_TREE_TAG = '<script src="/static/tree-shell.js?v=20260820b"></script>'
+_TREE_TAG = '<script src="/static/tree-shell.js?v=20260820c"></script>'
 _TREE_STYLE_ASSET = "tree-shell.css"
 _TREE_STYLE_TAG = '<link rel="stylesheet" href="/static/tree-shell.css?v=20260820b" />'
 _TREE_HISTORY_OLD = "if (item.kind === 'menu') renderMenu(item.key, true);\n    else openLeaf(item);"
 _TREE_HISTORY_NEW = "if (item.kind === 'menu') renderMenu(item.key, true);\n    else { tree.history.push(tree.currentMenu); openLeaf(item); }"
+_TREE_OVERRIDE_OLD = """async function openLeaf(item) {
+    if (!itemAllowed(item)) return;
+    const leaf = item.leaf || {};"""
+_TREE_OVERRIDE_NEW = """async function openLeaf(item) {
+    if (!itemAllowed(item)) return;
+    if (typeof window.__treeOpenOverride === 'function' && window.__treeOpenOverride(item, {mountNode,activateLegacy,setHeader,restoreMounted,notify,loadSnapshot,tree,menus})) return;
+    const leaf = item.leaf || {};"""
 
 
 @dataclass(frozen=True)
@@ -70,13 +79,20 @@ def _repair_tree_shell(static_dir: Path) -> bool:
     if not path.is_file():
         return False
     source = path.read_text(encoding="utf-8")
-    if _TREE_HISTORY_NEW in source:
-        return False
-    if _TREE_HISTORY_OLD not in source:
-        raise RuntimeError("Tree Mini App navigation marker is missing")
-    source = source.replace(_TREE_HISTORY_OLD, _TREE_HISTORY_NEW, 1)
-    _write_text(path, source)
-    return True
+    changed = False
+    if _TREE_HISTORY_NEW not in source:
+        if _TREE_HISTORY_OLD not in source:
+            raise RuntimeError("Tree Mini App navigation marker is missing")
+        source = source.replace(_TREE_HISTORY_OLD, _TREE_HISTORY_NEW, 1)
+        changed = True
+    if _TREE_OVERRIDE_NEW not in source:
+        if _TREE_OVERRIDE_OLD not in source:
+            raise RuntimeError("Tree Mini App leaf override marker is missing")
+        source = source.replace(_TREE_OVERRIDE_OLD, _TREE_OVERRIDE_NEW, 1)
+        changed = True
+    if changed:
+        _write_text(path, source)
+    return changed
 
 
 def ensure_frontend_runtime_ready(root: Path | None = None) -> FrontendRuntimeResult:
@@ -128,6 +144,7 @@ def ensure_frontend_runtime_ready(root: Path | None = None) -> FrontendRuntimeRe
     index, management_added = _attach_optional_script(index, static_dir, _MANAGEMENT_ASSET, _MANAGEMENT_TAG)
     index, menu_added = _attach_optional_script(index, static_dir, _MENU_ASSET, _MENU_TAG)
     index, tree_help_added = _attach_optional_script(index, static_dir, _TREE_HELP_ASSET, _TREE_HELP_TAG)
+    index, tree_refinement_added = _attach_optional_script(index, static_dir, _TREE_REFINEMENT_ASSET, _TREE_REFINEMENT_TAG)
     index, tree_added = _attach_optional_script(index, static_dir, _TREE_ASSET, _TREE_TAG)
     if (
         style_added
@@ -137,6 +154,7 @@ def ensure_frontend_runtime_ready(root: Path | None = None) -> FrontendRuntimeRe
         or management_added
         or menu_added
         or tree_help_added
+        or tree_refinement_added
         or tree_added
     ):
         _write_text(index_path, index)
