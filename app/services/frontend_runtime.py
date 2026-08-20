@@ -32,6 +32,8 @@ _TREE_HELP_ASSET = "tree-help.js"
 _TREE_HELP_TAG = '<script src="/static/tree-help.js?v=20260820b"></script>'
 _TREE_REFINEMENT_ASSET = "tree-refinement.js"
 _TREE_REFINEMENT_TAG = '<script src="/static/tree-refinement.js?v=20260820c"></script>'
+_WORKER_PLACES_ASSET = "worker-places-step92.js"
+_WORKER_PLACES_TAG = '<script src="/static/worker-places-step92.js?v=20260821a"></script>'
 _TREE_ASSET = "tree-shell.js"
 _TREE_TAG = '<script src="/static/tree-shell.js?v=20260820c"></script>'
 _TREE_STYLE_ASSET = "tree-shell.css"
@@ -145,6 +147,7 @@ def ensure_frontend_runtime_ready(root: Path | None = None) -> FrontendRuntimeRe
     index, menu_added = _attach_optional_script(index, static_dir, _MENU_ASSET, _MENU_TAG)
     index, tree_help_added = _attach_optional_script(index, static_dir, _TREE_HELP_ASSET, _TREE_HELP_TAG)
     index, tree_refinement_added = _attach_optional_script(index, static_dir, _TREE_REFINEMENT_ASSET, _TREE_REFINEMENT_TAG)
+    index, worker_places_added = _attach_optional_script(index, static_dir, _WORKER_PLACES_ASSET, _WORKER_PLACES_TAG)
     index, tree_added = _attach_optional_script(index, static_dir, _TREE_ASSET, _TREE_TAG)
     if (
         style_added
@@ -155,6 +158,7 @@ def ensure_frontend_runtime_ready(root: Path | None = None) -> FrontendRuntimeRe
         or menu_added
         or tree_help_added
         or tree_refinement_added
+        or worker_places_added
         or tree_added
     ):
         _write_text(index_path, index)
