@@ -4,20 +4,42 @@ import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher, Router
-from aiogram.types import Message
+from aiogram.types import BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats, Message
 
 from .config import settings
 from .db import init_db
 from .services import report_scheduler
 from .services import control_center
-from .handlers import help_guide, component_picker, start, intake, setup, management, groups, owner, accounts, corrections, reports, backups, onboarding, chats, risks, workflow, excel_import
+from .handlers import (
+    accounts,
+    backups,
+    bot_menu_v2,
+    chats,
+    component_picker,
+    corrections,
+    excel_import,
+    groups,
+    help_guide,
+    intake,
+    job_assignment_v2,
+    management,
+    onboarding,
+    owner,
+    reports,
+    risks,
+    setup,
+    start,
+    workplace_intake,
+    workflow,
+)
 from .handlers.groups import try_handle_group_command
 from .handlers.accounts import try_handle_account_command
 from .handlers.management import try_handle_management_message
 from .handlers.component_picker import try_handle_component_picker_message
-from .handlers.reply_job_assignment import try_handle_reply_job_assignment
+from .handlers.job_assignment_v2 import try_handle_reply_job_assignment_v2
 from .handlers.setup import try_handle_wizard_message, try_handle_setup_command
 from .handlers.intake import try_handle_confirmation_text, try_handle_intake
+from .handlers.workplace_intake import try_handle_workplace_intake
 from .handlers.reports import try_handle_report
 from .handlers.corrections import try_handle_correction_command
 from .handlers.backups import try_handle_backup
@@ -42,8 +64,8 @@ async def all_text(message: Message) -> None:
         try_handle_confirmation_text,
         try_handle_onboarding,
         try_handle_account_command,
+        try_handle_reply_job_assignment_v2,
         try_handle_group_command,
-        try_handle_reply_job_assignment,
         try_handle_management_message,
         try_handle_component_picker_message,
         try_handle_wizard_message,
@@ -55,6 +77,7 @@ async def all_text(message: Message) -> None:
         try_handle_risk_command,
         try_handle_report,
         try_handle_backup,
+        try_handle_workplace_intake,
         try_handle_intake,
     ):
         try:
@@ -70,6 +93,10 @@ def build_dispatcher() -> Dispatcher:
     dp = Dispatcher()
     dp.message.outer_middleware(UserDirectoryMiddleware())
     dp.callback_query.outer_middleware(UserDirectoryMiddleware())
+    # These routers intentionally go first. They replace the old overloaded bot
+    # menu and the old role-assignment flow while keeping legacy callbacks alive.
+    dp.include_router(job_assignment_v2.router)
+    dp.include_router(bot_menu_v2.router)
     dp.include_router(help_guide.router)
     dp.include_router(start.router)
     dp.include_router(management.router)
@@ -77,6 +104,7 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(setup.router)
     dp.include_router(groups.router)
     dp.include_router(chats.router)
+    dp.include_router(workplace_intake.router)
     dp.include_router(intake.router)
     dp.include_router(owner.router)
     dp.include_router(accounts.router)
@@ -91,6 +119,28 @@ def build_dispatcher() -> Dispatcher:
     return dp
 
 
+async def _configure_bot_commands(bot: Bot) -> None:
+    """Expose a privacy-mode-safe reply command in group chats."""
+    try:
+        await bot.set_my_commands(
+            [
+                BotCommand(command="role", description="Назначить должность ответом"),
+                BotCommand(command="job", description="Назначить должность ответом"),
+            ],
+            scope=BotCommandScopeAllGroupChats(),
+        )
+        await bot.set_my_commands(
+            [
+                BotCommand(command="start", description="Главное меню"),
+                BotCommand(command="help", description="Как пользоваться"),
+            ],
+            scope=BotCommandScopeAllPrivateChats(),
+        )
+    except Exception as exc:
+        # Command-menu setup must never stop accounting polling.
+        log.warning("Не удалось обновить команды Telegram: %s", exc)
+
+
 async def _bot_heartbeat_loop() -> None:
     while True:
         control_center.heartbeat("bot", "ok", "polling active")
@@ -100,6 +150,7 @@ async def _bot_heartbeat_loop() -> None:
 async def run_bot() -> None:
     bot = Bot(settings.bot_token)
     dp = build_dispatcher()
+    await _configure_bot_commands(bot)
     log.info("Бот запущен")
     control_center.heartbeat("bot", "ok", "polling started")
     scheduler_task = asyncio.create_task(report_scheduler.schedule_loop(bot))
