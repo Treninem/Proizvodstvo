@@ -11,6 +11,13 @@ from ..services import repository as repo
 
 router = Router()
 
+_RELEASE_TEXT = (
+    "Версия бота: 92\n"
+    "Backend: 92\n"
+    "Mini App: 20260821a\n"
+    "Архитектура: tenant-isolation v2 + worker-workplaces"
+)
+
 
 def _mini_url() -> str:
     base = str(settings.public_base_url or "").rstrip("/")
@@ -74,6 +81,12 @@ def _back_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def _owner_back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="owner:panel")]]
+    )
+
+
 @router.message(CommandStart())
 async def start_v2(message: Message) -> None:
     repo.upsert_chat(
@@ -97,6 +110,14 @@ async def help_command_v2(message: Message) -> None:
     await message.answer(_help_text(), reply_markup=_back_keyboard() if message.chat.type == "private" else None)
 
 
+@router.message(Command("version"))
+async def version_command_v2(message: Message) -> None:
+    user_id = int(message.from_user.id) if message.from_user else None
+    if message.chat.type != "private" or not repo.is_primary_owner_id(user_id):
+        return
+    await message.answer(_RELEASE_TEXT, reply_markup=_owner_back_keyboard())
+
+
 @router.message(F.text.lower().in_({"меню", "главное меню"}))
 async def menu_text_v2(message: Message) -> None:
     if message.chat.type != "private":
@@ -115,6 +136,16 @@ async def main_callback_v2(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "menu:help")
 async def help_callback_v2(callback: CallbackQuery) -> None:
     await safe_edit_text(callback.message, _help_text(), reply_markup=_back_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "owner:version")
+async def owner_version_callback_v2(callback: CallbackQuery) -> None:
+    user_id = int(callback.from_user.id) if callback.from_user else None
+    if not repo.is_primary_owner_id(user_id):
+        await callback.answer()
+        return
+    await safe_edit_text(callback.message, _RELEASE_TEXT, reply_markup=_owner_back_keyboard())
     await callback.answer()
 
 
