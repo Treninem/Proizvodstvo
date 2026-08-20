@@ -21,7 +21,7 @@ _ENTITY_CODE_FUNCTION = """function updateEntityCodeEntities(){
 _EXTENSION_ASSET = "app-extensions.js"
 _EXTENSION_TAG = '<script src="/static/app-extensions.js?v=20260820a"></script>'
 _HELP_ASSET = "help-guide.js"
-_HELP_TAG = '<script src="/static/help-guide.js?v=20260820b"></script>'
+_HELP_TAG = '<script src="/static/help-guide.js?v=20260820c"></script>'
 
 
 @dataclass(frozen=True)
