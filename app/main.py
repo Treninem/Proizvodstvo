@@ -26,6 +26,7 @@ from .handlers.risks import try_handle_risk_command
 from .handlers.workflow import try_handle_workflow_command
 from .handlers.onboarding import try_handle_onboarding
 from .handlers.transfers import try_handle_transfer_command
+from .user_directory_middleware import UserDirectoryMiddleware
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("production_account_bot")
@@ -67,6 +68,8 @@ async def all_text(message: Message) -> None:
 
 def build_dispatcher() -> Dispatcher:
     dp = Dispatcher()
+    dp.message.outer_middleware(UserDirectoryMiddleware())
+    dp.callback_query.outer_middleware(UserDirectoryMiddleware())
     dp.include_router(help_guide.router)
     dp.include_router(start.router)
     dp.include_router(management.router)
