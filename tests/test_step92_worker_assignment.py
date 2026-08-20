@@ -30,9 +30,9 @@ class Step92WorkerAssignmentTests(unittest.TestCase):
         self.assertLess(source.index("try_handle_workplace_intake,"), source.index("try_handle_intake,"))
         self.assertLess(source.index("dp.include_router(job_assignment_v2.router)"), source.index("dp.include_router(start.router)"))
 
-    def test_simplified_bot_menu_removes_duplicate_setup_and_worker_buttons(self) -> None:
-        source = (ROOT / "app" / "handlers" / "bot_menu_v2.py").read_text(encoding="utf-8")
-        menu_block = source[source.index("def bot_main_menu"):source.index("def _main_text")]
+    def test_simplified_bot_menu_is_shared_by_legacy_back_buttons(self) -> None:
+        menu_source = (ROOT / "app" / "handlers" / "bot_menu_v2.py").read_text(encoding="utf-8")
+        menu_block = menu_source[menu_source.index("def bot_main_menu"):menu_source.index("def _main_text")]
         self.assertIn("Открыть Mini App", menu_block)
         self.assertIn("Рабочие группы", menu_block)
         self.assertIn("Мои записи", menu_block)
@@ -41,6 +41,13 @@ class Step92WorkerAssignmentTests(unittest.TestCase):
         self.assertNotIn("Настроить организацию", menu_block)
         self.assertNotIn("Сотрудники", menu_block)
         self.assertIn("repo.is_primary_owner_id(user_id)", menu_block)
+
+        main_source = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
+        self.assertIn("keyboards.main_menu = bot_menu_v2.bot_main_menu", main_source)
+        self.assertLess(
+            main_source.index("keyboards.main_menu = bot_menu_v2.bot_main_menu"),
+            main_source.index("from .handlers import (  # noqa: E402"),
+        )
 
     def test_worker_can_have_multiple_physical_workplaces_and_operation_is_stamped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -108,6 +115,7 @@ class Step92WorkerAssignmentTests(unittest.TestCase):
                 self.assertEqual(int(stamped["area_id"]), int(area.id))
                 self.assertIsNotNone(stamped["storage_location_id"])
                 self.assertIn("Муром", stamped["worker_workplace_label"])
+                self.assertEqual(stamped["area_name"], stamped["worker_workplace_label"])
 
     def test_multiple_workplaces_are_chosen_before_normal_accounting_confirmation(self) -> None:
         source = (ROOT / "app" / "handlers" / "workplace_intake.py").read_text(encoding="utf-8")
@@ -126,6 +134,27 @@ class Step92WorkerAssignmentTests(unittest.TestCase):
         self.assertIn("Выберите хотя бы одно рабочее место", source)
         self.assertIn("worker_places.set_worker_workplaces", source)
         self.assertIn("Если мест несколько", source)
+
+    def test_miniapp_assignment_uses_the_same_workplace_model(self) -> None:
+        backend = (ROOT / "webapp" / "worker_places_extensions.py").read_text(encoding="utf-8")
+        frontend = (ROOT / "webapp" / "static" / "worker-places-step92.js").read_text(encoding="utf-8")
+        runtime = (ROOT / "app" / "services" / "frontend_runtime.py").read_text(encoding="utf-8")
+        app_runtime = (ROOT / "app" / "runtime.py").read_text(encoding="utf-8")
+
+        self.assertIn("workplace_keys", backend)
+        self.assertIn("worker_places.set_worker_workplaces", backend)
+        self.assertIn('"/api/step92/workplaces"', backend)
+        self.assertIn('"/api/step92/worker/assign"', backend)
+        self.assertIn("Выберите хотя бы одно рабочее место", backend)
+
+        self.assertIn("data-step92-workplace", frontend)
+        self.assertIn("Выбрать все", frontend)
+        self.assertIn("/api/tree/worker/assign", frontend)
+        self.assertIn("/api/step92/worker/assign", frontend)
+        self.assertIn("workplace_keys", frontend)
+
+        self.assertIn("worker-places-step92.js?v=20260821a", runtime)
+        self.assertIn("install_worker_places_extensions", app_runtime)
 
 
 if __name__ == "__main__":
