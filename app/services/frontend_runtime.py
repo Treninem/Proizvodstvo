@@ -28,6 +28,10 @@ _MENU_ASSET = "menu-navigation.js"
 _MENU_TAG = '<script src="/static/menu-navigation.js?v=20260820a"></script>'
 _UX_STYLE_ASSET = "miniapp-ux.css"
 _UX_STYLE_TAG = '<link rel="stylesheet" href="/static/miniapp-ux.css?v=20260820a" />'
+_TREE_ASSET = "tree-shell.js"
+_TREE_TAG = '<script src="/static/tree-shell.js?v=20260820b"></script>'
+_TREE_STYLE_ASSET = "tree-shell.css"
+_TREE_STYLE_TAG = '<link rel="stylesheet" href="/static/tree-shell.css?v=20260820b" />'
 
 
 @dataclass(frozen=True)
@@ -100,11 +104,21 @@ def ensure_frontend_runtime_ready(root: Path | None = None) -> FrontendRuntimeRe
         raise RuntimeError("Mini App entity-code initializer must exist exactly once")
 
     index, style_added = _attach_optional_style(index, static_dir, _UX_STYLE_ASSET, _UX_STYLE_TAG)
+    index, tree_style_added = _attach_optional_style(index, static_dir, _TREE_STYLE_ASSET, _TREE_STYLE_TAG)
     index, extension_added = _attach_optional_script(index, static_dir, _EXTENSION_ASSET, _EXTENSION_TAG)
     index, help_added = _attach_optional_script(index, static_dir, _HELP_ASSET, _HELP_TAG)
     index, management_added = _attach_optional_script(index, static_dir, _MANAGEMENT_ASSET, _MANAGEMENT_TAG)
     index, menu_added = _attach_optional_script(index, static_dir, _MENU_ASSET, _MENU_TAG)
-    if style_added or extension_added or help_added or management_added or menu_added:
+    index, tree_added = _attach_optional_script(index, static_dir, _TREE_ASSET, _TREE_TAG)
+    if (
+        style_added
+        or tree_style_added
+        or extension_added
+        or help_added
+        or management_added
+        or menu_added
+        or tree_added
+    ):
         _write_text(index_path, index)
         changed = True
 
