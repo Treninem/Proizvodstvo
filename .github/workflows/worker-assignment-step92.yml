@@ -72,7 +72,7 @@ jobs:
         run: |
           python - <<'PY'
           from app.main import build_dispatcher
-          from webapp.step92_probe import install_step92_probe
+          from webapp.step92_probe import install_step92_probe, step92_health
           from webapp.worker_places_extensions import install_worker_places_extensions
           from webapp.server import app
           dp=build_dispatcher()
@@ -83,7 +83,9 @@ jobs:
           required={'/api/step92/health','/api/step92/workplaces','/api/step92/worker/assign'}
           missing=required-paths
           if missing: raise SystemExit('Step92 routes missing: '+', '.join(sorted(missing)))
-          print('STEP92_WIRING_OK')
+          if step92_health().get('build') != '20260821a':
+              raise SystemExit('Step92 build marker is wrong')
+          print('STEP92_WIRING_OK build=20260821a')
           PY
       - name: Check live Step92 deployment if available
         continue-on-error: true
@@ -103,18 +105,19 @@ jobs:
                       html=response.read().decode('utf-8')
                   ready=(
                       data.get('release')=='step92'
+                      and data.get('build')=='20260821a'
                       and data.get('reply_role')
                       and data.get('worker_workplaces')
                       and data.get('compact_bot_menu')
                       and '/static/worker-places-step92.js?v=20260821a' in html
                   )
                   if ready:
-                      print('LIVE_STEP92_OK')
+                      print('LIVE_STEP92_BUILD_20260821A_OK')
                       raise SystemExit(0)
                   last=f'health={data}, mini_asset={"/static/worker-places-step92.js?v=20260821a" in html}'
               except Exception as exc:
                   last=str(exc)
               if attempt < 11:
                   time.sleep(10)
-          raise SystemExit('LIVE_STEP92_NOT_DEPLOYED: '+last)
+          raise SystemExit('LIVE_STEP92_BUILD_20260821A_NOT_DEPLOYED: '+last)
           PY
