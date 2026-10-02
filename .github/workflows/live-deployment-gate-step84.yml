@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: proizvodstvo-live-current-release
@@ -34,11 +35,43 @@ jobs:
         with:
           python-version: '3.12'
       - name: Validate current release expectations locally
+        id: local_gate
+        continue-on-error: true
         run: python -m unittest tests.test_step84_live_deployment_gate -v
       - name: Wait for Bothost and verify exact current release
+        id: live_gate
+        if: steps.local_gate.outcome == 'success'
+        continue-on-error: true
         run: >-
           python scripts/live_deployment_gate_step84.py
           --base-url https://procontrol.bothost.tech
           --attempts 30
           --delay 20
           --timeout 15
+      - name: Publish deployment gate status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LOCAL_OUTCOME: ${{ steps.local_gate.outcome }}
+          LIVE_OUTCOME: ${{ steps.live_gate.outcome }}
+        run: |
+          set -euo pipefail
+          state=success
+          description='current release is live and byte-exact'
+          if [ "$LOCAL_OUTCOME" != success ]; then
+            state=failure
+            description='local release contract failed'
+          elif [ "$LIVE_OUTCOME" != success ]; then
+            state=failure
+            description='Bothost is stale, unreachable, or not current'
+          fi
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d "{\"state\":\"$state\",\"context\":\"live-deployment-current-release\",\"description\":\"$description\"}"
+      - name: Fail when release verification failed
+        if: steps.local_gate.outcome != 'success' || steps.live_gate.outcome != 'success'
+        run: exit 1
