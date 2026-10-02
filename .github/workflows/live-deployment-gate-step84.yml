@@ -1,4 +1,4 @@
-name: Live Step84 deployment gate
+name: Live deployment gate — current release
 
 on:
   push:
@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: proizvodstvo-live-step84
+  group: proizvodstvo-live-current-release
   cancel-in-progress: true
 
 jobs:
@@ -33,9 +33,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Validate gate expectations locally
+      - name: Validate current release expectations locally
         run: python -m unittest tests.test_step84_live_deployment_gate -v
-      - name: Wait for Bothost and verify exact deployed runtime
+      - name: Wait for Bothost and verify exact current release
         run: >-
           python scripts/live_deployment_gate_step84.py
           --base-url https://procontrol.bothost.tech
