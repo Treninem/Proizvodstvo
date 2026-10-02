@@ -14,6 +14,8 @@ class Step84LiveDeploymentGateTests(unittest.TestCase):
         self.assertEqual(expected.mini_ui_version, "20260816a")
         self.assertEqual(expected.app_asset, "app-20260816a.js")
         self.assertEqual(expected.style_asset, "style-20260812a.css")
+        self.assertEqual(expected.step92_release, "step92")
+        self.assertEqual(expected.step92_build, "20260821a")
 
     def test_frontend_aliases_are_byte_identical_to_active_assets(self):
         expected = expected_deployment()
@@ -55,6 +57,15 @@ class Step84LiveDeploymentGateTests(unittest.TestCase):
         self.assertIn("Версия бота: 84", owner)
         self.assertIn("Backend: 85", owner)
         self.assertIn("Mini App: 20260816a", owner)
+
+    def test_step92_asset_is_present_and_hashed(self):
+        expected = expected_deployment()
+        asset = ROOT / "webapp" / "static" / "worker-places-step92.js"
+        self.assertTrue(asset.is_file())
+        self.assertEqual(
+            hashlib.sha256(asset.read_bytes()).hexdigest(),
+            expected.step92_asset_sha256,
+        )
 
     def test_manifest_opens_canonical_mini_route(self):
         import json
