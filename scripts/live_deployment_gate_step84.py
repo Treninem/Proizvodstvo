@@ -15,7 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "webapp" / "server.py"
 STATIC = ROOT / "webapp" / "static"
 INDEX = STATIC / "index.html"
-USER_AGENT = "Proizvodstvo-Step84-Live-Gate/1.0"
+STEP92_PROBE = ROOT / "webapp" / "step92_probe.py"
+STEP92_ASSET = STATIC / "worker-places-step92.js"
+USER_AGENT = "Proizvodstvo-Live-Deployment-Gate/2.0"
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,9 @@ class ExpectedDeployment:
     alias_app_sha256: str
     alias_style_sha256: str
     manifest_sha256: str
+    step92_release: str
+    step92_build: str
+    step92_asset_sha256: str
 
 
 @dataclass(frozen=True)
@@ -87,7 +92,15 @@ def expected_deployment() -> ExpectedDeployment:
     alias_app = STATIC / "app.js"
     alias_style = STATIC / "style.css"
     manifest = STATIC / "manifest.webmanifest"
-    for path in (app_path, style_path, alias_app, alias_style, manifest):
+    step92_text = STEP92_PROBE.read_text(encoding="utf-8")
+    step92_release_match = re.search(r'"release"\s*:\s*"([^"]+)"', step92_text)
+    step92_build_match = re.search(r'"build"\s*:\s*"([^"]+)"', step92_text)
+    if not step92_release_match or not step92_build_match:
+        raise RuntimeError("Step92 release/build markers were not found in webapp/step92_probe.py")
+    step92_release = step92_release_match.group(1)
+    step92_build = step92_build_match.group(1)
+
+    for path in (app_path, style_path, alias_app, alias_style, manifest, STEP92_ASSET):
         if not path.is_file():
             raise RuntimeError(f"Required deployment file is missing: {path.relative_to(ROOT)}")
 
@@ -101,6 +114,9 @@ def expected_deployment() -> ExpectedDeployment:
         alias_app_sha256=_sha256_file(alias_app),
         alias_style_sha256=_sha256_file(alias_style),
         manifest_sha256=_sha256_file(manifest),
+        step92_release=step92_release,
+        step92_build=step92_build,
+        step92_asset_sha256=_sha256_file(STEP92_ASSET),
     )
 
 
@@ -234,7 +250,48 @@ def check_once(base_url: str, expected: ExpectedDeployment, timeout: float = 15.
     except Exception as exc:  # noqa: BLE001
         problems.append(f"unauthorized /api/accounts request failed: {exc}")
 
+    try:
+        step92 = _fetch(base_url, "/api/step92/health", timeout)
+        if step92.status != 200:
+            problems.append(f"/api/step92/health HTTP {step92.status}, expected 200")
+        else:
+            payload = _json(step92, "/api/step92/health")
+            if payload.get("ok") is not True:
+                problems.append("/api/step92/health ok is not true")
+            if str(payload.get("release") or "") != expected.step92_release:
+                problems.append(
+                    f"/api/step92/health release={payload.get('release')!r}, expected {expected.step92_release!r}"
+                )
+            if str(payload.get("build") or "") != expected.step92_build:
+                problems.append(
+                    f"/api/step92/health build={payload.get('build')!r}, expected {expected.step92_build!r}"
+                )
+            for flag in ("reply_role", "worker_workplaces", "workplace_routing", "compact_bot_menu"):
+                if payload.get(flag) is not True:
+                    problems.append(f"/api/step92/health {flag} is not true")
+    except Exception as exc:  # noqa: BLE001
+        problems.append(f"/api/step92/health request failed: {exc}")
+
     if mini_html:
+        step92_tag = f"/static/worker-places-step92.js?v={expected.step92_build}"
+        if step92_tag not in mini_html:
+            problems.append(f"/mini HTML does not reference {step92_tag}")
+        try:
+            step92_asset = _fetch(base_url, "/static/worker-places-step92.js", timeout)
+            if step92_asset.status != 200:
+                problems.append(
+                    f"/static/worker-places-step92.js HTTP {step92_asset.status}, expected 200"
+                )
+            else:
+                live_digest = _sha256_bytes(step92_asset.body)
+                if live_digest != expected.step92_asset_sha256:
+                    problems.append(
+                        "worker-places-step92.js SHA-256 differs: "
+                        f"live={live_digest[:16]} local={expected.step92_asset_sha256[:16]}"
+                    )
+        except Exception as exc:  # noqa: BLE001
+            problems.append(f"/static/worker-places-step92.js request failed: {exc}")
+
         try:
             manifest = json.loads((STATIC / "manifest.webmanifest").read_text(encoding="utf-8"))
             if manifest.get("start_url") != "/mini":
@@ -248,7 +305,7 @@ def check_once(base_url: str, expected: ExpectedDeployment, timeout: float = 15.
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify that Bothost serves the exact current GitHub main runtime")
+    parser = argparse.ArgumentParser(description="Verify that Bothost serves the exact current GitHub main release")
     parser.add_argument("--base-url", default="https://procontrol.bothost.tech")
     parser.add_argument("--attempts", type=int, default=1)
     parser.add_argument("--delay", type=float, default=20.0)
@@ -258,8 +315,9 @@ def main() -> int:
     attempts = max(1, int(args.attempts))
     expected = expected_deployment()
     print(
-        "STEP84 expected "
-        f"build={expected.build} mini={expected.mini_ui_version} "
+        "LIVE_DEPLOYMENT expected "
+        f"base_build={expected.build} mini={expected.mini_ui_version} "
+        f"step92={expected.step92_release}/{expected.step92_build} "
         f"app={expected.app_asset} app_sha256={expected.app_sha256[:16]}..."
     )
 
@@ -268,17 +326,18 @@ def main() -> int:
         last_problems = check_once(args.base_url, expected, timeout=max(1.0, args.timeout))
         if not last_problems:
             print(
-                f"STEP84 LIVE_OK attempt={attempt}/{attempts} "
-                f"build={expected.build} mini={expected.mini_ui_version}"
+                f"LIVE_DEPLOYMENT_OK attempt={attempt}/{attempts} "
+                f"base_build={expected.build} mini={expected.mini_ui_version} "
+                f"step92={expected.step92_release}/{expected.step92_build}"
             )
             return 0
-        print(f"STEP84 LIVE_STALE attempt={attempt}/{attempts}")
+        print(f"LIVE_DEPLOYMENT_STALE attempt={attempt}/{attempts}")
         for problem in last_problems:
             print(f" - {problem}")
         if attempt < attempts:
             time.sleep(max(0.0, args.delay))
 
-    print("STEP84 LIVE_GATE_FAILED")
+    print("LIVE_DEPLOYMENT_GATE_FAILED")
     return 1
 
 
