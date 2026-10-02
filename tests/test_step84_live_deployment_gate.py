@@ -54,9 +54,10 @@ class Step84LiveDeploymentGateTests(unittest.TestCase):
 
     def test_owner_version_identifies_exact_runtime(self):
         owner = (ROOT / "app" / "handlers" / "owner.py").read_text(encoding="utf-8")
-        self.assertIn("Версия бота: 84", owner)
-        self.assertIn("Backend: 85", owner)
-        self.assertIn("Mini App: 20260816a", owner)
+        self.assertIn("Версия бота: 92", owner)
+        self.assertIn("Backend: 92", owner)
+        self.assertIn("Mini App: 20260821a", owner)
+        self.assertNotIn("Версия бота: 84", owner)
 
     def test_step92_asset_is_present_and_hashed(self):
         expected = expected_deployment()
